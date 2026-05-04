@@ -18,6 +18,12 @@
 (setq *gc-pile-tol-mm-per-m* 20.0)    ; норматив 20 мм/1м
 (setq *gc-pile-text-h*       0.100)   ; высота текста, м
 (setq *gc-pile-text-margin*  0.050)   ; отступ текста от стрелки, м
+(setq *gc-pile-z-cluster*    0.050)   ; порог "одной высоты" между точками, м
+
+;; Фильтр для ssget: только точки и COGO Points. Wildcards разрешены.
+;; Если в выборку попадут другие объекты — они игнорируются на уровне ssget.
+(setq *gc-pile-ssget-filter*
+      '((0 . "POINT,AECC*POINT,AEC*POINT")))
 
 (setq *gc-l-low*    "GC-Сваи-Низ")
 (setq *gc-l-high*   "GC-Сваи-Верх")
@@ -123,49 +129,56 @@
       best)))
 
 ;;; ====================================================================
-;;; КЛАСТЕРИЗАЦИЯ ПО Z — АДАПТИВНАЯ (2 САМЫХ БОЛЬШИХ РАЗРЫВА)
+;;; КЛАСТЕРИЗАЦИЯ ПО Z — ПЛОТНЫЕ ГРУППЫ + ОТБОР 2 САМЫХ БОЛЬШИХ
 ;;; ====================================================================
 
-;; ПОЧЕМУ адаптивно: ранее использовали фиксированный порог 100 мм, что
-;; ломалось при бо́льшем разбросе по Z (получалось 4+ групп). Сейчас
-;; всегда находим ровно 3 группы (или 2 при 6 точках), независимо от
-;; абсолютной разности высот.
-(defun gc-pile-cluster-z (points / sorted n i gaps cuts)
+;; ПОЧЕМУ так: алгоритм должен быть устойчив к "лишним" точкам
+;; (посторонним маркерам, точкам соседних свай, единичным выбросам).
+;; Шамиль явно сформулировал: «минимум 3 точки одной высоты».
+;;
+;; Алгоритм:
+;;   1. Кластеризуем по фиксированному порогу 50 мм между соседями по Z
+;;      («одна высота» = разброс ≤ 50 мм, как при реальной съёмке).
+;;   2. Отфильтровываем группы с числом точек < 3 (не сечение).
+;;   3. Берём 2 самые многочисленные.
+;;   4. Из них: меньший средний Z = нижнее сечение, больший = верхнее.
+(defun gc-pile-cluster-z (points / sorted groups two)
   (setq sorted (vl-sort points '(lambda (a b) (< (caddr a) (caddr b)))))
-  (setq n (length sorted))
   (cond
-    ((< n 6) nil)
+    ((< (length sorted) 6) nil)
     (T
-     ;; Считаем разрывы: пары (индекс_слева, размер_разрыва).
-     (setq i 0 gaps '())
-     (while (< i (1- n))
-       (setq gaps (cons
-                    (list i (- (caddr (nth (1+ i) sorted))
-                               (caddr (nth i        sorted))))
-                    gaps))
-       (setq i (1+ i)))
-     ;; Сортируем разрывы по убыванию размера.
-     (setq gaps (vl-sort gaps '(lambda (a b) (> (cadr a) (cadr b)))))
+     (setq groups (gc-pile-cluster-by-gap sorted *gc-pile-z-cluster*))
+     (setq groups (vl-remove-if '(lambda (g) (< (length g) 3)) groups))
+     (setq groups (vl-sort groups '(lambda (a b) (> (length a) (length b)))))
      (cond
-       ((= n 6)
-        ;; Ровно 6 точек — 1 разрез → 2 группы (без верхушки).
-        (setq cuts (list (car (car gaps)))))
+       ((< (length groups) 2)
+        (princ "\n[ОШИБКА] Не найдено двух групп ≥3 точек на одной высоте.")
+        (princ "\n        Проверь: выделены ли реально точки, разнесены ли")
+        (princ "\n        нижнее и верхнее сечения по Z более чем на 50 мм.")
+        nil)
        (T
-        ;; ≥7 точек — 2 разреза → 3 группы.
-        (setq cuts (vl-sort (list (car (car gaps)) (car (cadr gaps))) '<))))
-     (gc-pile-split-by-cuts sorted cuts))))
+        (setq two (list (car groups) (cadr groups)))
+        ;; Сортировка по среднему Z: нижнее, потом верхнее
+        (vl-sort two
+                 '(lambda (a b)
+                    (< (gc-pile-avg (mapcar 'caddr a))
+                       (gc-pile-avg (mapcar 'caddr b))))))))))
 
-;; Делит отсортированный список по индексам разрезов.
-;; cuts — отсортированный по возрастанию список индексов i, после которых режем.
-(defun gc-pile-split-by-cuts (sorted cuts / groups current i)
-  (setq groups '() current '() i 0)
+;; Простая кластеризация: соседние точки по Z в одну группу,
+;; разрыв > gap → новая группа. sorted уже отсортирован по Z по возрастанию.
+(defun gc-pile-cluster-by-gap (sorted gap / groups current prev)
+  (setq groups '() current '() prev nil)
   (foreach pt sorted
-    (setq current (cons pt current))
-    (if (member i cuts)
-      (progn
-        (setq groups (cons (reverse current) groups))
-        (setq current '())))
-    (setq i (1+ i)))
+    (cond
+      ((null prev)
+       (setq current (list pt) prev pt))
+      ((> (- (caddr pt) (caddr prev)) gap)
+       (setq groups (cons (reverse current) groups))
+       (setq current (list pt))
+       (setq prev pt))
+      (T
+       (setq current (cons pt current))
+       (setq prev pt))))
   (if current (setq groups (cons (reverse current) groups)))
   (reverse groups))
 
@@ -260,11 +273,11 @@
 ;;; ====================================================================
 
 (defun gc-pile-mode1 ( / ss pts groups n)
-  (princ "\nВыделите все точки сваи (низ + верх + верхушка): ")
-  (setq ss (ssget))
+  (princ "\nВыделите точки сваи (низ + верх + верхушка). Не-точки в рамке игнорируются: ")
+  (setq ss (ssget *gc-pile-ssget-filter*))
   (cond
     ((null ss)
-     (princ "\n[ОШИБКА] Точки не выбраны.")
+     (princ "\n[ОШИБКА] Точки не выбраны (либо в рамке нет точек / COGO Points).")
      nil)
     (T
      (setq pts (gc-pile-ss-to-points ss))
@@ -277,35 +290,13 @@
        (T
         (setq groups (gc-pile-cluster-z pts))
         (cond
-          ((null groups)
-           (princ "\n[ОШИБКА] Не удалось кластеризовать точки.") nil)
-          ((= (length groups) 2)
-           (princ (strcat "\n[i] Точек: " (itoa n)
-                          " → нижнее: "  (itoa (length (car groups)))
-                          ", верхнее: "  (itoa (length (cadr groups)))
-                          " (верхушки нет)."))
-           (cond
-             ((< (length (car  groups)) 3)
-              (princ "\n[ОШИБКА] В нижней группе меньше 3 точек.") nil)
-             ((< (length (cadr groups)) 3)
-              (princ "\n[ОШИБКА] В верхней группе меньше 3 точек.") nil)
-             (T (list (car groups) (cadr groups)))))
-          ((= (length groups) 3)
-           (princ (strcat "\n[i] Точек: " (itoa n)
-                          " → нижнее: "  (itoa (length (car groups)))
-                          ", верхнее: "  (itoa (length (cadr groups)))
-                          ", верх сваи: " (itoa (length (caddr groups)))
-                          " (игнорируется по спеке)."))
-           (cond
-             ((< (length (car  groups)) 3)
-              (princ "\n[ОШИБКА] В нижнем сечении меньше 3 точек.") nil)
-             ((< (length (cadr groups)) 3)
-              (princ "\n[ОШИБКА] В верхнем сечении меньше 3 точек.") nil)
-             (T (list (car groups) (cadr groups)))))
+          ((null groups) nil)   ; cluster-z уже напечатал ошибку
           (T
-           (princ (strcat "\n[ОШИБКА] Получено групп по Z: "
-                          (itoa (length groups))))
-           nil)))))))
+           (princ (strcat "\n[i] Всего точек: " (itoa n)
+                          " → нижнее: "  (itoa (length (car groups)))
+                          ", верхнее: "  (itoa (length (cadr groups)))
+                          ", остальные игнорируются."))
+           groups)))))))
 
 ;;; ====================================================================
 ;;; РЕЖИМ 2 — ПО ГРУППАМ ВРУЧНУЮ
@@ -313,12 +304,12 @@
 
 (defun gc-pile-mode2 ( / ss-low ss-high low-pts high-pts)
   (princ "\nВыделите точки нижнего сечения: ")
-  (setq ss-low (ssget))
+  (setq ss-low (ssget *gc-pile-ssget-filter*))
   (cond
     ((null ss-low) (princ "\n[ОШИБКА] Нижнее сечение не выбрано.") nil)
     (T
      (princ "\nВыделите точки верхнего сечения: ")
-     (setq ss-high (ssget))
+     (setq ss-high (ssget *gc-pile-ssget-filter*))
      (cond
        ((null ss-high) (princ "\n[ОШИБКА] Верхнее сечение не выбрано.") nil)
        (T
@@ -341,7 +332,7 @@
                          c-low c-high z-low z-high
                          dx-mm dy-mm dz dx-pm dy-pm
                          tstyle p-low p-end-x p-end-y
-                         mid-x mid-y pt-text-x pt-text-y
+                         mid-x mid-y pt-text-x pt-text-y margin-off
                          dev-low dev-high)
   (setq c-low  (gc-pile-best-circle low-pts))
   (setq c-high (gc-pile-best-circle high-pts))
@@ -386,34 +377,31 @@
                          z-low))
      (gc-pile-draw-arrow p-low p-end-x *gc-l-arrows*)
      (gc-pile-draw-arrow p-low p-end-y *gc-l-arrows*)
-     ;; Подписи: позиция + поворот по правилам Шамиля
-     ;;   X-стрелка (горизонт.) — текст под серединой, ротация 0
-     ;;   Y↑                     — текст слева от середины, ротация 90°
-     ;;   Y↓                     — текст справа от середины, ротация 90°
+     ;; Подписи: позиция и поворот по правилам Шамиля (как в menuGEO):
+     ;;   X→  : текст ПОД серединой,   ротация 0
+     ;;   X←  : текст НАД серединой,   ротация 0
+     ;;   Y↑  : текст СЛЕВА от середины, ротация 90°
+     ;;   Y↓  : текст СПРАВА от середины, ротация 90°
      (setq mid-x (list (/ (+ (car p-low) (car p-end-x)) 2.0)
                        (cadr p-low)
                        z-low))
      (setq mid-y (list (car p-low)
                        (/ (+ (cadr p-low) (cadr p-end-y)) 2.0)
                        z-low))
-     ;; Текст X — под серединой
-     (setq pt-text-x (list (car mid-x)
-                           (- (cadr mid-x)
-                              (+ (* 0.5 *gc-pile-text-h*)
-                                 *gc-pile-text-margin*))
-                           z-low))
+     (setq margin-off (+ (* 0.5 *gc-pile-text-h*) *gc-pile-text-margin*))
+     ;; Текст X — под (если X→) или над (если X←) серединой; ротация 0
+     (setq pt-text-x
+       (if (>= dx-mm 0)
+         (list (car mid-x) (- (cadr mid-x) margin-off) z-low)   ; X→ → под
+         (list (car mid-x) (+ (cadr mid-x) margin-off) z-low))) ; X← → над
      (gc-pile-draw-text-rot pt-text-x
                             (gc-pile-mm-rounded dx-pm)
                             tstyle *gc-l-text* 0.0)
-     ;; Текст Y — слева (если ↑) или справа (если ↓), повёрнут на 90°
+     ;; Текст Y — слева (если Y↑) или справа (если Y↓), повёрнут на 90°
      (setq pt-text-y
        (if (>= dy-mm 0)
-         (list (- (car mid-y)
-                  (+ (* 0.5 *gc-pile-text-h*) *gc-pile-text-margin*))
-               (cadr mid-y) z-low)
-         (list (+ (car mid-y)
-                  (+ (* 0.5 *gc-pile-text-h*) *gc-pile-text-margin*))
-               (cadr mid-y) z-low)))
+         (list (- (car mid-y) margin-off) (cadr mid-y) z-low)
+         (list (+ (car mid-y) margin-off) (cadr mid-y) z-low)))
      (gc-pile-draw-text-rot pt-text-y
                             (gc-pile-mm-rounded dy-pm)
                             tstyle *gc-l-text* (/ pi 2.0))
