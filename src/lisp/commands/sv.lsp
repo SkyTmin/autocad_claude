@@ -12,13 +12,17 @@
 ;;; КОНСТАНТЫ — Шамиль может править эти значения вручную в начале файла
 ;;; ====================================================================
 
-(setq *gc-pile-r-norm*       0.710)   ; норма радиуса сваи, м (Ø1420мм / 2)
-(setq *gc-pile-r-warn*       0.050)   ; превышение |R−norm| → предупреждение
-(setq *gc-pile-arrow-len*    0.400)   ; длина Leader, м (можно увеличить/уменьшить)
-(setq *gc-pile-tol-mm-per-m* 20.0)    ; норматив 20 мм/1м
-(setq *gc-pile-text-h*       0.100)   ; высота текста, м
-(setq *gc-pile-text-margin*  0.050)   ; отступ текста от стрелки, м
-(setq *gc-pile-z-cluster*    0.050)   ; порог "одной высоты" между точками, м
+(setq *gc-pile-r-norm*           0.710) ; норма радиуса сваи, м (Ø1420мм / 2)
+(setq *gc-pile-r-warn*           0.050) ; превышение |R−norm| → предупреждение
+(setq *gc-pile-arrow-len*        0.400) ; длина Leader, м
+(setq *gc-pile-tol-mm-per-m*    20.0)   ; норматив 20 мм/1м
+(setq *gc-pile-text-h*           0.100) ; высота текста, м
+(setq *gc-pile-text-margin*      0.050) ; отступ текста от стрелки, м (legacy)
+(setq *gc-pile-text-offset*      0.400) ; SPEC-002 v2: смещение текста в квадрант, м
+(setq *gc-pile-z-cluster*        0.050) ; порог "одной высоты" по Z, м
+(setq *gc-pile-fit-tol*          0.050) ; SPEC-002 v2: допуск |R-norm| при поиске свай, м
+(setq *gc-pile-fit-radius-eps*   0.050) ; SPEC-002 v2: запас сверх R при сборе точек сваи, м
+(setq *gc-pile-pair-tolerance*   0.500) ; допуск сопоставления низ↔верх (XY), м
 
 ;; Фильтр для ssget: только точки и COGO Points. Wildcards разрешены.
 ;; Если в выборку попадут другие объекты — они игнорируются на уровне ssget.
@@ -183,6 +187,98 @@
   (reverse groups))
 
 ;;; ====================================================================
+;;; SPEC-002 v2: ПОИСК СВАЙ ЧЕРЕЗ ОКРУЖНОСТЬ (вместо XY-кластеризации)
+;;; ====================================================================
+
+;; ПОЧЕМУ так: при расстоянии между сваями 1.5–2.5 м точки разных свай в плане
+;; могут быть ближе (~0.1–0.5 м) друг к другу, чем точки одной сваи на крайних
+;; концах дуги (до 1.4 м). Поэтому single-linkage кластеризация СКЛЕИВАЕТ
+;; соседние сваи. v2 решает это иначе: жадно ищем тройки, дающие окружность с
+;; R≈710 мм, и забираем из массива все точки в радиусе R+ε от её центра.
+;; Это привязка к КОНКРЕТНОМУ центру каждой сваи, не к расстояниям между точками.
+
+;; Расстояние между точками в плане (XY).
+(defun gc-pile-dist-xy (p1 p2 / dx dy)
+  (setq dx (- (car p1) (car p2))
+        dy (- (cadr p1) (cadr p2)))
+  (sqrt (+ (* dx dx) (* dy dy))))
+
+;; Среднее XY-центроида списка точек: возвращает (cx cy).
+(defun gc-pile-centroid-xy (pts)
+  (list (gc-pile-avg (mapcar 'car  pts))
+        (gc-pile-avg (mapcar 'cadr pts))))
+
+;; Поиск ОДНОЙ сваи в массиве точек: перебор C(N,3) троек, выбор окружности
+;; с минимальным |R - 710| при условии что отклонение ≤ *gc-pile-fit-tol*.
+;; После находки — собирает ВСЕ точки в радиусе R+ε от центра как точки
+;; этой сваи. Возвращает (list circle pile-points) или nil.
+(defun gc-pile-find-one-pile (pts / triples best best-err circ err
+                                      cx cy r pile-pts limit)
+  (cond
+    ((< (length pts) 3) nil)
+    (T
+     (setq triples (gc-pile-combos3 pts))
+     (setq best nil best-err 1.0e99)
+     (foreach tr triples
+       (setq circ (gc-pile-circle-3 (car tr) (cadr tr) (caddr tr)))
+       (if circ
+         (progn
+           (setq err (abs (- (caddr circ) *gc-pile-r-norm*)))
+           (if (and (<= err *gc-pile-fit-tol*) (< err best-err))
+             (setq best-err err best circ)))))
+     (cond
+       ((null best) nil)
+       (T
+        (setq cx (car best) cy (cadr best) r (caddr best))
+        (setq limit (+ r *gc-pile-fit-radius-eps*))
+        ;; Все точки в радиусе r+ε от центра найденной окружности — её точки
+        (setq pile-pts (vl-remove-if-not
+                         '(lambda (p) (<= (gc-pile-dist-xy p (list cx cy)) limit))
+                         pts))
+        (cond
+          ((< (length pile-pts) 3) nil)
+          (T (list best pile-pts))))))))
+
+;; Жадно ищет ВСЕ сваи в массиве точек одной Z-группы.
+;; Возвращает список пар (circle . points) для каждой найденной сваи.
+(defun gc-pile-find-all-piles (points / remaining piles result)
+  (setq remaining points piles '())
+  (while (>= (length remaining) 3)
+    (setq result (gc-pile-find-one-pile remaining))
+    (cond
+      ((null result)
+       (setq remaining nil))   ; больше нет хороших троек, выход
+      (T
+       (setq piles (cons (cons (car result) (cadr result)) piles))
+       ;; Удаляем найденные точки из remaining
+       (foreach pt (cadr result)
+         (setq remaining (vl-remove pt remaining))))))
+  (reverse piles))
+
+;; Сопоставление нижних и верхних свай по близости XY-центров окружностей.
+;; lows, highs — списки '((circle . points) ...).
+;; Возвращает: список cons-пар ((low-points . high-points) ...) для c:sv.
+(defun gc-pile-pair-piles (lows highs tol / pairs used-high
+                           low-c lc-xy best-h best-d hc d)
+  (setq pairs '() used-high '())
+  (foreach low lows
+    (setq low-c (car low))
+    (setq lc-xy (list (car low-c) (cadr low-c)))
+    (setq best-h nil best-d 1.0e99)
+    (foreach high highs
+      (if (not (member high used-high))
+        (progn
+          (setq hc (car high))
+          (setq d  (gc-pile-dist-xy lc-xy (list (car hc) (cadr hc))))
+          (if (and (<= d tol) (< d best-d))
+            (setq best-d d  best-h high)))))
+    (cond
+      (best-h
+       (setq pairs (cons (cons (cdr low) (cdr best-h)) pairs))
+       (setq used-high (cons best-h used-high)))))
+  (reverse pairs))
+
+;;; ====================================================================
 ;;; СЛОИ И СТИЛЬ ТЕКСТА
 ;;; ====================================================================
 
@@ -272,31 +368,62 @@
 ;;; РЕЖИМ 1 — ВСЕ ТОЧКИ СРАЗУ
 ;;; ====================================================================
 
-(defun gc-pile-mode1 ( / ss pts groups n)
-  (princ "\nВыделите точки сваи (низ + верх + верхушка). Не-точки в рамке игнорируются: ")
+;; SPEC-002 v2: режим 1 — поиск всех свай через окружность.
+;; Возвращает список ((low-circle low-pts high-circle high-pts) ...) или nil.
+;; Работает и для 1 сваи (вырождается в один цикл), и для N свай.
+(defun gc-pile-mode1 ( / ss pts n z-groups all-low all-high
+                        low-piles high-piles pairs)
+  (princ "\nВыделите точки сваи/свай (рамкой). Не-точки игнорируются: ")
   (setq ss (ssget *gc-pile-ssget-filter*))
   (cond
     ((null ss)
-     (princ "\n[ОШИБКА] Точки не выбраны (либо в рамке нет точек / COGO Points).")
+     (princ "\n[ОШИБКА] Точки не выбраны.")
      nil)
     (T
      (setq pts (gc-pile-ss-to-points ss))
-     (setq n (length pts))
+     (setq n   (length pts))
      (cond
        ((< n 6)
-        (princ (strcat "\n[ОШИБКА] Нужно минимум 6 точек (3 низ + 3 верх). Найдено: "
-                       (itoa n)))
+        (princ (strcat "\n[ОШИБКА] Нужно минимум 6 точек. Найдено: " (itoa n)))
         nil)
        (T
-        (setq groups (gc-pile-cluster-z pts))
+        ;; Шаг 1: Z-кластеризация → две группы (нижние и верхние всех свай).
+        (setq z-groups (gc-pile-cluster-z pts))
         (cond
-          ((null groups) nil)   ; cluster-z уже напечатал ошибку
+          ((null z-groups) nil)
           (T
+           (setq all-low  (car  z-groups)
+                 all-high (cadr z-groups))
+           ;; Шаг 2: жадный поиск свай по окружности отдельно для нижних/верхних.
+           (princ "\n[i] Ищу нижние сечения...")
+           (setq low-piles  (gc-pile-find-all-piles all-low))
+           (princ "\n[i] Ищу верхние сечения...")
+           (setq high-piles (gc-pile-find-all-piles all-high))
            (princ (strcat "\n[i] Всего точек: " (itoa n)
-                          " → нижнее: "  (itoa (length (car groups)))
-                          ", верхнее: "  (itoa (length (cadr groups)))
-                          ", остальные игнорируются."))
-           groups)))))))
+                          ". Найдено нижних сечений: " (itoa (length low-piles))
+                          ", верхних: "                (itoa (length high-piles))))
+           (cond
+             ((null low-piles)
+              (princ "\n[ОШИБКА] Ни одной окружности с R≈710 мм в нижней группе.") nil)
+             ((null high-piles)
+              (princ "\n[ОШИБКА] Ни одной окружности с R≈710 мм в верхней группе.") nil)
+             (T
+              ;; Шаг 3: сопоставление по близости центров.
+              (setq pairs (gc-pile-pair-piles low-piles high-piles
+                                              *gc-pile-pair-tolerance*))
+              (cond
+                ((null pairs)
+                 (princ "\n[ОШИБКА] Не удалось сопоставить ни одной пары низ↔верх.")
+                 nil)
+                (T
+                 (princ (strcat "\n[i] Найдено свай (пар): " (itoa (length pairs))))
+                 (if (or (/= (length low-piles)  (length pairs))
+                         (/= (length high-piles) (length pairs)))
+                   (princ (strcat "\n[!] Несопоставимыми остались: нижних "
+                                  (itoa (- (length low-piles)  (length pairs)))
+                                  ", верхних "
+                                  (itoa (- (length high-piles) (length pairs))))))
+                 pairs)))))))))))
 
 ;;; ====================================================================
 ;;; РЕЖИМ 2 — ПО ГРУППАМ ВРУЧНУЮ
@@ -332,7 +459,7 @@
                          c-low c-high z-low z-high
                          dx-mm dy-mm dz dx-pm dy-pm
                          tstyle p-low p-end-x p-end-y
-                         mid-x mid-y pt-text-x pt-text-y margin-off
+                         pt-text-x pt-text-y sx sy sxy
                          dev-low dev-high)
   (setq c-low  (gc-pile-best-circle low-pts))
   (setq c-high (gc-pile-best-circle high-pts))
@@ -377,33 +504,24 @@
                          z-low))
      (gc-pile-draw-arrow p-low p-end-x *gc-l-arrows*)
      (gc-pile-draw-arrow p-low p-end-y *gc-l-arrows*)
-     ;; Подписи: позиция и поворот по правилам Шамиля (как в menuGEO):
-     ;;   X→  : текст ПОД серединой,   ротация 0
-     ;;   X←  : текст НАД серединой,   ротация 0
-     ;;   Y↑  : текст СЛЕВА от середины, ротация 90°
-     ;;   Y↓  : текст СПРАВА от середины, ротация 90°
-     (setq mid-x (list (/ (+ (car p-low) (car p-end-x)) 2.0)
-                       (cadr p-low)
-                       z-low))
-     (setq mid-y (list (car p-low)
-                       (/ (+ (cadr p-low) (cadr p-end-y)) 2.0)
-                       z-low))
-     (setq margin-off (+ (* 0.5 *gc-pile-text-h*) *gc-pile-text-margin*))
-     ;; Текст X — под (если X→) или над (если X←) серединой; ротация 0
-     (setq pt-text-x
-       (if (>= dx-mm 0)
-         (list (car mid-x) (- (cadr mid-x) margin-off) z-low)   ; X→ → под
-         (list (car mid-x) (+ (cadr mid-x) margin-off) z-low))) ; X← → над
-     (gc-pile-draw-text-rot pt-text-x
-                            (gc-pile-mm-rounded dx-pm)
+     ;; SPEC-002 v2: подписи в 4 квадранта круга по таблице Шамиля.
+     ;; Формула: пусть sx=sign(dx), sy=sign(dy). Тогда:
+     ;;   Y-текст в (cx + sxy·d, cy + sy·d)        — sxy = sx·sy
+     ;;   X-текст в (cx + sxy·d, cy − sy·d)
+     ;; где d = *gc-pile-text-offset* (~0.4 м, внутри круга).
+     ;; Проверено на всех 4 случаях (++, −+, +−, −−) — совпадает с таблицей.
+     (setq sx  (if (>= dx-mm 0) 1.0 -1.0))
+     (setq sy  (if (>= dy-mm 0) 1.0 -1.0))
+     (setq sxy (* sx sy))
+     (setq pt-text-y (list (+ (car  p-low) (* sxy *gc-pile-text-offset*))
+                           (+ (cadr p-low) (* sy  *gc-pile-text-offset*))
+                           z-low))
+     (setq pt-text-x (list (+ (car  p-low) (* sxy *gc-pile-text-offset*))
+                           (- (cadr p-low) (* sy  *gc-pile-text-offset*))
+                           z-low))
+     (gc-pile-draw-text-rot pt-text-x (gc-pile-mm-rounded dx-pm)
                             tstyle *gc-l-text* 0.0)
-     ;; Текст Y — слева (если Y↑) или справа (если Y↓), повёрнут на 90°
-     (setq pt-text-y
-       (if (>= dy-mm 0)
-         (list (- (car mid-y) margin-off) (cadr mid-y) z-low)
-         (list (+ (car mid-y) margin-off) (cadr mid-y) z-low)))
-     (gc-pile-draw-text-rot pt-text-y
-                            (gc-pile-mm-rounded dy-pm)
+     (gc-pile-draw-text-rot pt-text-y (gc-pile-mm-rounded dy-pm)
                             tstyle *gc-l-text* (/ pi 2.0))
      ;; Сводка в консоль
      (setq dev-low  (* 1000.0 (- (caddr c-low)  *gc-pile-r-norm*)))
@@ -442,17 +560,32 @@
 ;;; КОМАНДА SV
 ;;; ====================================================================
 
-(defun c:sv ( / mode-str groups)
+(defun c:sv ( / mode-str pairs idx total ok skipped)
   (initget "1 2")
   (setq mode-str (getkword "\nРежим выбора точек [1=все сразу/2=по группам] <1>: "))
   (if (null mode-str) (setq mode-str "1"))
   (princ (strcat "\nРежим: " mode-str))
-  (setq groups (if (= mode-str "1")
-                 (gc-pile-mode1)
-                 (gc-pile-mode2)))
-  (if groups
-    (gc-pile-process (car groups) (cadr groups))
-    (princ "\nКоманда отменена."))
+  (cond
+    ((= mode-str "1")
+     ;; mode1 возвращает список пар (1+ свай) или nil
+     (setq pairs (gc-pile-mode1)))
+    (T
+     ;; mode2 возвращает одну пару (low high) — оборачиваем в список
+     (let ((g (gc-pile-mode2)))
+       (if g (setq pairs (list (cons (car g) (cadr g)))) (setq pairs nil)))))
+  (cond
+    ((null pairs) (princ "\nКоманда отменена."))
+    (T
+     (setq total (length pairs) idx 1 ok 0 skipped 0)
+     (foreach p pairs
+       (princ (strcat "\n=== Свая " (itoa idx) " / " (itoa total) " ==="))
+       (if (gc-pile-process (car p) (cdr p))
+         (setq ok (1+ ok))
+         (setq skipped (1+ skipped)))
+       (setq idx (1+ idx)))
+     (princ (strcat "\n[Итог] обработано: " (itoa ok)
+                    "  пропущено: "          (itoa skipped)
+                    "  всего: "              (itoa total)))))
   (princ))
 
 (princ "\n[gc] sv.lsp загружен. Команда: SV")
