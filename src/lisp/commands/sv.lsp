@@ -17,12 +17,15 @@
 (setq *gc-pile-arrow-len*        0.400) ; длина Leader, м
 (setq *gc-pile-tol-mm-per-m*    20.0)   ; норматив 20 мм/1м
 (setq *gc-pile-text-h*           0.100) ; высота текста, м
-(setq *gc-pile-text-margin*      0.050) ; отступ текста от стрелки, м (legacy)
-(setq *gc-pile-text-offset*      0.400) ; SPEC-002 v2: смещение текста в квадрант, м
+(setq *gc-pile-text-margin*      0.050) ; legacy
+(setq *gc-pile-text-along*       0.200) ; v3: смещение текста ВДОЛЬ стрелки от центра, м
+(setq *gc-pile-text-lateral*     0.100) ; v3: смещение текста ПЕРПЕНДИКУЛЯРНО стрелке, м
 (setq *gc-pile-z-cluster*        0.050) ; порог "одной высоты" по Z, м
-(setq *gc-pile-fit-tol*          0.050) ; SPEC-002 v2: допуск |R-norm| при поиске свай, м
-(setq *gc-pile-fit-radius-eps*   0.050) ; SPEC-002 v2: запас сверх R при сборе точек сваи, м
+(setq *gc-pile-fit-tol*          0.050) ; допуск |R-norm| при поиске свай, м
+(setq *gc-pile-fit-radius-eps*   0.050) ; запас сверх R при сборе точек сваи, м
 (setq *gc-pile-pair-tolerance*   0.500) ; допуск сопоставления низ↔верх (XY), м
+(setq *gc-pile-pair-dz-min*      0.300) ; минимальный dZ между сечениями одной сваи, м
+(setq *gc-pile-pair-dz-max*      5.000) ; максимальный dZ между сечениями одной сваи, м
 
 ;; Фильтр для ssget: только точки и COGO Points. Wildcards разрешены.
 ;; Если в выборку попадут другие объекты — они игнорируются на уровне ssget.
@@ -136,66 +139,23 @@
 ;;; КЛАСТЕРИЗАЦИЯ ПО Z — ПЛОТНЫЕ ГРУППЫ + ОТБОР 2 САМЫХ БОЛЬШИХ
 ;;; ====================================================================
 
-;; ПОЧЕМУ так: алгоритм должен быть устойчив к "лишним" точкам
-;; (посторонним маркерам, точкам соседних свай, единичным выбросам).
-;; Шамиль явно сформулировал: «минимум 3 точки одной высоты».
+;; v3: глобальная Z-кластеризация удалена — она не подходит для свай
+;; на разной глубине (см. SPEC-002 v3 §11). Поиск идёт через сечения
+;; в gc-pile-find-all-sections ниже.
+
+;;; ====================================================================
+;;; SPEC-002 v3: ПОИСК ВСЕХ СЕЧЕНИЙ + ГРУППИРОВКА В СВАИ
+;;; ====================================================================
+
+;; ПОЧЕМУ переход с v2 на v3: в реальном sample Шамиля Z нижних/верхних
+;; сечений РАЗНЫХ свай — разные (сваи погружены на разную глубину). v2
+;; брал «2 самые большие группы по Z» как «низы всех» / «верхи всех» —
+;; это допущение неверно, и половина свай терялась.
 ;;
-;; Алгоритм:
-;;   1. Кластеризуем по фиксированному порогу 50 мм между соседями по Z
-;;      («одна высота» = разброс ≤ 50 мм, как при реальной съёмке).
-;;   2. Отфильтровываем группы с числом точек < 3 (не сечение).
-;;   3. Берём 2 самые многочисленные.
-;;   4. Из них: меньший средний Z = нижнее сечение, больший = верхнее.
-(defun gc-pile-cluster-z (points / sorted groups two)
-  (setq sorted (vl-sort points '(lambda (a b) (< (caddr a) (caddr b)))))
-  (cond
-    ((< (length sorted) 6) nil)
-    (T
-     (setq groups (gc-pile-cluster-by-gap sorted *gc-pile-z-cluster*))
-     (setq groups (vl-remove-if '(lambda (g) (< (length g) 3)) groups))
-     (setq groups (vl-sort groups '(lambda (a b) (> (length a) (length b)))))
-     (cond
-       ((< (length groups) 2)
-        (princ "\n[ОШИБКА] Не найдено двух групп ≥3 точек на одной высоте.")
-        (princ "\n        Проверь: выделены ли реально точки, разнесены ли")
-        (princ "\n        нижнее и верхнее сечения по Z более чем на 50 мм.")
-        nil)
-       (T
-        (setq two (list (car groups) (cadr groups)))
-        ;; Сортировка по среднему Z: нижнее, потом верхнее
-        (vl-sort two
-                 '(lambda (a b)
-                    (< (gc-pile-avg (mapcar 'caddr a))
-                       (gc-pile-avg (mapcar 'caddr b))))))))))
-
-;; Простая кластеризация: соседние точки по Z в одну группу,
-;; разрыв > gap → новая группа. sorted уже отсортирован по Z по возрастанию.
-(defun gc-pile-cluster-by-gap (sorted gap / groups current prev)
-  (setq groups '() current '() prev nil)
-  (foreach pt sorted
-    (cond
-      ((null prev)
-       (setq current (list pt) prev pt))
-      ((> (- (caddr pt) (caddr prev)) gap)
-       (setq groups (cons (reverse current) groups))
-       (setq current (list pt))
-       (setq prev pt))
-      (T
-       (setq current (cons pt current))
-       (setq prev pt))))
-  (if current (setq groups (cons (reverse current) groups)))
-  (reverse groups))
-
-;;; ====================================================================
-;;; SPEC-002 v2: ПОИСК СВАЙ ЧЕРЕЗ ОКРУЖНОСТЬ (вместо XY-кластеризации)
-;;; ====================================================================
-
-;; ПОЧЕМУ так: при расстоянии между сваями 1.5–2.5 м точки разных свай в плане
-;; могут быть ближе (~0.1–0.5 м) друг к другу, чем точки одной сваи на крайних
-;; концах дуги (до 1.4 м). Поэтому single-linkage кластеризация СКЛЕИВАЕТ
-;; соседние сваи. v2 решает это иначе: жадно ищем тройки, дающие окружность с
-;; R≈710 мм, и забираем из массива все точки в радиусе R+ε от её центра.
-;; Это привязка к КОНКРЕТНОМУ центру каждой сваи, не к расстояниям между точками.
+;; v3 ищет сечения индивидуально (через окружность) во ВСЁМ массиве, без
+;; глобальной Z-кластеризации. Тройка валидна если её точки на одном Z
+;; (Δ ≤ z-cluster) И окружность по их XY имеет R ≈ 710мм. Затем сечения
+;; группируются в сваи по близости XY-центров (≤ pair-tolerance).
 
 ;; Расстояние между точками в плане (XY).
 (defun gc-pile-dist-xy (p1 p2 / dx dy)
@@ -208,75 +168,127 @@
   (list (gc-pile-avg (mapcar 'car  pts))
         (gc-pile-avg (mapcar 'cadr pts))))
 
-;; Поиск ОДНОЙ сваи в массиве точек: перебор C(N,3) троек, выбор окружности
-;; с минимальным |R - 710| при условии что отклонение ≤ *gc-pile-fit-tol*.
-;; После находки — собирает ВСЕ точки в радиусе R+ε от центра как точки
-;; этой сваи. Возвращает (list circle pile-points) или nil.
-(defun gc-pile-find-one-pile (pts / triples best best-err circ err
-                                      cx cy r pile-pts limit)
+;; Размах Z в списке точек.
+(defun gc-pile-z-spread (pts / zs)
+  (setq zs (mapcar 'caddr pts))
+  (- (apply 'max zs) (apply 'min zs)))
+
+;; Поиск ОДНОГО сечения (на одном Z) в массиве точек.
+;; Перебирает C(N,3) троек; валидной считается тройка где:
+;;   - Z трёх точек в пределах z-cluster (это точки одного сечения)
+;;   - окружность по XY имеет |R - 710| ≤ fit-tol
+;; Из валидных выбирает ту, у которой |R-710| минимально.
+;; Возвращает (list circle section-points) или nil.
+(defun gc-pile-find-one-section (pts / triples best best-err circ err
+                                       cx cy r limit z-mean section)
   (cond
     ((< (length pts) 3) nil)
     (T
      (setq triples (gc-pile-combos3 pts))
      (setq best nil best-err 1.0e99)
      (foreach tr triples
-       (setq circ (gc-pile-circle-3 (car tr) (cadr tr) (caddr tr)))
-       (if circ
+       (if (<= (gc-pile-z-spread tr) *gc-pile-z-cluster*)
          (progn
-           (setq err (abs (- (caddr circ) *gc-pile-r-norm*)))
-           (if (and (<= err *gc-pile-fit-tol*) (< err best-err))
-             (setq best-err err best circ)))))
+           (setq circ (gc-pile-circle-3 (car tr) (cadr tr) (caddr tr)))
+           (if circ
+             (progn
+               (setq err (abs (- (caddr circ) *gc-pile-r-norm*)))
+               (if (and (<= err *gc-pile-fit-tol*) (< err best-err))
+                 (setq best-err err best circ)))))))
      (cond
        ((null best) nil)
        (T
         (setq cx (car best) cy (cadr best) r (caddr best))
         (setq limit (+ r *gc-pile-fit-radius-eps*))
-        ;; Все точки в радиусе r+ε от центра найденной окружности — её точки
-        (setq pile-pts (vl-remove-if-not
-                         '(lambda (p) (<= (gc-pile-dist-xy p (list cx cy)) limit))
-                         pts))
+        ;; Соберём кандидатов в радиусе R+ε
+        (setq section (vl-remove-if-not
+                        '(lambda (p) (<= (gc-pile-dist-xy p (list cx cy)) limit))
+                        pts))
+        ;; Среди них оставим только те, что на одном Z с центром.
+        ;; Z центра неизвестно явно, берём средний Z отобранных.
         (cond
-          ((< (length pile-pts) 3) nil)
-          (T (list best pile-pts))))))))
+          ((< (length section) 3) nil)
+          (T
+           (setq z-mean (gc-pile-avg (mapcar 'caddr section)))
+           (setq section (vl-remove-if-not
+                           '(lambda (p) (<= (abs (- (caddr p) z-mean))
+                                            *gc-pile-z-cluster*))
+                           section))
+           (cond
+             ((< (length section) 3) nil)
+             (T (list best section))))))))))
 
-;; Жадно ищет ВСЕ сваи в массиве точек одной Z-группы.
-;; Возвращает список пар (circle . points) для каждой найденной сваи.
-(defun gc-pile-find-all-piles (points / remaining piles result)
-  (setq remaining points piles '())
+;; Жадно ищет ВСЕ сечения во всём массиве точек.
+;; Возвращает список '((circle z section-points) ...).
+(defun gc-pile-find-all-sections (points / remaining sections result
+                                          circ section z-mean)
+  (setq remaining points sections '())
   (while (>= (length remaining) 3)
-    (setq result (gc-pile-find-one-pile remaining))
+    (setq result (gc-pile-find-one-section remaining))
     (cond
       ((null result)
-       (setq remaining nil))   ; больше нет хороших троек, выход
+       (setq remaining nil))
       (T
-       (setq piles (cons (cons (car result) (cadr result)) piles))
-       ;; Удаляем найденные точки из remaining
-       (foreach pt (cadr result)
+       (setq circ    (car  result)
+             section (cadr result))
+       (setq z-mean  (gc-pile-avg (mapcar 'caddr section)))
+       (setq sections (cons (list circ z-mean section) sections))
+       (foreach pt section
          (setq remaining (vl-remove pt remaining))))))
-  (reverse piles))
+  (reverse sections))
 
-;; Сопоставление нижних и верхних свай по близости XY-центров окружностей.
-;; lows, highs — списки '((circle . points) ...).
-;; Возвращает: список cons-пар ((low-points . high-points) ...) для c:sv.
-(defun gc-pile-pair-piles (lows highs tol / pairs used-high
-                           low-c lc-xy best-h best-d hc d)
-  (setq pairs '() used-high '())
-  (foreach low lows
-    (setq low-c (car low))
-    (setq lc-xy (list (car low-c) (cadr low-c)))
-    (setq best-h nil best-d 1.0e99)
-    (foreach high highs
-      (if (not (member high used-high))
+;; Группирует список сечений в сваи: сечения с близкими XY-центрами
+;; (≤ pair-tolerance) — одна свая. Внутри сваи берём 2 крайних по Z как
+;; нижнее/верхнее. Возвращает список cons-пар ((low-pts . high-pts) ...).
+(defun gc-pile-group-sections-into-piles (sections / unused piles
+                                          seed pile-secs s d
+                                          sorted lo hi pulled changed)
+  (setq unused sections piles '())
+  (while unused
+    (setq seed     (car unused))
+    (setq unused   (cdr unused))
+    (setq pile-secs (list seed))
+    ;; Жадно добавляем ВСЕ сечения с близким XY-центром (с любым из уже принятых)
+    (setq changed T)
+    (while changed
+      (setq changed nil pulled '())
+      (foreach s unused
+        (foreach acc pile-secs
+          (if (and (not (member s pulled))
+                   (<= (gc-pile-dist-xy
+                         (list (car (car s))    (cadr (car s)))
+                         (list (car (car acc)) (cadr (car acc))))
+                       *gc-pile-pair-tolerance*))
+            (setq pulled (cons s pulled)))))
+      (if pulled
         (progn
-          (setq hc (car high))
-          (setq d  (gc-pile-dist-xy lc-xy (list (car hc) (cadr hc))))
-          (if (and (<= d tol) (< d best-d))
-            (setq best-d d  best-h high)))))
+          (foreach s pulled
+            (setq pile-secs (cons s pile-secs))
+            (setq unused    (vl-remove s unused)))
+          (setq changed T))))
+    ;; В одной свае может быть 1, 2 или больше сечений.
+    ;; Берём с min Z и max Z. Между ними должна быть разница в разумном диапазоне.
     (cond
-      (best-h
-       (setq pairs (cons (cons (cdr low) (cdr best-h)) pairs))
-       (setq used-high (cons best-h used-high)))))
-  (reverse pairs))
+      ((>= (length pile-secs) 2)
+       (setq sorted (vl-sort pile-secs '(lambda (a b) (< (cadr a) (cadr b)))))
+       (setq lo (car sorted))
+       (setq hi (last sorted))
+       (setq d (- (cadr hi) (cadr lo)))
+       (if (and (>= d *gc-pile-pair-dz-min*)
+                (<= d *gc-pile-pair-dz-max*))
+         (setq piles (cons (cons (caddr lo) (caddr hi)) piles))
+         (princ (strcat "\n[!] Свая (X≈"
+                        (rtos (car (car lo)) 2 1)
+                        ", Y≈" (rtos (cadr (car lo)) 2 1)
+                        "): dZ=" (rtos d 2 2) " м вне диапазона ["
+                        (rtos *gc-pile-pair-dz-min* 2 2) "; "
+                        (rtos *gc-pile-pair-dz-max* 2 2) "] — пропуск."))))
+      (T
+       (princ (strcat "\n[!] Свая (X≈"
+                      (rtos (car (car seed)) 2 1)
+                      ", Y≈" (rtos (cadr (car seed)) 2 1)
+                      "): найдено только 1 сечение — пропуск.")))))
+  (reverse piles))
 
 ;;; ====================================================================
 ;;; СЛОИ И СТИЛЬ ТЕКСТА
@@ -368,11 +380,11 @@
 ;;; РЕЖИМ 1 — ВСЕ ТОЧКИ СРАЗУ
 ;;; ====================================================================
 
-;; SPEC-002 v2: режим 1 — поиск всех свай через окружность.
-;; Возвращает список ((low-circle low-pts high-circle high-pts) ...) или nil.
-;; Работает и для 1 сваи (вырождается в один цикл), и для N свай.
-(defun gc-pile-mode1 ( / ss pts n z-groups all-low all-high
-                        low-piles high-piles pairs)
+;; SPEC-002 v3: режим 1 — поиск ВСЕХ сечений в одном массиве точек, потом
+;; группировка в сваи по близости XY-центров. Работает на сваях с РАЗНЫМИ Z
+;; (погружение на разную глубину), и для 1 сваи (вырождается).
+;; Возвращает список cons-пар ((low-pts . high-pts) ...) или nil.
+(defun gc-pile-mode1 ( / ss pts n sections piles)
   (princ "\nВыделите точки сваи/свай (рамкой). Не-точки игнорируются: ")
   (setq ss (ssget *gc-pile-ssget-filter*))
   (cond
@@ -387,43 +399,24 @@
         (princ (strcat "\n[ОШИБКА] Нужно минимум 6 точек. Найдено: " (itoa n)))
         nil)
        (T
-        ;; Шаг 1: Z-кластеризация → две группы (нижние и верхние всех свай).
-        (setq z-groups (gc-pile-cluster-z pts))
+        ;; Шаг 1: ищем ВСЕ сечения во всём массиве (плоские окружности с R≈710).
+        (princ (strcat "\n[i] Точек выделено: " (itoa n) ". Ищу сечения..."))
+        (setq sections (gc-pile-find-all-sections pts))
+        (princ (strcat "\n[i] Найдено сечений: " (itoa (length sections))))
         (cond
-          ((null z-groups) nil)
+          ((< (length sections) 2)
+           (princ "\n[ОШИБКА] Найдено меньше 2 сечений с R≈710 мм. Проверьте съёмку.")
+           nil)
           (T
-           (setq all-low  (car  z-groups)
-                 all-high (cadr z-groups))
-           ;; Шаг 2: жадный поиск свай по окружности отдельно для нижних/верхних.
-           (princ "\n[i] Ищу нижние сечения...")
-           (setq low-piles  (gc-pile-find-all-piles all-low))
-           (princ "\n[i] Ищу верхние сечения...")
-           (setq high-piles (gc-pile-find-all-piles all-high))
-           (princ (strcat "\n[i] Всего точек: " (itoa n)
-                          ". Найдено нижних сечений: " (itoa (length low-piles))
-                          ", верхних: "                (itoa (length high-piles))))
+           ;; Шаг 2: группируем сечения в сваи по XY-центру.
+           (setq piles (gc-pile-group-sections-into-piles sections))
            (cond
-             ((null low-piles)
-              (princ "\n[ОШИБКА] Ни одной окружности с R≈710 мм в нижней группе.") nil)
-             ((null high-piles)
-              (princ "\n[ОШИБКА] Ни одной окружности с R≈710 мм в верхней группе.") nil)
+             ((null piles)
+              (princ "\n[ОШИБКА] Не удалось собрать ни одной сваи (низ+верх).")
+              nil)
              (T
-              ;; Шаг 3: сопоставление по близости центров.
-              (setq pairs (gc-pile-pair-piles low-piles high-piles
-                                              *gc-pile-pair-tolerance*))
-              (cond
-                ((null pairs)
-                 (princ "\n[ОШИБКА] Не удалось сопоставить ни одной пары низ↔верх.")
-                 nil)
-                (T
-                 (princ (strcat "\n[i] Найдено свай (пар): " (itoa (length pairs))))
-                 (if (or (/= (length low-piles)  (length pairs))
-                         (/= (length high-piles) (length pairs)))
-                   (princ (strcat "\n[!] Несопоставимыми остались: нижних "
-                                  (itoa (- (length low-piles)  (length pairs)))
-                                  ", верхних "
-                                  (itoa (- (length high-piles) (length pairs))))))
-                 pairs)))))))))))
+              (princ (strcat "\n[i] Сформировано свай: " (itoa (length piles))))
+              piles)))))))))
 
 ;;; ====================================================================
 ;;; РЕЖИМ 2 — ПО ГРУППАМ ВРУЧНУЮ
@@ -504,21 +497,23 @@
                          z-low))
      (gc-pile-draw-arrow p-low p-end-x *gc-l-arrows*)
      (gc-pile-draw-arrow p-low p-end-y *gc-l-arrows*)
-     ;; SPEC-002 v2: подписи в 4 квадранта круга по таблице Шамиля.
-     ;; Формула: пусть sx=sign(dx), sy=sign(dy). Тогда:
-     ;;   Y-текст в (cx + sxy·d, cy + sy·d)        — sxy = sx·sy
-     ;;   X-текст в (cx + sxy·d, cy − sy·d)
-     ;; где d = *gc-pile-text-offset* (~0.4 м, внутри круга).
-     ;; Проверено на всех 4 случаях (++, −+, +−, −−) — совпадает с таблицей.
+     ;; SPEC-002 v3: подписи РЯДОМ со стрелками, в нужном квадранте по таблице.
+     ;; Y-стрелка идёт от центра вертикально по знаку dy; подпись на середине
+     ;; стрелки (along=text-along по Y от центра в направлении sy) со
+     ;; смещением вбок (lateral=text-lateral по X в направлении sxy).
+     ;; X-стрелка — симметрично: along по X в sx, lateral по Y в −sy.
+     ;; Формула покрывает все 4 случая (++, −+, +−, −−).
      (setq sx  (if (>= dx-mm 0) 1.0 -1.0))
      (setq sy  (if (>= dy-mm 0) 1.0 -1.0))
      (setq sxy (* sx sy))
-     (setq pt-text-y (list (+ (car  p-low) (* sxy *gc-pile-text-offset*))
-                           (+ (cadr p-low) (* sy  *gc-pile-text-offset*))
-                           z-low))
-     (setq pt-text-x (list (+ (car  p-low) (* sxy *gc-pile-text-offset*))
-                           (- (cadr p-low) (* sy  *gc-pile-text-offset*))
-                           z-low))
+     (setq pt-text-y
+       (list (+ (car  p-low) (* sxy *gc-pile-text-lateral*))
+             (+ (cadr p-low) (* sy  *gc-pile-text-along*))
+             z-low))
+     (setq pt-text-x
+       (list (+ (car  p-low) (* sx  *gc-pile-text-along*))
+             (- (cadr p-low) (* sy  *gc-pile-text-lateral*))
+             z-low))
      (gc-pile-draw-text-rot pt-text-x (gc-pile-mm-rounded dx-pm)
                             tstyle *gc-l-text* 0.0)
      (gc-pile-draw-text-rot pt-text-y (gc-pile-mm-rounded dy-pm)
