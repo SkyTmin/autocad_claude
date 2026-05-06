@@ -41,7 +41,7 @@ git checkout claude/autocad-knowledge-hyVpn
 
 Прочитай в этом порядке:
 1. `CLAUDE.md` (этот файл) — правила игры
-2. `.claude/skills/skills/SKILL.md` — карта интеграции (КУДА что писать)
+2. `.claude/skills/skill-integrator/integration-map.md` — карта интеграции (КУДА что писать)
 3. `status/HANDOFF.md` — где остановилась прошлая сессия
 4. `status/ROADMAP.md` — куда движемся
 5. `status/ISSUES.md` — открытые проблемы
@@ -50,8 +50,13 @@ git checkout claude/autocad-knowledge-hyVpn
 **Перед запуском любого скилла, который пишет файлы** (`/init`,
 `/fewer-permission-prompts`, `/security-review`, `/review`, `/simplify`,
 `/update-config`, `/session-start-hook` и т.д.) — **обязательно** сначала
-вызови `/skills` или прочитай `.claude/skills/skills/SKILL.md`. Скилл
-скажет куда направить вывод, чтобы не создать дубликат.
+вызови `/skill-integrator` или прочитай
+`.claude/skills/skill-integrator/integration-map.md`. Скилл скажет куда
+направить вывод, чтобы не создать дубликат.
+
+**При добавлении нового скилла в проект** (из маркетплейса, по ссылке,
+вручную) — тоже через `/skill-integrator`. Он перепишет пути нового
+скилла под проект и зарегистрирует его в карте.
 
 ---
 
@@ -201,9 +206,13 @@ samples/          реальные примеры входных данных
 └── dwg/
 
 .claude/
-├── settings.local.json  ⭐ единственный файл проектных настроек (allowlist, hooks)
+├── settings.local.json         ⭐ единственный файл проектных настроек (allowlist, hooks)
 └── skills/
-    └── skills/SKILL.md  ⭐ карта интеграции — куда писать что
+    └── skill-integrator/
+        ├── SKILL.md            универсальный фреймворк (готов к маркетплейсу)
+        ├── integration-map.md  ⭐ карта интеграции — куда писать что
+        ├── integration-map.md.example  шаблон для других проектов
+        └── README.md           описание для маркетплейса
 ```
 
 ---

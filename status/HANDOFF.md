@@ -67,11 +67,14 @@
    - Запущен `/fewer-permission-prompts` — вывод направлен в существующий
      `.claude/settings.local.json` (а не в новый `.claude/settings.json`,
      как хотел скилл по умолчанию). Добавлены GitHub MCP read-only.
-   - Создан **проектный скилл `skills`** (`.claude/skills/skills/SKILL.md`) —
-     гейткипер: карта интеграции артефактов, протокол перед запуском любого
-     другого скилла, журнал прецедентов. Цель — никогда не плодить
-     параллельные файлы (`settings.json` рядом с `settings.local.json` и т.п.).
-     Ссылки в `CLAUDE.md` §2 и §9.
+   - Создан **проектный скилл `skill-integrator`**
+     (`.claude/skills/skill-integrator/`) — гейткипер. После доработки разделён
+     на универсальный фреймворк (`SKILL.md`, готов к маркетплейсу) и проектные
+     данные (`integration-map.md`). Поддерживает 3 режима: маршрутизация при
+     запуске чужого скилла, адаптация при добавлении нового скилла в проект,
+     аудит установленных скиллов. Цель — никогда не плодить параллельные файлы
+     (`settings.json` рядом с `settings.local.json` и т.п.). Ссылки в
+     `CLAUDE.md` §2 и §9.
 
 ### На чём остановились
 
@@ -85,7 +88,8 @@
 
 ## Что дальше (следующая сессия делает первым)
 
-1. Прочитать `CLAUDE.md`, **`.claude/skills/skills/SKILL.md`** (карта интеграции),
+1. Прочитать `CLAUDE.md`,
+   **`.claude/skills/skill-integrator/integration-map.md`** (карта интеграции),
    этот `HANDOFF.md`, `ROADMAP.md`, `specs/001-pile-deviation.md`,
    `specs/002-pile-multi-batch.md`, `src/lisp/commands/sv.lsp`.
 2. Узнать у Шамиля: **результат прогона** SPEC-002 (несколько свай) и
