@@ -6,6 +6,21 @@
 
 ---
 
+## ⚡ ВАЖНО ДЛЯ AI: РАБОЧАЯ ВЕТКА
+
+**Вся работа ведётся на ветке: `claude/autocad-knowledge-hyVpn`**
+
+Если ты запущен на другой ветке — немедленно переключись:
+```
+git fetch origin claude/autocad-knowledge-hyVpn
+git checkout claude/autocad-knowledge-hyVpn
+```
+
+Репозиторий: `skytmin/autocad_claude`  
+`main` — только для слияний. Коммиты идут в `claude/autocad-knowledge-hyVpn`.
+
+---
+
 ## 1. Что это за проект
 
 **Цель**: автоматизировать рутинные чертёжные операции в Civil 3D для **строительной
