@@ -41,10 +41,17 @@ git checkout claude/autocad-knowledge-hyVpn
 
 Прочитай в этом порядке:
 1. `CLAUDE.md` (этот файл) — правила игры
-2. `status/HANDOFF.md` — где остановилась прошлая сессия
-3. `status/ROADMAP.md` — куда движемся
-4. `status/ISSUES.md` — открытые проблемы
-5. Если работаешь над фичей — её спеку из `specs/<feature>.md`
+2. `.claude/skills/skills/SKILL.md` — карта интеграции (КУДА что писать)
+3. `status/HANDOFF.md` — где остановилась прошлая сессия
+4. `status/ROADMAP.md` — куда движемся
+5. `status/ISSUES.md` — открытые проблемы
+6. Если работаешь над фичей — её спеку из `specs/<feature>.md`
+
+**Перед запуском любого скилла, который пишет файлы** (`/init`,
+`/fewer-permission-prompts`, `/security-review`, `/review`, `/simplify`,
+`/update-config`, `/session-start-hook` и т.д.) — **обязательно** сначала
+вызови `/skills` или прочитай `.claude/skills/skills/SKILL.md`. Скилл
+скажет куда направить вывод, чтобы не создать дубликат.
 
 ---
 
@@ -193,7 +200,10 @@ samples/          реальные примеры входных данных
 ├── txt/
 └── dwg/
 
-.claude/          настройки Claude Code
+.claude/
+├── settings.local.json  ⭐ единственный файл проектных настроек (allowlist, hooks)
+└── skills/
+    └── skills/SKILL.md  ⭐ карта интеграции — куда писать что
 ```
 
 ---

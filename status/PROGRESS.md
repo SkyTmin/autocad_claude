@@ -74,6 +74,18 @@
 - 2026-05-03 — [refactor] удалены unused функции v2:
   `gc-pile-cluster-z`, `gc-pile-cluster-by-gap`, `gc-pile-find-one-pile`,
   `gc-pile-find-all-piles`, `gc-pile-pair-piles`.
+- 2026-05-06 — [docs] CLAUDE.md: добавлен блок «РАБОЧАЯ ВЕТКА» в начало —
+  явно указано, что вся работа идёт на `claude/autocad-knowledge-hyVpn`,
+  чтобы новые AI-сессии не теряли контекст.
+- 2026-05-06 — [chore] запущен `/fewer-permission-prompts` — вывод
+  направлен в существующий `.claude/settings.local.json` (а не в новый
+  `.claude/settings.json`, как хотел скилл по умолчанию). Добавлены
+  GitHub MCP read-only разрешения: `list_commits`, `list_branches`,
+  `list_pull_requests`, `list_issues`, `pull_request_read`, `issue_read`.
+- 2026-05-06 — [chore] создан проектный скилл `skills`
+  (`.claude/skills/skills/SKILL.md`) — гейткипер: карта интеграции,
+  протокол перед запуском других скиллов, журнал прецедентов.
+  Ссылки добавлены в `CLAUDE.md` §2 и §9.
 
 ---
 
