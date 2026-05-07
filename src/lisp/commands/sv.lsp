@@ -1,8 +1,11 @@
-;;; sv.lsp — обработка свай (SPEC-001)
-;;; Команда SV: по 7-13 точкам тахеометра — два круга (низ/верх сечения)
+;;; sv.lsp — обработка свай (SPEC-001 / SPEC-002 v4)
+;;; Команда SV: по точкам тахеометра — два круга (низ/верх сечения)
 ;;; и стрелки отклонений между центрами с целочисленными подписями (мм/1м).
 ;;;
-;;; Спецификация: specs/001-pile-deviation.md
+;;; v4: Z-оконный алгоритм поиска сечений (быстро на больших съёмках),
+;;;     диагностика несовпадения диаметра при ошибке поиска.
+;;;
+;;; Спецификация: specs/001-pile-deviation.md, specs/002-pile-multi-batch.md
 ;;; Загрузка: APPLOAD или (load "путь/к/sv.lsp").
 ;;; Зависимости: Visual LISP COM.
 
@@ -144,18 +147,20 @@
 ;; в gc-pile-find-all-sections ниже.
 
 ;;; ====================================================================
-;;; SPEC-002 v3: ПОИСК ВСЕХ СЕЧЕНИЙ + ГРУППИРОВКА В СВАИ
+;;; SPEC-002 v4: ПОИСК ВСЕХ СЕЧЕНИЙ + ГРУППИРОВКА В СВАИ
 ;;; ====================================================================
 
-;; ПОЧЕМУ переход с v2 на v3: в реальном sample Шамиля Z нижних/верхних
-;; сечений РАЗНЫХ свай — разные (сваи погружены на разную глубину). v2
-;; брал «2 самые большие группы по Z» как «низы всех» / «верхи всех» —
-;; это допущение неверно, и половина свай терялась.
+;; ПОЧЕМУ v4 после v3: два бага в v3.
 ;;
-;; v3 ищет сечения индивидуально (через окружность) во ВСЁМ массиве, без
-;; глобальной Z-кластеризации. Тройка валидна если её точки на одном Z
-;; (Δ ≤ z-cluster) И окружность по их XY имеет R ≈ 710мм. Затем сечения
-;; группируются в сваи по близости XY-центров (≤ pair-tolerance).
+;; Баг производительности: gc-pile-find-one-section делал C(N,3) по ВСЕМУ
+;; массиву точек. При 100 точках это ~160 000 троек — в AutoLISP занимает
+;; десятки секунд. Фикс: сортировка по Z + Z-оконный перебор. Тройка валидна
+;; только если Z[k]-Z[i] ≤ z-cluster. Для 100 точек в 10 группах по 10 →
+;; ~1 200 троек вместо 160 000 (~130× быстрее).
+;;
+;; Баг диагностики: когда сечение не найдено, код молча возвращал nil.
+;; Пользователь не знал — неверный диаметр сваи или что-то другое. Теперь
+;; при неудаче выводится лучший найденный R (даже если не попал в допуск).
 
 ;; Расстояние между точками в плане (XY).
 (defun gc-pile-dist-xy (p1 p2 / dx dy)
@@ -168,47 +173,70 @@
   (list (gc-pile-avg (mapcar 'car  pts))
         (gc-pile-avg (mapcar 'cadr pts))))
 
-;; Размах Z в списке точек.
-(defun gc-pile-z-spread (pts / zs)
-  (setq zs (mapcar 'caddr pts))
-  (- (apply 'max zs) (apply 'min zs)))
-
-;; Поиск ОДНОГО сечения (на одном Z) в массиве точек.
-;; Перебирает C(N,3) троек; валидной считается тройка где:
-;;   - Z трёх точек в пределах z-cluster (это точки одного сечения)
-;;   - окружность по XY имеет |R - 710| ≤ fit-tol
-;; Из валидных выбирает ту, у которой |R-710| минимально.
+;; Поиск ОДНОГО сечения в массиве точек.
+;; v4: сортируем по Z, перебираем только тройки внутри Z-окна (≤ z-cluster).
+;; CDR-итерация вместо nth — O(1) на шаг, нет квадратичного overhead.
 ;; Возвращает (list circle section-points) или nil.
-(defun gc-pile-find-one-section (pts / triples best best-err circ err
-                                       cx cy r limit z-mean section)
+;; При неудаче печатает лучший найденный R — для диагностики диаметра.
+(defun gc-pile-find-one-section (pts / sorted best best-err diag-r
+                                       lst-i lst-j lst-k p1 p2 p3
+                                       circ err cx cy r limit
+                                       section z-mean)
   (cond
     ((< (length pts) 3) nil)
     (T
-     (setq triples (gc-pile-combos3 pts))
-     (setq best nil best-err 1.0e99)
-     (foreach tr triples
-       (if (<= (gc-pile-z-spread tr) *gc-pile-z-cluster*)
-         (progn
-           (setq circ (gc-pile-circle-3 (car tr) (cadr tr) (caddr tr)))
+     ;; Сортировка по Z — ключ к Z-оконному перебору
+     (setq sorted (vl-sort pts '(lambda (a b) (< (caddr a) (caddr b)))))
+     (setq best nil best-err 1.0e99 diag-r nil)
+     ;; Тройной CDR-цикл: i ≤ j ≤ k, останавливаемся как только Z[k]-Z[i] > порог
+     (setq lst-i sorted)
+     (while lst-i
+       (setq p1    (car lst-i)
+             lst-j (cdr lst-i))
+       (while (and lst-j
+                   (<= (- (caddr (car lst-j)) (caddr p1))
+                       *gc-pile-z-cluster*))
+         (setq p2    (car lst-j)
+               lst-k (cdr lst-j))
+         (while (and lst-k
+                     (<= (- (caddr (car lst-k)) (caddr p1))
+                         *gc-pile-z-cluster*))
+           (setq p3   (car lst-k)
+                 circ (gc-pile-circle-3 p1 p2 p3))
            (if circ
              (progn
                (setq err (abs (- (caddr circ) *gc-pile-r-norm*)))
+               ;; Запоминаем лучший R независимо от допуска (для диагностики)
+               (if (or (null diag-r) (< err (abs (- diag-r *gc-pile-r-norm*))))
+                 (setq diag-r (caddr circ)))
                (if (and (<= err *gc-pile-fit-tol*) (< err best-err))
-                 (setq best-err err best circ)))))))
+                 (setq best-err err best circ))))
+           (setq lst-k (cdr lst-k)))
+         (setq lst-j (cdr lst-j)))
+       (setq lst-i (cdr lst-i)))
      (cond
-       ((null best) nil)
+       ((null best)
+        ;; Диагностика: что мешает найти сечение
+        (if diag-r
+          (princ (strcat
+            "\n[?] Лучший R в выборке: " (rtos (* diag-r 1000.0) 2 0)
+            " мм  (ищем " (rtos (* *gc-pile-r-norm* 1000.0) 2 0)
+            " ±" (rtos (* *gc-pile-fit-tol* 1000.0) 2 0) " мм)."
+            "\n    Если диаметр вашей сваи другой — измените *gc-pile-r-norm*"
+            " в начале sv.lsp."))
+          (princ "\n[?] Ни одной тройки точек в одном Z-слое не найдено. Проверьте отметки Z."))
+        nil)
        (T
         (setq cx (car best) cy (cadr best) r (caddr best))
         (setq limit (+ r *gc-pile-fit-radius-eps*))
-        ;; Соберём кандидатов в радиусе R+ε
+        ;; Все точки в радиусе R+ε от центра
         (setq section (vl-remove-if-not
                         '(lambda (p) (<= (gc-pile-dist-xy p (list cx cy)) limit))
                         pts))
-        ;; Среди них оставим только те, что на одном Z с центром.
-        ;; Z центра неизвестно явно, берём средний Z отобранных.
         (cond
           ((< (length section) 3) nil)
           (T
+           ;; Оставляем только точки на том же Z что и сечение
            (setq z-mean (gc-pile-avg (mapcar 'caddr section)))
            (setq section (vl-remove-if-not
                            '(lambda (p) (<= (abs (- (caddr p) z-mean))
@@ -216,7 +244,7 @@
                            section))
            (cond
              ((< (length section) 3) nil)
-             (T (list best section))))))))))
+             (T (list best section)))))))))
 
 ;; Жадно ищет ВСЕ сечения во всём массиве точек.
 ;; Возвращает список '((circle z section-points) ...).
@@ -399,13 +427,26 @@
         (princ (strcat "\n[ОШИБКА] Нужно минимум 6 точек. Найдено: " (itoa n)))
         nil)
        (T
-        ;; Шаг 1: ищем ВСЕ сечения во всём массиве (плоские окружности с R≈710).
-        (princ (strcat "\n[i] Точек выделено: " (itoa n) ". Ищу сечения..."))
+        ;; Показываем диаметр и Z-диапазон — помогает диагностировать
+        (princ (strcat "\n[i] Точек: " (itoa n)
+                       "  |  Диаметр сваи: "
+                       (rtos (* 2.0 *gc-pile-r-norm* 1000.0) 2 0) " мм"
+                       "  |  Z: "
+                       (rtos (apply 'min (mapcar 'caddr pts)) 2 3)
+                       " — "
+                       (rtos (apply 'max (mapcar 'caddr pts)) 2 3) " м"))
+        (princ "\n[i] Ищу сечения...")
         (setq sections (gc-pile-find-all-sections pts))
         (princ (strcat "\n[i] Найдено сечений: " (itoa (length sections))))
         (cond
           ((< (length sections) 2)
-           (princ "\n[ОШИБКА] Найдено меньше 2 сечений с R≈710 мм. Проверьте съёмку.")
+           (princ (strcat "\n[ОШИБКА] Нужно минимум 2 сечения, найдено: "
+                          (itoa (length sections)) "."))
+           (princ (strcat "\n[?] Текущий диаметр сваи: "
+                          (rtos (* 2.0 *gc-pile-r-norm* 1000.0) 2 0)
+                          " мм (радиус *gc-pile-r-norm* = "
+                          (rtos *gc-pile-r-norm* 2 3) " м)."))
+           (princ "\n[?] Если диаметр другой — исправьте *gc-pile-r-norm* в начале sv.lsp.")
            nil)
           (T
            ;; Шаг 2: группируем сечения в сваи по XY-центру.
@@ -583,5 +624,5 @@
                     "  всего: "              (itoa total)))))
   (princ))
 
-(princ "\n[gc] sv.lsp загружен. Команда: SV")
+(princ "\n[gc] sv.lsp v4 загружен. Команда: SV")
 (princ)
