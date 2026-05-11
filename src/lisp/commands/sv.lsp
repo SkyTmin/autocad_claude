@@ -1,8 +1,9 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 v12)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 v13)
 ;;; Komandy:
 ;;;   SV  -- dva secheniya svai i otkloneniya mezhdu centrami.
-;;;   SVP -- sechenie svai na zadannoy vysotnoy otmetke.
+;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
 ;;;
+;;; v13: SVP schitaet otklonenie ot proektnogo centra k novomu secheniyu.
 ;;; v12: dobavlena komanda SVP (SPEC-003): prodlenie/interpolyaciya svai
 ;;;      po dvum naydennym secheniyam. SV v11 ostavlen kak stabilnaya baza.
 ;;; v11: gc-pile-strip-hm udalyaet paru otmetchikov vysoty tolko esli ona
@@ -33,15 +34,21 @@
 (setq *gc-pile-pair-dz-max*      5.000) ; максимальный dZ между сечениями, м
 (setq *gc-pile-hm-pair-dz-max*   0.002) ; макс ΔZ внутри пары отметчиков, м
 (setq *gc-pile-hm-gap-min*       0.010) ; мин зазор от отметчиков до сечения, м
+(setq *gc-pile-project-match-max* 2.000) ; макс расстояние до проектного центра, м
 
 (setq *gc-pile-ssget-filter*
       '((0 . "POINT,AECC*POINT,AEC*POINT")))
 
-(setq *gc-l-low*    "GC-Сваи-Низ")
-(setq *gc-l-high*   "GC-Сваи-Верх")
-(setq *gc-l-arrows* "GC-Сваи-Отклонения")
-(setq *gc-l-text*   "GC-Сваи-Текст")
-(setq *gc-l-cut*    "GC-Сваи-Срез")
+(setq *gc-pile-project-ssget-filter*
+      '((0 . "CIRCLE,POINT,AECC*POINT,AEC*POINT")))
+
+(setq *gc-l-low*             "GC-Сваи-Низ")
+(setq *gc-l-high*            "GC-Сваи-Верх")
+(setq *gc-l-arrows*          "GC-Сваи-Отклонения")
+(setq *gc-l-text*            "GC-Сваи-Текст")
+(setq *gc-l-cut*             "GC-Сваи-Срез")
+(setq *gc-l-project-arrows*  "GC-Сваи-Проект-Отклонения")
+(setq *gc-l-project-text*    "GC-Сваи-Проект-Текст")
 
 ;;; ====================================================================
 ;;; ИЗВЛЕЧЕНИЕ КООРДИНАТ ИЗ ОБЪЕКТА
@@ -62,6 +69,18 @@
        (vlax-variant-value (vla-get-InsertionPoint obj))))
     (T nil)))
 
+(defun gc-pile-get-project-center (ent / ed typ c)
+  (setq ed  (entget ent)
+        typ (cdr (assoc 0 ed)))
+  (cond
+    ((= typ "CIRCLE")
+     (setq c (cdr (assoc 10 ed)))
+     (if c (list (car c) (cadr c) (if (caddr c) (caddr c) 0.0)) nil))
+    ((wcmatch typ "POINT,AECC*POINT,AEC*POINT")
+     (setq c (gc-pile-get-coords ent))
+     (if c (list (car c) (cadr c) (if (caddr c) (caddr c) 0.0)) nil))
+    (T nil)))
+
 (defun gc-pile-ss-to-points (ss / i n pts ent c skipped)
   (setq pts '() skipped 0 i 0 n (sslength ss))
   (while (< i n)
@@ -75,6 +94,32 @@
     (princ (strcat "\n[!] Пропущено объектов неподдерживаемого типа: "
                    (itoa skipped))))
   (reverse pts))
+
+(defun gc-pile-ss-to-project-centers (ss / i n centers ent c skipped)
+  (setq centers '() skipped 0 i 0 n (sslength ss))
+  (while (< i n)
+    (setq ent (ssname ss i))
+    (setq c (gc-pile-get-project-center ent))
+    (if c
+      (setq centers (cons c centers))
+      (setq skipped (1+ skipped)))
+    (setq i (1+ i)))
+  (if (> skipped 0)
+    (princ (strcat "\n[!] SVP: пропущено проектных объектов без координат: "
+                   (itoa skipped))))
+  (reverse centers))
+
+(defun gc-pile-read-project-centers ( / ss centers)
+  (princ "\nВыделите проектные круги или проектные точки (Enter — без проектных отклонений): ")
+  (setq ss (ssget *gc-pile-project-ssget-filter*))
+  (if ss
+    (progn
+      (setq centers (gc-pile-ss-to-project-centers ss))
+      (princ (strcat "\n[i] Проектных центров выбрано: " (itoa (length centers))))
+      centers)
+    (progn
+      (princ "\n[!] Проектные объекты не выбраны: будут построены только сечения SVP.")
+      nil)))
 
 ;;; ====================================================================
 ;;; ГЕОМЕТРИЯ
@@ -156,6 +201,22 @@
   (setq dx (- (car p1) (car p2))
         dy (- (cadr p1) (cadr p2)))
   (sqrt (+ (* dx dx) (* dy dy))))
+
+(defun gc-pile-take-nearest-project (target projects limit / best best-dist rest p d)
+  (if (null projects)
+    (list nil projects nil)
+    (progn
+      (setq best nil best-dist 1.0e99 rest '())
+      (foreach p projects
+        (setq d (gc-pile-dist-xy target p))
+        (if (< d best-dist)
+          (progn
+            (if best (setq rest (cons best rest)))
+            (setq best p best-dist d))
+          (setq rest (cons p rest))))
+      (if (and best (<= best-dist limit))
+        (list best (reverse rest) best-dist)
+        (list nil projects best-dist)))))
 
 (defun gc-pile-cluster-by-xy (pts / clusters remaining cur grow keep)
   (setq remaining pts clusters '())
@@ -265,6 +326,46 @@
   (strcat (if (>= mm 0) "+" "")
           (rtos mm 2 0) " мм"))
 
+(defun gc-pile-draw-project-deviation (project-pt target-pt /
+                                        dx-mm dy-mm tstyle p-project
+                                        p-end-x p-end-y pt-text-x pt-text-y
+                                        sx sy)
+  (setq p-project (list (car project-pt) (cadr project-pt) (caddr target-pt)))
+  (setq dx-mm (* 1000.0 (- (car target-pt)  (car project-pt)))
+        dy-mm (* 1000.0 (- (cadr target-pt) (cadr project-pt))))
+  (gc-pile-ensure-layer *gc-l-project-arrows* 2)
+  (gc-pile-ensure-layer *gc-l-project-text* 2)
+  (setq tstyle (gc-pile-text-style))
+  (setq p-end-x (list (+ (car p-project)
+                         (* *gc-pile-arrow-len*
+                            (if (>= dx-mm 0) 1.0 -1.0)))
+                      (cadr p-project)
+                      (caddr p-project)))
+  (setq p-end-y (list (car p-project)
+                      (+ (cadr p-project)
+                         (* *gc-pile-arrow-len*
+                            (if (>= dy-mm 0) 1.0 -1.0)))
+                      (caddr p-project)))
+  (gc-pile-draw-arrow p-project p-end-x *gc-l-project-arrows*)
+  (gc-pile-draw-arrow p-project p-end-y *gc-l-project-arrows*)
+  (setq sx (if (>= dx-mm 0) 1.0 -1.0))
+  (setq sy (if (>= dy-mm 0) 1.0 -1.0))
+  (setq pt-text-y
+    (list (+ (car  p-project) (* (- sx) *gc-pile-text-lateral*))
+          (+ (cadr p-project) (* sy     *gc-pile-text-along*))
+          (caddr p-project)))
+  (setq pt-text-x
+    (list (+ (car  p-project) (* sx *gc-pile-text-along*))
+          (- (cadr p-project) (* sy *gc-pile-text-lateral*))
+          (caddr p-project)))
+  (gc-pile-draw-text-rot pt-text-x (gc-pile-mm-rounded dx-mm)
+                         tstyle *gc-l-project-text* 0.0)
+  (gc-pile-draw-text-rot pt-text-y (gc-pile-mm-rounded dy-mm)
+                         tstyle *gc-l-project-text* (/ pi 2.0))
+  (princ (strcat "\nПроектное отклонение: dX = " (gc-pile-mm-signed dx-mm)
+                 "   dY = " (gc-pile-mm-signed dy-mm)))
+  T)
+
 ;;; ====================================================================
 ;;; ОБРАБОТКА SV
 ;;; ====================================================================
@@ -366,7 +467,7 @@
 
 (defun gc-pile-process-extension (low-pts high-pts target-z /
                                    c-low c-high z-low z-high dz k
-                                   target-x target-y)
+                                   target-x target-y target-pt)
   (setq c-low  (gc-pile-best-circle low-pts))
   (setq c-high (gc-pile-best-circle high-pts))
   (cond
@@ -388,6 +489,7 @@
          (setq k (/ (- target-z z-low) dz))
          (setq target-x (+ (car c-low) (* k (- (car c-high) (car c-low)))))
          (setq target-y (+ (cadr c-low) (* k (- (cadr c-high) (cadr c-low)))))
+         (setq target-pt (list target-x target-y target-z))
          (gc-pile-ensure-layer *gc-l-cut* 4)
          (gc-pile-draw-circle target-x target-y target-z *gc-pile-r-norm* *gc-l-cut*)
          (princ "\n--- SVP: сечение построено ---")
@@ -400,7 +502,7 @@
          (princ (strcat "\nОпорные Z: низ=" (rtos z-low 2 3)
                         " м, верх=" (rtos z-high 2 3)
                         " м, k=" (rtos k 2 3)))
-         T)))))
+         target-pt)))))
 
 ;;; ====================================================================
 ;;; ПОДГОТОВКА ПАР СЕЧЕНИЙ
@@ -542,8 +644,10 @@
                     "  всего: "              (itoa total)))))
   (princ))
 
-(defun c:svp ( / pairs target-z idx total ok skipped p)
-  (princ "\nSVP: сечение сваи на заданной высотной отметке.")
+(defun c:svp ( / pairs target-z project-centers project-mode idx total
+                ok skipped dev-ok dev-skipped p target-pt
+                match project-pt match-dist)
+  (princ "\nSVP: сечение сваи на заданной отметке + проектное отклонение.")
   (setq pairs (gc-pile-mode1))
   (cond
     ((null pairs) (princ "\nКоманда отменена."))
@@ -553,17 +657,52 @@
        ((null target-z)
         (princ "\nКоманда отменена: отметка не введена."))
        (T
-        (setq total (length pairs) idx 1 ok 0 skipped 0)
+        (setq project-centers (gc-pile-read-project-centers))
+        (setq project-mode (not (null project-centers)))
+        (setq total (length pairs) idx 1 ok 0 skipped 0 dev-ok 0 dev-skipped 0)
         (foreach p pairs
           (princ (strcat "\n=== SVP: Свая " (itoa idx) " / " (itoa total) " ==="))
-          (if (gc-pile-process-extension (car p) (cdr p) target-z)
-            (setq ok (1+ ok))
+          (setq target-pt (gc-pile-process-extension (car p) (cdr p) target-z))
+          (if target-pt
+            (progn
+              (setq ok (1+ ok))
+              (if project-mode
+                (cond
+                  ((null project-centers)
+                   (setq dev-skipped (1+ dev-skipped))
+                   (princ "\n[!] SVP: нет свободного проектного центра — проектное отклонение пропущено."))
+                  (T
+                   (setq match (gc-pile-take-nearest-project
+                                  target-pt
+                                  project-centers
+                                  *gc-pile-project-match-max*))
+                   (setq project-pt (car match)
+                         project-centers (cadr match)
+                         match-dist (caddr match))
+                   (if project-pt
+                     (progn
+                       (princ (strcat "\n[i] Проектный центр: расстояние до среза "
+                                      (rtos match-dist 2 3) " м"))
+                       (gc-pile-draw-project-deviation project-pt target-pt)
+                       (setq dev-ok (1+ dev-ok)))
+                     (progn
+                       (setq dev-skipped (1+ dev-skipped))
+                       (if match-dist
+                         (princ (strcat "\n[!] SVP: ближайший проектный центр дальше "
+                                        (rtos *gc-pile-project-match-max* 2 3)
+                                        " м (расстояние " (rtos match-dist 2 3)
+                                        " м) — проектное отклонение пропущено."))
+                         (princ "\n[!] SVP: проектный центр не найден — проектное отклонение пропущено.")))))))
             (setq skipped (1+ skipped)))
           (setq idx (1+ idx)))
-        (princ (strcat "\n[Итог SVP] построено: " (itoa ok)
-                       "  пропущено: "        (itoa skipped)
-                       "  всего: "            (itoa total)))))))
+        (princ (strcat "\n[Итог SVP] построено сечений: " (itoa ok)
+                       "  пропущено сечений: "        (itoa skipped)
+                       "  всего свай: "                (itoa total)))
+        (if project-mode
+          (princ (strcat "\n[Итог SVP] проектных отклонений: " (itoa dev-ok)
+                         "  пропущено отклонений: "       (itoa dev-skipped)))
+          (princ "\n[Итог SVP] проектные отклонения не строились: проектные объекты не выбраны."))))))
   (princ))
 
-(princ "\n[gc] sv.lsp v12 загружен. Команды: SV, SVP")
+(princ "\n[gc] sv.lsp v13 загружен. Команды: SV, SVP")
 (princ)
