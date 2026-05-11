@@ -1,17 +1,16 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 v13)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v14)
 ;;; Komandy:
-;;;   SV  -- dva secheniya svai i otkloneniya mezhdu centrami.
+;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
 ;;;
+;;; v14: SV mode 3 = SV mode 1 + SVP za odin zapusk.
+;;;      SV-otkloneniya v mode 3 risuyutsya sinim na Zlow + 1.700 m.
+;;;      SVP-proektnye otkloneniya v mode 3 risuyutsya belym na Ztarget + 2.600 m.
 ;;; v13: SVP schitaet otklonenie ot proektnogo centra k novomu secheniyu.
-;;; v12: dobavlena komanda SVP (SPEC-003): prodlenie/interpolyaciya svai
-;;;      po dvum naydennym secheniyam. SV v11 ostavlen kak stabilnaya baza.
+;;; v12: dobavlena komanda SVP (SPEC-003).
 ;;; v11: gc-pile-strip-hm udalyaet paru otmetchikov vysoty tolko esli ona
 ;;;      yavno izolirovana nad secheniem.
 ;;;
-;;; Specifikacii: specs/001-pile-deviation.md,
-;;;               specs/002-pile-multi-batch.md,
-;;;               specs/003-pile-extension.md
 ;;; Zagruzka: APPLOAD ili (load "put/k/sv.lsp").
 ;;; Zavisimosti: Visual LISP COM.
 
@@ -21,20 +20,22 @@
 ;;; КОНСТАНТЫ
 ;;; ====================================================================
 
-(setq *gc-pile-r-norm*           0.710) ; норма радиуса сваи, м (D1420мм / 2)
-(setq *gc-pile-r-warn*           0.050) ; превышение |R-norm| -> предупреждение
-(setq *gc-pile-arrow-len*        0.400) ; длина Leader, м
-(setq *gc-pile-tol-mm-per-m*    20.0)   ; норматив 20 мм/1м
-(setq *gc-pile-text-h*           0.100) ; высота текста, м
-(setq *gc-pile-text-along*       0.200) ; смещение текста вдоль стрелки, м
-(setq *gc-pile-text-lateral*     0.100) ; смещение текста поперек стрелки, м
-(setq *gc-pile-z-cluster*        0.050) ; порог одной высоты по Z, м
-(setq *gc-pile-xy-cluster*       1.800) ; порог XY-кластеризации свай, м
-(setq *gc-pile-pair-dz-min*      0.300) ; минимальный dZ между сечениями, м
-(setq *gc-pile-pair-dz-max*      5.000) ; максимальный dZ между сечениями, м
-(setq *gc-pile-hm-pair-dz-max*   0.002) ; макс ΔZ внутри пары отметчиков, м
-(setq *gc-pile-hm-gap-min*       0.010) ; мин зазор от отметчиков до сечения, м
-(setq *gc-pile-project-match-max* 2.000) ; макс расстояние до проектного центра, м
+(setq *gc-pile-r-norm*             0.710) ; норма радиуса сваи, м
+(setq *gc-pile-r-warn*             0.050)
+(setq *gc-pile-arrow-len*          0.400)
+(setq *gc-pile-tol-mm-per-m*      20.0)
+(setq *gc-pile-text-h*             0.100)
+(setq *gc-pile-text-along*         0.200)
+(setq *gc-pile-text-lateral*       0.100)
+(setq *gc-pile-z-cluster*          0.050)
+(setq *gc-pile-xy-cluster*         1.800)
+(setq *gc-pile-pair-dz-min*        0.300)
+(setq *gc-pile-pair-dz-max*        5.000)
+(setq *gc-pile-hm-pair-dz-max*     0.002)
+(setq *gc-pile-hm-gap-min*         0.010)
+(setq *gc-pile-project-match-max*  2.000)
+(setq *gc-pile-sv3-sv-dev-dz*      1.700)
+(setq *gc-pile-sv3-prj-dev-dz*     2.600)
 
 (setq *gc-pile-ssget-filter*
       '((0 . "POINT,AECC*POINT,AEC*POINT")))
@@ -42,16 +43,20 @@
 (setq *gc-pile-project-ssget-filter*
       '((0 . "CIRCLE,POINT,AECC*POINT,AEC*POINT")))
 
-(setq *gc-l-low*             "GC-Сваи-Низ")
-(setq *gc-l-high*            "GC-Сваи-Верх")
-(setq *gc-l-arrows*          "GC-Сваи-Отклонения")
-(setq *gc-l-text*            "GC-Сваи-Текст")
-(setq *gc-l-cut*             "GC-Сваи-Срез")
-(setq *gc-l-project-arrows*  "GC-Сваи-Проект-Отклонения")
-(setq *gc-l-project-text*    "GC-Сваи-Проект-Текст")
+(setq *gc-l-low*                "GC-Сваи-Низ")
+(setq *gc-l-high*               "GC-Сваи-Верх")
+(setq *gc-l-arrows*             "GC-Сваи-Отклонения")
+(setq *gc-l-text*               "GC-Сваи-Текст")
+(setq *gc-l-cut*                "GC-Сваи-Срез")
+(setq *gc-l-project-arrows*     "GC-Сваи-Проект-Отклонения")
+(setq *gc-l-project-text*       "GC-Сваи-Проект-Текст")
+(setq *gc-l-sv3-arrows*         "GC-Сваи-SV3-Синие-Отклонения")
+(setq *gc-l-sv3-text*           "GC-Сваи-SV3-Синий-Текст")
+(setq *gc-l-sv3-project-arrows* "GC-Сваи-SV3-Проект-Отклонения")
+(setq *gc-l-sv3-project-text*   "GC-Сваи-SV3-Проект-Текст")
 
 ;;; ====================================================================
-;;; ИЗВЛЕЧЕНИЕ КООРДИНАТ ИЗ ОБЪЕКТА
+;;; ИЗВЛЕЧЕНИЕ КООРДИНАТ
 ;;; ====================================================================
 
 (defun gc-pile-get-coords (ent / obj)
@@ -118,7 +123,7 @@
       (princ (strcat "\n[i] Проектных центров выбрано: " (itoa (length centers))))
       centers)
     (progn
-      (princ "\n[!] Проектные объекты не выбраны: будут построены только сечения SVP.")
+      (princ "\n[!] Проектные объекты не выбраны: проектные отклонения не строятся.")
       nil)))
 
 ;;; ====================================================================
@@ -154,10 +159,10 @@
     zg
     (progn
       (setq sorted (vl-sort zg '(lambda (a b) (> (caddr a) (caddr b)))))
-      (setq top1 (car   sorted)
-            top2 (cadr  sorted)
+      (setq top1 (car sorted)
+            top2 (cadr sorted)
             top3 (caddr sorted)
-            rest (cddr  sorted))
+            rest (cddr sorted))
       (if (and (< (abs (- (caddr top1) (caddr top2))) *gc-pile-hm-pair-dz-max*)
                (>= (- (caddr top2) (caddr top3)) *gc-pile-hm-gap-min*))
         (progn
@@ -286,7 +291,7 @@
   (gc-pile-draw-arrow-head start end layer))
 
 (defun gc-pile-draw-arrow-head (start end layer / dx dy len ux uy nx ny size t1 t2)
-  (setq dx (- (car  end) (car  start))
+  (setq dx (- (car end) (car start))
         dy (- (cadr end) (cadr start)))
   (setq len (sqrt (+ (* dx dx) (* dy dy))))
   (if (> len 1.0e-9)
@@ -294,10 +299,10 @@
       (setq ux (/ dx len) uy (/ dy len))
       (setq nx (- uy) ny ux)
       (setq size (* 0.30 len))
-      (setq t1 (list (- (car  end) (* size ux) (* (/ size 3.0) nx))
+      (setq t1 (list (- (car end) (* size ux) (* (/ size 3.0) nx))
                      (- (cadr end) (* size uy) (* (/ size 3.0) ny))
                      (caddr end)))
-      (setq t2 (list (+ (- (car  end) (* size ux)) (* (/ size 3.0) nx))
+      (setq t2 (list (+ (- (car end) (* size ux)) (* (/ size 3.0) nx))
                      (+ (- (cadr end) (* size uy)) (* (/ size 3.0) ny))
                      (caddr end)))
       (entmake (list '(0 . "SOLID")
@@ -319,190 +324,200 @@
                  (cons 11 pt)
                  (cons 73 2))))
 
-(defun gc-pile-mm-rounded (per-m-mm)
-  (rtos (abs per-m-mm) 2 0))
+(defun gc-pile-mm-rounded (mm)
+  (rtos (abs mm) 2 0))
 
 (defun gc-pile-mm-signed (mm)
   (strcat (if (>= mm 0) "+" "")
           (rtos mm 2 0) " мм"))
 
-(defun gc-pile-draw-project-deviation (project-pt target-pt /
-                                        dx-mm dy-mm tstyle p-project
-                                        p-end-x p-end-y pt-text-x pt-text-y
-                                        sx sy)
-  (setq p-project (list (car project-pt) (cadr project-pt) (caddr target-pt)))
+(defun gc-pile-draw-xy-deviation (base-pt dir-dx-mm dir-dy-mm label-x-mm label-y-mm
+                                  arrow-layer text-layer color /
+                                  tstyle sx sy p-end-x p-end-y pt-text-x pt-text-y)
+  (gc-pile-ensure-layer arrow-layer color)
+  (gc-pile-ensure-layer text-layer color)
+  (setq tstyle (gc-pile-text-style))
+  (setq sx (if (>= dir-dx-mm 0) 1.0 -1.0))
+  (setq sy (if (>= dir-dy-mm 0) 1.0 -1.0))
+  (setq p-end-x (list (+ (car base-pt) (* *gc-pile-arrow-len* sx))
+                      (cadr base-pt)
+                      (caddr base-pt)))
+  (setq p-end-y (list (car base-pt)
+                      (+ (cadr base-pt) (* *gc-pile-arrow-len* sy))
+                      (caddr base-pt)))
+  (gc-pile-draw-arrow base-pt p-end-x arrow-layer)
+  (gc-pile-draw-arrow base-pt p-end-y arrow-layer)
+  (setq pt-text-y
+    (list (+ (car base-pt) (* (- sx) *gc-pile-text-lateral*))
+          (+ (cadr base-pt) (* sy *gc-pile-text-along*))
+          (caddr base-pt)))
+  (setq pt-text-x
+    (list (+ (car base-pt) (* sx *gc-pile-text-along*))
+          (- (cadr base-pt) (* sy *gc-pile-text-lateral*))
+          (caddr base-pt)))
+  (gc-pile-draw-text-rot pt-text-x (gc-pile-mm-rounded label-x-mm)
+                         tstyle text-layer 0.0)
+  (gc-pile-draw-text-rot pt-text-y (gc-pile-mm-rounded label-y-mm)
+                         tstyle text-layer (/ pi 2.0))
+  T)
+
+(defun gc-pile-draw-project-deviation (project-pt target-pt / dx-mm dy-mm p-base)
+  (setq p-base (list (car project-pt) (cadr project-pt) (caddr target-pt)))
   (setq dx-mm (* 1000.0 (- (car target-pt)  (car project-pt)))
         dy-mm (* 1000.0 (- (cadr target-pt) (cadr project-pt))))
-  (gc-pile-ensure-layer *gc-l-project-arrows* 2)
-  (gc-pile-ensure-layer *gc-l-project-text* 2)
-  (setq tstyle (gc-pile-text-style))
-  (setq p-end-x (list (+ (car p-project)
-                         (* *gc-pile-arrow-len*
-                            (if (>= dx-mm 0) 1.0 -1.0)))
-                      (cadr p-project)
-                      (caddr p-project)))
-  (setq p-end-y (list (car p-project)
-                      (+ (cadr p-project)
-                         (* *gc-pile-arrow-len*
-                            (if (>= dy-mm 0) 1.0 -1.0)))
-                      (caddr p-project)))
-  (gc-pile-draw-arrow p-project p-end-x *gc-l-project-arrows*)
-  (gc-pile-draw-arrow p-project p-end-y *gc-l-project-arrows*)
-  (setq sx (if (>= dx-mm 0) 1.0 -1.0))
-  (setq sy (if (>= dy-mm 0) 1.0 -1.0))
-  (setq pt-text-y
-    (list (+ (car  p-project) (* (- sx) *gc-pile-text-lateral*))
-          (+ (cadr p-project) (* sy     *gc-pile-text-along*))
-          (caddr p-project)))
-  (setq pt-text-x
-    (list (+ (car  p-project) (* sx *gc-pile-text-along*))
-          (- (cadr p-project) (* sy *gc-pile-text-lateral*))
-          (caddr p-project)))
-  (gc-pile-draw-text-rot pt-text-x (gc-pile-mm-rounded dx-mm)
-                         tstyle *gc-l-project-text* 0.0)
-  (gc-pile-draw-text-rot pt-text-y (gc-pile-mm-rounded dy-mm)
-                         tstyle *gc-l-project-text* (/ pi 2.0))
+  (gc-pile-draw-xy-deviation p-base dx-mm dy-mm dx-mm dy-mm
+                             *gc-l-project-arrows* *gc-l-project-text* 2)
   (princ (strcat "\nПроектное отклонение: dX = " (gc-pile-mm-signed dx-mm)
                  "   dY = " (gc-pile-mm-signed dy-mm)))
   T)
 
+(defun gc-pile-draw-project-deviation-sv3 (project-pt target-pt / dx-mm dy-mm p-base)
+  (setq p-base (list (car project-pt)
+                     (cadr project-pt)
+                     (+ (caddr target-pt) *gc-pile-sv3-prj-dev-dz*)))
+  (setq dx-mm (* 1000.0 (- (car target-pt)  (car project-pt)))
+        dy-mm (* 1000.0 (- (cadr target-pt) (cadr project-pt))))
+  (gc-pile-draw-xy-deviation p-base dx-mm dy-mm dx-mm dy-mm
+                             *gc-l-sv3-project-arrows*
+                             *gc-l-sv3-project-text*
+                             7)
+  (princ (strcat "\nSV 3: проектное отклонение на Z+2.600: dX = "
+                 (gc-pile-mm-signed dx-mm)
+                 "   dY = " (gc-pile-mm-signed dy-mm)))
+  T)
+
 ;;; ====================================================================
-;;; ОБРАБОТКА SV
+;;; ОБРАБОТКА СЕЧЕНИЙ
 ;;; ====================================================================
 
-(defun gc-pile-process (low-pts high-pts /
-                         c-low c-high z-low z-high
-                         dx-mm dy-mm dz dx-pm dy-pm
-                         tstyle p-low p-end-x p-end-y
-                         pt-text-x pt-text-y sx sy
-                         dev-low dev-high)
+(defun gc-pile-section-data (low-pts high-pts tag / c-low c-high z-low z-high)
   (setq c-low  (gc-pile-best-circle low-pts))
   (setq c-high (gc-pile-best-circle high-pts))
   (cond
     ((null c-low)
-     (princ "\n[ОШИБКА] Не удалось построить круг по нижним точкам.")
+     (princ (strcat "\n[ОШИБКА] " tag ": не удалось построить круг по нижним точкам."))
      nil)
     ((null c-high)
-     (princ "\n[ОШИБКА] Не удалось построить круг по верхним точкам.")
+     (princ (strcat "\n[ОШИБКА] " tag ": не удалось построить круг по верхним точкам."))
      nil)
     (T
      (setq z-low  (gc-pile-avg (mapcar 'caddr low-pts))
            z-high (gc-pile-avg (mapcar 'caddr high-pts)))
-     (gc-pile-ensure-layer *gc-l-low*    1)
-     (gc-pile-ensure-layer *gc-l-high*   3)
-     (gc-pile-ensure-layer *gc-l-arrows* 7)
-     (gc-pile-ensure-layer *gc-l-text*   7)
-     (setq tstyle (gc-pile-text-style))
-     (gc-pile-draw-circle (car c-low)  (cadr c-low)  z-low  (caddr c-low)  *gc-l-low*)
-     (gc-pile-draw-circle (car c-high) (cadr c-high) z-high (caddr c-high) *gc-l-high*)
-     (setq dx-mm (* 1000.0 (- (car  c-high) (car  c-low)))
-           dy-mm (* 1000.0 (- (cadr c-high) (cadr c-low)))
-           dz    (- z-high z-low))
-     (if (> (abs dz) 1.0e-6)
-       (setq dx-pm (/ dx-mm dz)
-             dy-pm (/ dy-mm dz))
-       (setq dx-pm dx-mm dy-pm dy-mm))
-     (setq p-low (list (car c-low) (cadr c-low) z-low))
-     (setq p-end-x (list (+ (car  p-low)
-                            (* *gc-pile-arrow-len*
-                               (if (>= dx-mm 0) 1.0 -1.0)))
-                         (cadr p-low)
-                         z-low))
-     (setq p-end-y (list (car p-low)
-                         (+ (cadr p-low)
-                            (* *gc-pile-arrow-len*
-                               (if (>= dy-mm 0) 1.0 -1.0)))
-                         z-low))
-     (gc-pile-draw-arrow p-low p-end-x *gc-l-arrows*)
-     (gc-pile-draw-arrow p-low p-end-y *gc-l-arrows*)
-     (setq sx (if (>= dx-mm 0) 1.0 -1.0))
-     (setq sy (if (>= dy-mm 0) 1.0 -1.0))
-     (setq pt-text-y
-       (list (+ (car  p-low) (* (- sx) *gc-pile-text-lateral*))
-             (+ (cadr p-low) (* sy     *gc-pile-text-along*))
-             z-low))
-     (setq pt-text-x
-       (list (+ (car  p-low) (* sx *gc-pile-text-along*))
-             (- (cadr p-low) (* sy *gc-pile-text-lateral*))
-             z-low))
-     (gc-pile-draw-text-rot pt-text-x (gc-pile-mm-rounded dx-pm)
-                            tstyle *gc-l-text* 0.0)
-     (gc-pile-draw-text-rot pt-text-y (gc-pile-mm-rounded dy-pm)
-                            tstyle *gc-l-text* (/ pi 2.0))
-     (setq dev-low  (* 1000.0 (- (caddr c-low)  *gc-pile-r-norm*)))
-     (setq dev-high (* 1000.0 (- (caddr c-high) *gc-pile-r-norm*)))
-     (princ "\n--- Свая обработана ---")
-     (princ (strcat "\nНиз:  ("
-                    (rtos (car  c-low)  2 3) ", "
-                    (rtos (cadr c-low)  2 3) ", "
-                    (rtos z-low         2 3) ")  R = "
-                    (rtos (caddr c-low) 2 3) " м (отклонение от нормы "
-                    (gc-pile-mm-signed dev-low) ")"))
-     (princ (strcat "\nВерх: ("
-                    (rtos (car  c-high)  2 3) ", "
-                    (rtos (cadr c-high)  2 3) ", "
-                    (rtos z-high         2 3) ")  R = "
-                    (rtos (caddr c-high) 2 3) " м (отклонение от нормы "
-                    (gc-pile-mm-signed dev-high) ")"))
-     (princ (strcat "\ndX = " (gc-pile-mm-signed dx-mm)
-                    " (" (rtos (abs dx-pm) 2 0) " мм/1м)"
-                    "   dY = " (gc-pile-mm-signed dy-mm)
-                    " (" (rtos (abs dy-pm) 2 0) " мм/1м)"))
-     (princ (strcat "\ndZ между сечениями = " (rtos dz 2 3) " м"))
-     (if (or (> (caddr c-low)  (+ *gc-pile-r-norm* *gc-pile-r-warn*))
-             (< (caddr c-low)  (- *gc-pile-r-norm* *gc-pile-r-warn*))
-             (> (caddr c-high) (+ *gc-pile-r-norm* *gc-pile-r-warn*))
-             (< (caddr c-high) (- *gc-pile-r-norm* *gc-pile-r-warn*)))
-       (princ "\n[!] Радиус сильно отличается от нормы — проверьте съёмку."))
-     (if (or (> (abs dx-pm) *gc-pile-tol-mm-per-m*)
-             (> (abs dy-pm) *gc-pile-tol-mm-per-m*))
-       (princ (strcat "\n[!] Превышен допуск "
-                      (rtos *gc-pile-tol-mm-per-m* 2 0) " мм/1м!")))
-     (princ "\n----------------------")
-     T)))
+     (list c-low c-high z-low z-high))))
 
-;;; ====================================================================
-;;; ОБРАБОТКА SVP
-;;; ====================================================================
+(defun gc-pile-draw-sv-graphics (data arrow-layer text-layer color z-offset label /
+                                  c-low c-high z-low z-high dx-mm dy-mm dz dx-pm dy-pm
+                                  base-pt dev-low dev-high)
+  (setq c-low  (nth 0 data)
+        c-high (nth 1 data)
+        z-low  (nth 2 data)
+        z-high (nth 3 data))
+  (gc-pile-ensure-layer *gc-l-low* 1)
+  (gc-pile-ensure-layer *gc-l-high* 3)
+  (gc-pile-draw-circle (car c-low)  (cadr c-low)  z-low  (caddr c-low)  *gc-l-low*)
+  (gc-pile-draw-circle (car c-high) (cadr c-high) z-high (caddr c-high) *gc-l-high*)
+  (setq dx-mm (* 1000.0 (- (car c-high)  (car c-low)))
+        dy-mm (* 1000.0 (- (cadr c-high) (cadr c-low)))
+        dz    (- z-high z-low))
+  (if (> (abs dz) 1.0e-6)
+    (setq dx-pm (/ dx-mm dz)
+          dy-pm (/ dy-mm dz))
+    (setq dx-pm dx-mm
+          dy-pm dy-mm))
+  (setq base-pt (list (car c-low) (cadr c-low) (+ z-low z-offset)))
+  (gc-pile-draw-xy-deviation base-pt dx-mm dy-mm dx-pm dy-pm
+                             arrow-layer text-layer color)
+  (setq dev-low  (* 1000.0 (- (caddr c-low)  *gc-pile-r-norm*)))
+  (setq dev-high (* 1000.0 (- (caddr c-high) *gc-pile-r-norm*)))
+  (princ (strcat "\n--- " label ": свая обработана ---"))
+  (princ (strcat "\nНиз:  ("
+                 (rtos (car c-low) 2 3) ", "
+                 (rtos (cadr c-low) 2 3) ", "
+                 (rtos z-low 2 3) ")  R = "
+                 (rtos (caddr c-low) 2 3)
+                 " м (отклонение от нормы "
+                 (gc-pile-mm-signed dev-low) ")"))
+  (princ (strcat "\nВерх: ("
+                 (rtos (car c-high) 2 3) ", "
+                 (rtos (cadr c-high) 2 3) ", "
+                 (rtos z-high 2 3) ")  R = "
+                 (rtos (caddr c-high) 2 3)
+                 " м (отклонение от нормы "
+                 (gc-pile-mm-signed dev-high) ")"))
+  (princ (strcat "\ndX = " (gc-pile-mm-signed dx-mm)
+                 " (" (rtos (abs dx-pm) 2 0) " мм/1м)"
+                 "   dY = " (gc-pile-mm-signed dy-mm)
+                 " (" (rtos (abs dy-pm) 2 0) " мм/1м)"))
+  (princ (strcat "\ndZ между сечениями = " (rtos dz 2 3) " м"))
+  (if (> (abs z-offset) 1.0e-9)
+    (princ (strcat "\n[i] Графика отклонений поднята на "
+                   (rtos (* z-offset 1000.0) 2 0) " мм.")))
+  (if (or (> (caddr c-low)  (+ *gc-pile-r-norm* *gc-pile-r-warn*))
+          (< (caddr c-low)  (- *gc-pile-r-norm* *gc-pile-r-warn*))
+          (> (caddr c-high) (+ *gc-pile-r-norm* *gc-pile-r-warn*))
+          (< (caddr c-high) (- *gc-pile-r-norm* *gc-pile-r-warn*)))
+    (princ "\n[!] Радиус сильно отличается от нормы — проверьте съёмку."))
+  (if (or (> (abs dx-pm) *gc-pile-tol-mm-per-m*)
+          (> (abs dy-pm) *gc-pile-tol-mm-per-m*))
+    (princ (strcat "\n[!] Превышен допуск "
+                   (rtos *gc-pile-tol-mm-per-m* 2 0) " мм/1м!")))
+  (princ "\n----------------------")
+  T)
 
-(defun gc-pile-process-extension (low-pts high-pts target-z /
-                                   c-low c-high z-low z-high dz k
-                                   target-x target-y target-pt)
-  (setq c-low  (gc-pile-best-circle low-pts))
-  (setq c-high (gc-pile-best-circle high-pts))
-  (cond
-    ((null c-low)
-     (princ "\n[ОШИБКА] SVP: не удалось построить круг по нижним точкам.")
-     nil)
-    ((null c-high)
-     (princ "\n[ОШИБКА] SVP: не удалось построить круг по верхним точкам.")
-     nil)
-    (T
-     (setq z-low  (gc-pile-avg (mapcar 'caddr low-pts))
-           z-high (gc-pile-avg (mapcar 'caddr high-pts))
-           dz     (- z-high z-low))
-     (if (<= (abs dz) 1.0e-6)
-       (progn
-         (princ "\n[ОШИБКА] SVP: dZ между сечениями слишком мал для расчета.")
-         nil)
-       (progn
-         (setq k (/ (- target-z z-low) dz))
-         (setq target-x (+ (car c-low) (* k (- (car c-high) (car c-low)))))
-         (setq target-y (+ (cadr c-low) (* k (- (cadr c-high) (cadr c-low)))))
-         (setq target-pt (list target-x target-y target-z))
-         (gc-pile-ensure-layer *gc-l-cut* 4)
-         (gc-pile-draw-circle target-x target-y target-z *gc-pile-r-norm* *gc-l-cut*)
-         (princ "\n--- SVP: сечение построено ---")
-         (princ (strcat "\nZ среза: " (rtos target-z 2 3) " м"
-                        "  |  Центр: ("
-                        (rtos target-x 2 3) ", "
-                        (rtos target-y 2 3) ", "
-                        (rtos target-z 2 3) ")"
-                        "  |  R = " (rtos *gc-pile-r-norm* 2 3) " м"))
-         (princ (strcat "\nОпорные Z: низ=" (rtos z-low 2 3)
-                        " м, верх=" (rtos z-high 2 3)
-                        " м, k=" (rtos k 2 3)))
-         target-pt)))))
+(defun gc-pile-draw-target-cut (data target-z / c-low c-high z-low z-high dz k target-x target-y target-pt)
+  (setq c-low  (nth 0 data)
+        c-high (nth 1 data)
+        z-low  (nth 2 data)
+        z-high (nth 3 data)
+        dz     (- z-high z-low))
+  (if (<= (abs dz) 1.0e-6)
+    (progn
+      (princ "\n[ОШИБКА] SVP: dZ между сечениями слишком мал для расчета.")
+      nil)
+    (progn
+      (setq k (/ (- target-z z-low) dz))
+      (setq target-x (+ (car c-low) (* k (- (car c-high) (car c-low)))))
+      (setq target-y (+ (cadr c-low) (* k (- (cadr c-high) (cadr c-low)))))
+      (setq target-pt (list target-x target-y target-z))
+      (gc-pile-ensure-layer *gc-l-cut* 4)
+      (gc-pile-draw-circle target-x target-y target-z *gc-pile-r-norm* *gc-l-cut*)
+      (princ "\n--- SVP: сечение построено ---")
+      (princ (strcat "\nZ среза: " (rtos target-z 2 3) " м"
+                     "  |  Центр: ("
+                     (rtos target-x 2 3) ", "
+                     (rtos target-y 2 3) ", "
+                     (rtos target-z 2 3) ")"
+                     "  |  R = " (rtos *gc-pile-r-norm* 2 3) " м"))
+      (princ (strcat "\nОпорные Z: низ=" (rtos z-low 2 3)
+                     " м, верх=" (rtos z-high 2 3)
+                     " м, k=" (rtos k 2 3)))
+      target-pt)))
+
+(defun gc-pile-process (low-pts high-pts / data)
+  (setq data (gc-pile-section-data low-pts high-pts "SV"))
+  (if data
+    (gc-pile-draw-sv-graphics data *gc-l-arrows* *gc-l-text* 7 0.0 "SV")
+    nil))
+
+(defun gc-pile-process-extension (low-pts high-pts target-z / data)
+  (setq data (gc-pile-section-data low-pts high-pts "SVP"))
+  (if data
+    (gc-pile-draw-target-cut data target-z)
+    nil))
+
+(defun gc-pile-process-sv3 (low-pts high-pts target-z / data target-pt)
+  (setq data (gc-pile-section-data low-pts high-pts "SV 3"))
+  (if data
+    (progn
+      (gc-pile-draw-sv-graphics data
+                                *gc-l-sv3-arrows*
+                                *gc-l-sv3-text*
+                                5
+                                *gc-pile-sv3-sv-dev-dz*
+                                "SV 3 / SV")
+      (setq target-pt (gc-pile-draw-target-cut data target-z))
+      target-pt)
+    nil))
 
 ;;; ====================================================================
 ;;; ПОДГОТОВКА ПАР СЕЧЕНИЙ
@@ -596,21 +611,106 @@
   (princ "\nВыделите точки нижнего сечения: ")
   (setq ss-low (ssget *gc-pile-ssget-filter*))
   (cond
-    ((null ss-low) (princ "\n[ОШИБКА] Нижнее сечение не выбрано.") nil)
+    ((null ss-low)
+     (princ "\n[ОШИБКА] Нижнее сечение не выбрано.")
+     nil)
     (T
      (princ "\nВыделите точки верхнего сечения: ")
      (setq ss-high (ssget *gc-pile-ssget-filter*))
      (cond
-       ((null ss-high) (princ "\n[ОШИБКА] Верхнее сечение не выбрано.") nil)
+       ((null ss-high)
+        (princ "\n[ОШИБКА] Верхнее сечение не выбрано.")
+        nil)
        (T
         (setq low-pts  (gc-pile-ss-to-points ss-low))
         (setq high-pts (gc-pile-ss-to-points ss-high))
         (cond
           ((< (length low-pts) 3)
-           (princ "\n[ОШИБКА] В нижнем сечении меньше 3 валидных точек.") nil)
+           (princ "\n[ОШИБКА] В нижнем сечении меньше 3 валидных точек.")
+           nil)
           ((< (length high-pts) 3)
-           (princ "\n[ОШИБКА] В верхнем сечении меньше 3 валидных точек.") nil)
+           (princ "\n[ОШИБКА] В верхнем сечении меньше 3 валидных точек.")
+           nil)
           (T (list low-pts high-pts))))))))
+
+;;; ====================================================================
+;;; ОБЩИЙ РАННЕР SVP / SV 3
+;;; ====================================================================
+
+(defun gc-pile-run-project-match (target-pt project-centers draw-mode /
+                                  match project-pt match-dist)
+  (setq match (gc-pile-take-nearest-project
+                target-pt
+                project-centers
+                *gc-pile-project-match-max*))
+  (setq project-pt (car match)
+        project-centers (cadr match)
+        match-dist (caddr match))
+  (if project-pt
+    (progn
+      (princ (strcat "\n[i] Проектный центр: расстояние до среза "
+                     (rtos match-dist 2 3) " м"))
+      (if (= draw-mode "SV3")
+        (gc-pile-draw-project-deviation-sv3 project-pt target-pt)
+        (gc-pile-draw-project-deviation project-pt target-pt))
+      (list project-centers 1 0))
+    (progn
+      (if match-dist
+        (princ (strcat "\n[!] SVP: ближайший проектный центр дальше "
+                       (rtos *gc-pile-project-match-max* 2 3)
+                       " м (расстояние " (rtos match-dist 2 3)
+                       " м) — проектное отклонение пропущено."))
+        (princ "\n[!] SVP: проектный центр не найден — проектное отклонение пропущено."))
+      (list project-centers 0 1))))
+
+(defun gc-pile-run-svp-core (pairs target-z project-centers draw-mode / project-mode
+                             total idx ok skipped dev-ok dev-skipped p target-pt res)
+  (setq project-mode (not (null project-centers)))
+  (setq total (length pairs) idx 1 ok 0 skipped 0 dev-ok 0 dev-skipped 0)
+  (foreach p pairs
+    (princ (strcat "\n=== " draw-mode ": Свая " (itoa idx) " / " (itoa total) " ==="))
+    (setq target-pt
+      (if (= draw-mode "SV3")
+        (gc-pile-process-sv3 (car p) (cdr p) target-z)
+        (gc-pile-process-extension (car p) (cdr p) target-z)))
+    (if target-pt
+      (progn
+        (setq ok (1+ ok))
+        (if project-mode
+          (cond
+            ((null project-centers)
+             (setq dev-skipped (1+ dev-skipped))
+             (princ "\n[!] Нет свободного проектного центра — проектное отклонение пропущено."))
+            (T
+             (setq res (gc-pile-run-project-match target-pt project-centers draw-mode))
+             (setq project-centers (car res))
+             (setq dev-ok (+ dev-ok (cadr res)))
+             (setq dev-skipped (+ dev-skipped (caddr res)))))))
+      (setq skipped (1+ skipped)))
+    (setq idx (1+ idx)))
+  (princ (strcat "\n[Итог " draw-mode "] построено сечений: " (itoa ok)
+                 "  пропущено сечений: " (itoa skipped)
+                 "  всего свай: " (itoa total)))
+  (if project-mode
+    (princ (strcat "\n[Итог " draw-mode "] проектных отклонений: " (itoa dev-ok)
+                   "  пропущено отклонений: " (itoa dev-skipped)))
+    (princ (strcat "\n[Итог " draw-mode "] проектные отклонения не строились: проектные объекты не выбраны.")))
+  T)
+
+(defun gc-pile-run-sv3 ( / pairs target-z project-centers)
+  (princ "\nSV 3: SV 1 + SVP за один запуск.")
+  (setq pairs (gc-pile-mode1))
+  (cond
+    ((null pairs)
+     (princ "\nКоманда отменена."))
+    (T
+     (setq target-z (getreal "\nВведите целевую отметку Z для среза, м: "))
+     (cond
+       ((null target-z)
+        (princ "\nКоманда отменена: отметка не введена."))
+       (T
+        (setq project-centers (gc-pile-read-project-centers))
+        (gc-pile-run-svp-core pairs target-z project-centers "SV3"))))))
 
 ;;; ====================================================================
 ;;; КОМАНДЫ
@@ -619,38 +719,45 @@
 (defun c:sv ( / mode-str pairs g idx total ok skipped p)
   (princ "\n  1 = все точки сразу (автоопределение свай)")
   (princ "\n  2 = по группам вручную (нижнее/верхнее сечение)")
-  (initget "1 2")
-  (setq mode-str (getkword "\nРежим [1/2] <1>: "))
+  (princ "\n  3 = все сразу: SV 1 + SVP")
+  (initget "1 2 3")
+  (setq mode-str (getkword "\nРежим [1/2/3] <1>: "))
   (if (null mode-str) (setq mode-str "1"))
   (princ (strcat "\nРежим: " mode-str))
   (cond
-    ((= mode-str "1")
-     (setq pairs (gc-pile-mode1)))
+    ((= mode-str "3")
+     (gc-pile-run-sv3))
     (T
-     (setq g (gc-pile-mode2))
-     (if g (setq pairs (list (cons (car g) (cadr g)))) (setq pairs nil))))
-  (cond
-    ((null pairs) (princ "\nКоманда отменена."))
-    (T
-     (setq total (length pairs) idx 1 ok 0 skipped 0)
-     (foreach p pairs
-       (princ (strcat "\n=== Свая " (itoa idx) " / " (itoa total) " ==="))
-       (if (gc-pile-process (car p) (cdr p))
-         (setq ok (1+ ok))
-         (setq skipped (1+ skipped)))
-       (setq idx (1+ idx)))
-     (princ (strcat "\n[Итог] обработано: " (itoa ok)
-                    "  пропущено: "          (itoa skipped)
-                    "  всего: "              (itoa total)))))
+     (cond
+       ((= mode-str "1")
+        (setq pairs (gc-pile-mode1)))
+       (T
+        (setq g (gc-pile-mode2))
+        (if g
+          (setq pairs (list (cons (car g) (cadr g))))
+          (setq pairs nil))))
+     (cond
+       ((null pairs)
+        (princ "\nКоманда отменена."))
+       (T
+        (setq total (length pairs) idx 1 ok 0 skipped 0)
+        (foreach p pairs
+          (princ (strcat "\n=== Свая " (itoa idx) " / " (itoa total) " ==="))
+          (if (gc-pile-process (car p) (cdr p))
+            (setq ok (1+ ok))
+            (setq skipped (1+ skipped)))
+          (setq idx (1+ idx)))
+        (princ (strcat "\n[Итог] обработано: " (itoa ok)
+                       "  пропущено: " (itoa skipped)
+                       "  всего: " (itoa total)))))))
   (princ))
 
-(defun c:svp ( / pairs target-z project-centers project-mode idx total
-                ok skipped dev-ok dev-skipped p target-pt
-                match project-pt match-dist)
+(defun c:svp ( / pairs target-z project-centers)
   (princ "\nSVP: сечение сваи на заданной отметке + проектное отклонение.")
   (setq pairs (gc-pile-mode1))
   (cond
-    ((null pairs) (princ "\nКоманда отменена."))
+    ((null pairs)
+     (princ "\nКоманда отменена."))
     (T
      (setq target-z (getreal "\nВведите целевую отметку Z, м: "))
      (cond
@@ -658,51 +765,8 @@
         (princ "\nКоманда отменена: отметка не введена."))
        (T
         (setq project-centers (gc-pile-read-project-centers))
-        (setq project-mode (not (null project-centers)))
-        (setq total (length pairs) idx 1 ok 0 skipped 0 dev-ok 0 dev-skipped 0)
-        (foreach p pairs
-          (princ (strcat "\n=== SVP: Свая " (itoa idx) " / " (itoa total) " ==="))
-          (setq target-pt (gc-pile-process-extension (car p) (cdr p) target-z))
-          (if target-pt
-            (progn
-              (setq ok (1+ ok))
-              (if project-mode
-                (cond
-                  ((null project-centers)
-                   (setq dev-skipped (1+ dev-skipped))
-                   (princ "\n[!] SVP: нет свободного проектного центра — проектное отклонение пропущено."))
-                  (T
-                   (setq match (gc-pile-take-nearest-project
-                                  target-pt
-                                  project-centers
-                                  *gc-pile-project-match-max*))
-                   (setq project-pt (car match)
-                         project-centers (cadr match)
-                         match-dist (caddr match))
-                   (if project-pt
-                     (progn
-                       (princ (strcat "\n[i] Проектный центр: расстояние до среза "
-                                      (rtos match-dist 2 3) " м"))
-                       (gc-pile-draw-project-deviation project-pt target-pt)
-                       (setq dev-ok (1+ dev-ok)))
-                     (progn
-                       (setq dev-skipped (1+ dev-skipped))
-                       (if match-dist
-                         (princ (strcat "\n[!] SVP: ближайший проектный центр дальше "
-                                        (rtos *gc-pile-project-match-max* 2 3)
-                                        " м (расстояние " (rtos match-dist 2 3)
-                                        " м) — проектное отклонение пропущено."))
-                         (princ "\n[!] SVP: проектный центр не найден — проектное отклонение пропущено.")))))))
-            (setq skipped (1+ skipped)))
-          (setq idx (1+ idx)))
-        (princ (strcat "\n[Итог SVP] построено сечений: " (itoa ok)
-                       "  пропущено сечений: "        (itoa skipped)
-                       "  всего свай: "                (itoa total)))
-        (if project-mode
-          (princ (strcat "\n[Итог SVP] проектных отклонений: " (itoa dev-ok)
-                         "  пропущено отклонений: "       (itoa dev-skipped)))
-          (princ "\n[Итог SVP] проектные отклонения не строились: проектные объекты не выбраны.")))))))
+        (gc-pile-run-svp-core pairs target-z project-centers "SVP")))))
   (princ))
 
-(princ "\n[gc] sv.lsp v13 загружен. Команды: SV, SVP")
+(princ "\n[gc] sv.lsp v14 загружен. Команды: SV, SVP")
 (princ)
