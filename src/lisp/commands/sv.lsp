@@ -12,6 +12,10 @@
 ;;; v8: udalyon fallback dlya Z-grupp s 2 tochkami.
 ;;;     Krug stroitsya TOLKO po >=3 tochkam.
 ;;;
+;;; v10: ispravlen znak X-smeshcheniya teksta u Y-strelki.
+;;;      Bylo: sxy=sx*sy — davalo nepravilnuyu storonu.
+;;;      Stalo: -sx — tekst vsegda naprotiv X-strelki.
+;;;
 ;;; v9: ispravlen baq "otmetchik pogloshchaetsya secheniyem".
 ;;;     Esli otmetchiki vysoty (para tochek ΔZ < 2 mm) nahoditsya v toj zhe
 ;;;     Z-gruppe, chto i realnoe sechenie (raznica 30-50 mm < porog 50 mm),
@@ -330,7 +334,7 @@
                          c-low c-high z-low z-high
                          dx-mm dy-mm dz dx-pm dy-pm
                          tstyle p-low p-end-x p-end-y
-                         pt-text-x pt-text-y sx sy sxy
+                         pt-text-x pt-text-y sx sy
                          dev-low dev-high)
   (setq c-low  (gc-pile-best-circle low-pts))
   (setq c-high (gc-pile-best-circle high-pts))
@@ -378,10 +382,11 @@
      ;; Подписи РЯДОМ со стрелками, в нужном квадранте.
      (setq sx  (if (>= dx-mm 0) 1.0 -1.0))
      (setq sy  (if (>= dy-mm 0) 1.0 -1.0))
-     (setq sxy (* sx sy))
+     ;; Y-текст — с ПРОТИВОПОЛОЖНОЙ стороны от X-стрелки (-(sx)).
+     ;; Было: (* sxy lateral) = sx*sy*0.1 — давало неверный знак.
      (setq pt-text-y
-       (list (+ (car  p-low) (* sxy *gc-pile-text-lateral*))
-             (+ (cadr p-low) (* sy  *gc-pile-text-along*))
+       (list (+ (car  p-low) (* (- sx) *gc-pile-text-lateral*))
+             (+ (cadr p-low) (* sy     *gc-pile-text-along*))
              z-low))
      (setq pt-text-x
        (list (+ (car  p-low) (* sx  *gc-pile-text-along*))
@@ -588,5 +593,5 @@
                     "  всего: "              (itoa total)))))
   (princ))
 
-(princ "\n[gc] sv.lsp v9 загружен. Команда: SV")
+(princ "\n[gc] sv.lsp v10 загружен. Команда: SV")
 (princ)
