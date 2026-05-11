@@ -1,8 +1,11 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v15)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v16)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
 ;;;
+;;; v16: ubrano verhnee ogranichenie dZ mezhdu nizhnim i verhnim secheniem.
+;;;      Svai s bolshim raznosom po vysote, naprimer Z 1.000 -> 12.000,
+;;;      obrabatyvayutsya vo vseh avtomaticheskih rezhimah.
 ;;; v15: ispravlen perenos grafiki SV 3: "vverh" = po osi +Y, ne po Z.
 ;;;      SV-otkloneniya v mode 3 risuyutsya sinim so sdvigom +Y 1.700 m.
 ;;;      SVP-proektnye otkloneniya v mode 3 risuyutsya belym so sdvigom +Y 2.600 m.
@@ -31,7 +34,6 @@
 (setq *gc-pile-z-cluster*          0.050)
 (setq *gc-pile-xy-cluster*         1.800)
 (setq *gc-pile-pair-dz-min*        0.300)
-(setq *gc-pile-pair-dz-max*        5.000)
 (setq *gc-pile-hm-pair-dz-max*     0.002)
 (setq *gc-pile-hm-gap-min*         0.010)
 (setq *gc-pile-project-match-max*  2.000)
@@ -563,11 +565,6 @@
                           ": dZ=" (rtos dz 2 3) " м < "
                           (rtos *gc-pile-pair-dz-min* 2 2) " м — пропуск."))
            nil)
-          ((> dz *gc-pile-pair-dz-max*)
-           (princ (strcat "\n[!] Свая X~" (rtos (caar pile-pts) 2 1)
-                          ": dZ=" (rtos dz 2 3) " м > "
-                          (rtos *gc-pile-pair-dz-max* 2 2) " м — пропуск."))
-           nil)
           (T (cons (cdr lo) (cdr hi)))))))))
 
 (defun gc-pile-mode1 ( / ss pts n xy-clusters pairs pile-pts pair)
@@ -769,5 +766,5 @@
         (gc-pile-run-svp-core pairs target-z project-centers "SVP")))))
   (princ))
 
-(princ "\n[gc] sv.lsp v15 загружен. Команды: SV, SVP")
+(princ "\n[gc] sv.lsp v16 загружен. Команды: SV, SVP")
 (princ)
