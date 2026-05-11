@@ -1,11 +1,12 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v14)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v15)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
 ;;;
+;;; v15: ispravlen perenos grafiki SV 3: "vverh" = po osi +Y, ne po Z.
+;;;      SV-otkloneniya v mode 3 risuyutsya sinim so sdvigom +Y 1.700 m.
+;;;      SVP-proektnye otkloneniya v mode 3 risuyutsya belym so sdvigom +Y 2.600 m.
 ;;; v14: SV mode 3 = SV mode 1 + SVP za odin zapusk.
-;;;      SV-otkloneniya v mode 3 risuyutsya sinim na Zlow + 1.700 m.
-;;;      SVP-proektnye otkloneniya v mode 3 risuyutsya belym na Ztarget + 2.600 m.
 ;;; v13: SVP schitaet otklonenie ot proektnogo centra k novomu secheniyu.
 ;;; v12: dobavlena komanda SVP (SPEC-003).
 ;;; v11: gc-pile-strip-hm udalyaet paru otmetchikov vysoty tolko esli ona
@@ -34,8 +35,8 @@
 (setq *gc-pile-hm-pair-dz-max*     0.002)
 (setq *gc-pile-hm-gap-min*         0.010)
 (setq *gc-pile-project-match-max*  2.000)
-(setq *gc-pile-sv3-sv-dev-dz*      1.700)
-(setq *gc-pile-sv3-prj-dev-dz*     2.600)
+(setq *gc-pile-sv3-sv-dev-dy*      1.700)
+(setq *gc-pile-sv3-prj-dev-dy*     2.600)
 
 (setq *gc-pile-ssget-filter*
       '((0 . "POINT,AECC*POINT,AEC*POINT")))
@@ -373,15 +374,15 @@
 
 (defun gc-pile-draw-project-deviation-sv3 (project-pt target-pt / dx-mm dy-mm p-base)
   (setq p-base (list (car project-pt)
-                     (cadr project-pt)
-                     (+ (caddr target-pt) *gc-pile-sv3-prj-dev-dz*)))
+                     (+ (cadr project-pt) *gc-pile-sv3-prj-dev-dy*)
+                     (caddr target-pt)))
   (setq dx-mm (* 1000.0 (- (car target-pt)  (car project-pt)))
         dy-mm (* 1000.0 (- (cadr target-pt) (cadr project-pt))))
   (gc-pile-draw-xy-deviation p-base dx-mm dy-mm dx-mm dy-mm
                              *gc-l-sv3-project-arrows*
                              *gc-l-sv3-project-text*
                              7)
-  (princ (strcat "\nSV 3: проектное отклонение на Z+2.600: dX = "
+  (princ (strcat "\nSV 3: проектное отклонение со сдвигом +Y 2600 мм: dX = "
                  (gc-pile-mm-signed dx-mm)
                  "   dY = " (gc-pile-mm-signed dy-mm)))
   T)
@@ -405,7 +406,7 @@
            z-high (gc-pile-avg (mapcar 'caddr high-pts)))
      (list c-low c-high z-low z-high))))
 
-(defun gc-pile-draw-sv-graphics (data arrow-layer text-layer color z-offset label /
+(defun gc-pile-draw-sv-graphics (data arrow-layer text-layer color y-offset label /
                                   c-low c-high z-low z-high dx-mm dy-mm dz dx-pm dy-pm
                                   base-pt dev-low dev-high)
   (setq c-low  (nth 0 data)
@@ -424,7 +425,7 @@
           dy-pm (/ dy-mm dz))
     (setq dx-pm dx-mm
           dy-pm dy-mm))
-  (setq base-pt (list (car c-low) (cadr c-low) (+ z-low z-offset)))
+  (setq base-pt (list (car c-low) (+ (cadr c-low) y-offset) z-low))
   (gc-pile-draw-xy-deviation base-pt dx-mm dy-mm dx-pm dy-pm
                              arrow-layer text-layer color)
   (setq dev-low  (* 1000.0 (- (caddr c-low)  *gc-pile-r-norm*)))
@@ -449,9 +450,9 @@
                  "   dY = " (gc-pile-mm-signed dy-mm)
                  " (" (rtos (abs dy-pm) 2 0) " мм/1м)"))
   (princ (strcat "\ndZ между сечениями = " (rtos dz 2 3) " м"))
-  (if (> (abs z-offset) 1.0e-9)
-    (princ (strcat "\n[i] Графика отклонений поднята на "
-                   (rtos (* z-offset 1000.0) 2 0) " мм.")))
+  (if (> (abs y-offset) 1.0e-9)
+    (princ (strcat "\n[i] Графика отклонений смещена по +Y на "
+                   (rtos (* y-offset 1000.0) 2 0) " мм.")))
   (if (or (> (caddr c-low)  (+ *gc-pile-r-norm* *gc-pile-r-warn*))
           (< (caddr c-low)  (- *gc-pile-r-norm* *gc-pile-r-warn*))
           (> (caddr c-high) (+ *gc-pile-r-norm* *gc-pile-r-warn*))
@@ -513,7 +514,7 @@
                                 *gc-l-sv3-arrows*
                                 *gc-l-sv3-text*
                                 5
-                                *gc-pile-sv3-sv-dev-dz*
+                                *gc-pile-sv3-sv-dev-dy*
                                 "SV 3 / SV")
       (setq target-pt (gc-pile-draw-target-cut data target-z))
       target-pt)
@@ -768,5 +769,5 @@
         (gc-pile-run-svp-core pairs target-z project-centers "SVP")))))
   (princ))
 
-(princ "\n[gc] sv.lsp v14 загружен. Команды: SV, SVP")
+(princ "\n[gc] sv.lsp v15 загружен. Команды: SV, SVP")
 (princ)
