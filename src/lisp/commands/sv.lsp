@@ -1,4 +1,4 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 v8)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 v9)
 ;;; Komanda SV: po tochkam takheomedra -- dva kruga (niz/verkh secheniya)
 ;;; i strelki otkloneniy mezhdu centrami s celochisl. podpisyami (mm/1m).
 ;;;
@@ -9,9 +9,13 @@
 ;;; v7: ispravlen krit. baq v gc-pile-mode1 (lishnyaya skobka -> "funkciya T").
 ;;;     Logika obrabotki klastera vynesena v gc-pile-pair-from-cluster.
 ;;;
-;;; v8: udalyon fallback dlya Z-grupp s 2 tochkami (gc-pile-fit-2pts-r +
-;;;     gc-pile-synth-3rd). Teper krug stroitsya TOLKO po >=3 tochkam.
-;;;     Z-gruppy s 1-2 tochkami (otmetciki vysoty svayi) molcha ignoriruyutsya.
+;;; v8: udalyon fallback dlya Z-grupp s 2 tochkami.
+;;;     Krug stroitsya TOLKO po >=3 tochkam.
+;;;
+;;; v9: ispravlen baq "otmetchik pogloshchaetsya secheniyem".
+;;;     Esli otmetchiki vysoty (para tochek ΔZ < 2 mm) nahoditsya v toj zhe
+;;;     Z-gruppe, chto i realnoe sechenie (raznica 30-50 mm < porog 50 mm),
+;;;     gc-pile-strip-hm udalyaet etu paru pered podborom kruga.
 ;;;
 ;;; Specifikaciya: specs/001-pile-deviation.md, specs/002-pile-multi-batch.md
 ;;; Zagruzka: APPLOAD ili (load "put/k/sv.lsp").
@@ -113,6 +117,29 @@
 ;;; ====================================================================
 ;;; ВЫБОР ЛУЧШЕЙ ОКРУЖНОСТИ — min |R - norm| по тройкам C(N,3)
 ;;; ====================================================================
+
+;; Удаляет пару "отметчиков высоты" из вершины Z-группы.
+;; Признак отметчика: два топовых точки с |ΔZ| < 2 мм (одна точка на голове
+;; сваи, снятая дважды). Условие удаления: группа ≥4 точек, чтобы после
+;; удаления пары осталось ≥2 (вызывающий код проверяет ≥3 отдельно).
+;; ПОЧЕМУ ΔZ < 2 мм, а не 50 мм: реальные точки сечения разнесены по Z на
+;; 5-40 мм; пара отметчиков — почти одинаковые измерения одной и той же точки.
+(defun gc-pile-strip-hm (zg / sorted top1 top2 rest)
+  (if (< (length zg) 4)
+    zg
+    (progn
+      (setq sorted (vl-sort zg '(lambda (a b) (> (caddr a) (caddr b)))))
+      (setq top1 (car sorted)
+            top2 (cadr sorted)
+            rest (cddr sorted))
+      (if (< (abs (- (caddr top1) (caddr top2))) 0.002)
+        (progn
+          (princ (strcat "\n[i] Удалены 2 отметчика высоты"
+                         " (Z=" (rtos (caddr top1) 2 3)
+                         " м, ΔZ=" (rtos (* 1000 (abs (- (caddr top1) (caddr top2)))) 2 1)
+                         " мм)"))
+          rest)
+        zg))))
 
 (defun gc-pile-combos3 (lst / n i j k res)
   (setq res '() n (length lst) i 0)
@@ -403,27 +430,28 @@
 
 ;; Внутри одной сваи (XY-кластера):
 ;; 1. Z-кластеризация → сечения по отметкам
-;; 2. Z-группы с ≥3 точками → круг через 3 точки; группы с 1-2 точками
-;;    (отметчики высоты сваи) молча игнорируются.
-;; 3. Сортируем по Z, берём крайние (min и max) — пара низ/верх.
+;; 2. Из каждой Z-группы удаляются отметчики высоты (gc-pile-strip-hm)
+;; 3. Z-группы с ≥3 чистыми точками → круг через 3 точки
+;; 4. Сортируем по Z, берём крайние (min и max) — пара низ/верх.
 ;; Возвращает cons-пара (low-pts . high-pts) или nil + диагностика.
-(defun gc-pile-pair-from-cluster (pile-pts / z-groups valid-secs zg
+(defun gc-pile-pair-from-cluster (pile-pts / z-groups valid-secs zg clean-zg
                                    circ z-mean
                                    sorted-secs lo hi dz z-list)
   (cond
     ((< (length pile-pts) 6) nil)
     (T
      (setq z-groups (gc-pile-cluster-by-z pile-pts))
-     ;; Только Z-группы с ≥3 точками образуют сечения
+     ;; Из каждой Z-группы убираем отметчики высоты, затем проверяем ≥3
      (setq valid-secs '())
      (foreach zg z-groups
-       (if (>= (length zg) 3)
+       (setq clean-zg (gc-pile-strip-hm zg))
+       (if (>= (length clean-zg) 3)
          (progn
-           (setq circ (gc-pile-best-circle zg))
+           (setq circ (gc-pile-best-circle clean-zg))
            (if circ
              (progn
-               (setq z-mean (gc-pile-avg (mapcar 'caddr zg)))
-               (setq valid-secs (cons (cons z-mean zg) valid-secs)))))))
+               (setq z-mean (gc-pile-avg (mapcar 'caddr clean-zg)))
+               (setq valid-secs (cons (cons z-mean clean-zg) valid-secs)))))))
      (cond
        ((< (length valid-secs) 2)
         (setq z-list (apply 'strcat
@@ -560,5 +588,5 @@
                     "  всего: "              (itoa total)))))
   (princ))
 
-(princ "\n[gc] sv.lsp v8 загружен. Команда: SV")
+(princ "\n[gc] sv.lsp v9 загружен. Команда: SV")
 (princ)
