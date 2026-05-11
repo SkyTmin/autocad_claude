@@ -1,4 +1,4 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 v6)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 v7)
 ;;; Komanda SV: po tochkam takheomedra -- dva kruga (niz/verkh secheniya)
 ;;; i strelki otkloneniy mezhdu centrami s celochisl. podpisyami (mm/1m).
 ;;;
@@ -6,6 +6,11 @@
 ;;;     potom Z-klasterizaciya vnutri (razdelyaet secheniya),
 ;;;     potom krug po luchshim 3 tochkam kazhdogo secheniya.
 ;;;     Ustranyaet sboy, kogda algoritm ne nakhodil R~710mm pri poiske globalno.
+;;;
+;;; v7: ispravlen krit. baq v gc-pile-mode1 (lishnyaya skobka -> "funkciya T").
+;;;     Logika obrabotki klastera vynesena v gc-pile-pair-from-cluster.
+;;;     Dobaylen fallback dlya Z-grupp s 2 tochkami: fix-R + reference (centr
+;;;     3-tochechnogo secheniya), sintez 3-y tochki -> obychnyy fit krugа.
 ;;;
 ;;; Specifikaciya: specs/001-pile-deviation.md, specs/002-pile-multi-batch.md
 ;;; Zagruzka: APPLOAD ili (load "put/k/sv.lsp").
@@ -392,6 +397,132 @@
      T)))
 
 ;;; ====================================================================
+;;; КРУГ С ФИКСИРОВАННЫМ R ПО 2 ТОЧКАМ (для разреженных сечений)
+;;; ====================================================================
+
+;; Когда в Z-группе только 2 точки, нельзя описать круг однозначно.
+;; Но мы знаем R сваи (*gc-pile-r-norm*). По 2 точкам и R центр лежит
+;; на серединном перпендикуляре к хорде, на расстоянии sqrt(R²-(хорда/2)²)
+;; от середины. Две позиции — выбираем ближнюю к ref (центр нижнего сечения
+;; или центроид кластера).
+;; Возвращает (cx cy r) или nil (если хорда > 2R или точки совпадают).
+(defun gc-pile-fit-2pts-r (p1 p2 r ref / mx my chord-x chord-y chord
+                                       half-chord d-perp ux uy c1 c2)
+  (setq mx (/ (+ (car p1) (car p2)) 2.0)
+        my (/ (+ (cadr p1) (cadr p2)) 2.0))
+  (setq chord-x (- (car p2) (car p1))
+        chord-y (- (cadr p2) (cadr p1)))
+  (setq chord (sqrt (+ (* chord-x chord-x) (* chord-y chord-y))))
+  (cond
+    ((< chord 1.0e-9) nil)
+    ((> chord (* 2.0 r)) nil)
+    (T
+     (setq half-chord (/ chord 2.0))
+     (setq d-perp (sqrt (- (* r r) (* half-chord half-chord))))
+     ;; Единичный перпендикуляр к хорде (поворот на 90°)
+     (setq ux (/ (- chord-y) chord)
+           uy (/ chord-x chord))
+     (setq c1 (list (+ mx (* d-perp ux)) (+ my (* d-perp uy)) r))
+     (setq c2 (list (- mx (* d-perp ux)) (- my (* d-perp uy)) r))
+     (if (< (gc-pile-dist-xy c1 ref) (gc-pile-dist-xy c2 ref))
+       c1 c2))))
+
+;; По 2 реальным точкам p1, p2 и кругу — синтезируем 3-ю точку на круге
+;; так, чтобы тройка не была коллинеарна (это нужно чтобы дальше
+;; gc-pile-best-circle вернул тот же круг через 3 точки).
+;; Z 3-й точки — среднее Z реальных точек.
+(defun gc-pile-synth-3rd (p1 p2 circ / cx cy r mx my dx dy len ux uy)
+  (setq cx (car circ) cy (cadr circ) r (caddr circ))
+  (setq mx (/ (+ (car p1) (car p2)) 2.0)
+        my (/ (+ (cadr p1) (cadr p2)) 2.0))
+  (setq dx (- mx cx) dy (- my cy))
+  (setq len (sqrt (+ (* dx dx) (* dy dy))))
+  (cond
+    ((< len 1.0e-9)
+     ;; хорда — диаметр, ставим 3-ю точку перпендикулярно
+     (list (+ cx r) cy (/ (+ (caddr p1) (caddr p2)) 2.0)))
+    (T
+     ;; Точка диаметрально противоположна середине хорды через центр
+     (setq ux (/ dx len) uy (/ dy len))
+     (list (- cx (* r ux)) (- cy (* r uy))
+           (/ (+ (caddr p1) (caddr p2)) 2.0)))))
+
+;;; ====================================================================
+;;; ОБРАБОТКА ОДНОГО XY-КЛАСТЕРА В ПАРУ (low-pts . high-pts)
+;;; ====================================================================
+
+;; Внутри одной сваи (XY-кластера):
+;; 1. Z-кластеризация → сечения по отметкам
+;; 2. Первый проход: Z-группы с ≥3 точками → круг через 3 точки
+;; 3. Второй проход: Z-группы с 2 точками → круг с фикс-R + reference
+;; 4. Сортируем по Z, берём крайние (min и max) — пара низ/верх
+;; Возвращает cons-пара (low-pts . high-pts) или nil + диагностика.
+(defun gc-pile-pair-from-cluster (pile-pts / z-groups valid-secs zg
+                                   circ z-mean ref ref-circle
+                                   sorted-secs lo hi dz z-list
+                                   p1 p2 p3 sec-pts)
+  (cond
+    ((< (length pile-pts) 6) nil)
+    (T
+     (setq z-groups (gc-pile-cluster-by-z pile-pts))
+     ;; Проход 1: Z-группы с ≥3 точками
+     (setq valid-secs '() ref-circle nil)
+     (foreach zg z-groups
+       (if (>= (length zg) 3)
+         (progn
+           (setq circ (gc-pile-best-circle zg))
+           (if circ
+             (progn
+               (if (null ref-circle) (setq ref-circle circ))
+               (setq z-mean (gc-pile-avg (mapcar 'caddr zg)))
+               (setq valid-secs (cons (cons z-mean zg) valid-secs)))))))
+     ;; Reference — центр первого 3-точечного сечения или центроид кластера
+     (setq ref (if ref-circle
+                 (list (car ref-circle) (cadr ref-circle))
+                 (gc-pile-centroid-xy pile-pts)))
+     ;; Проход 2: Z-группы с ровно 2 точками — фикс-R + ref
+     (foreach zg z-groups
+       (if (= (length zg) 2)
+         (progn
+           (setq p1 (car zg) p2 (cadr zg))
+           (setq circ (gc-pile-fit-2pts-r p1 p2 *gc-pile-r-norm* ref))
+           (if circ
+             (progn
+               (setq p3 (gc-pile-synth-3rd p1 p2 circ))
+               (setq sec-pts (list p1 p2 p3))
+               (setq z-mean (gc-pile-avg (mapcar 'caddr sec-pts)))
+               (setq valid-secs (cons (cons z-mean sec-pts) valid-secs)))))))
+     (cond
+       ((< (length valid-secs) 2)
+        (setq z-list (apply 'strcat
+                       (mapcar '(lambda (p) (strcat (rtos (caddr p) 2 3) " "))
+                               pile-pts)))
+        (princ (strcat "\n[!] Свая X~" (rtos (caar pile-pts) 2 1)
+                       " Y~" (rtos (cadar pile-pts) 2 1)
+                       ": сечений найдено " (itoa (length valid-secs))
+                       " (нужно ≥2) — пропуск."
+                       "\n    Z всех точек: " z-list))
+        nil)
+       (T
+        (setq sorted-secs
+              (vl-sort valid-secs '(lambda (a b) (< (car a) (car b)))))
+        (setq lo (car sorted-secs)
+              hi (last sorted-secs))
+        (setq dz (- (car hi) (car lo)))
+        (cond
+          ((< dz *gc-pile-pair-dz-min*)
+           (princ (strcat "\n[!] Свая X~" (rtos (caar pile-pts) 2 1)
+                          ": dZ=" (rtos dz 2 3) " м < "
+                          (rtos *gc-pile-pair-dz-min* 2 2) " м — пропуск."))
+           nil)
+          ((> dz *gc-pile-pair-dz-max*)
+           (princ (strcat "\n[!] Свая X~" (rtos (caar pile-pts) 2 1)
+                          ": dZ=" (rtos dz 2 3) " м > "
+                          (rtos *gc-pile-pair-dz-max* 2 2) " м — пропуск."))
+           nil)
+          (T (cons (cdr lo) (cdr hi)))))))))
+
+;;; ====================================================================
 ;;; РЕЖИМ 1 — АВТО: XY-кластеризация → Z-кластеризация → сечения
 ;;; ====================================================================
 
@@ -401,9 +532,7 @@
 ;; тройкам и кругам с "плохим" R, даже если R на самом деле ~710мм.
 ;; XY-группировка сначала изолирует каждую сваю, потом Z-группировка
 ;; безошибочно разделяет сечения внутри сваи.
-(defun gc-pile-mode1 ( / ss pts n xy-clusters pairs
-                          pile-pts z-groups valid-secs
-                          zg circ z-mean sorted-secs lo hi dz)
+(defun gc-pile-mode1 ( / ss pts n xy-clusters pairs pile-pts pair)
   (princ "\nВыделите точки свай (рамкой). Не-точки игнорируются: ")
   (setq ss (ssget *gc-pile-ssget-filter*))
   (cond
@@ -430,52 +559,11 @@
         (setq xy-clusters (gc-pile-cluster-by-xy pts))
         (princ (strcat "\n[i] Выявлено XY-кластеров (свай): "
                        (itoa (length xy-clusters))))
-        ;; Шаг 2: для каждой сваи — Z-группы, потом круги, потом пара
+        ;; Шаг 2: для каждой сваи — формируем пару (low-pts . high-pts) или пропуск
         (setq pairs '())
         (foreach pile-pts xy-clusters
-          ;; Маленькие кластеры — станции/засечки, тихо пропускаем
-          (if (>= (length pile-pts) 6)
-            (progn
-              (setq z-groups (gc-pile-cluster-by-z pile-pts))
-              ;; Для каждой Z-группы с ≥3 точками — лучший круг
-              (setq valid-secs '())
-              (foreach zg z-groups
-                (if (>= (length zg) 3)
-                  (progn
-                    (setq circ (gc-pile-best-circle zg))
-                    (if circ
-                      (progn
-                        (setq z-mean (gc-pile-avg (mapcar 'caddr zg)))
-                        (setq valid-secs (cons (cons z-mean zg) valid-secs)))))))
-              (cond
-                ((< (length valid-secs) 2)
-                 (princ (strcat "\n[!] Свая у X~"
-                                (rtos (caar pile-pts) 2 1)
-                                " Y~" (rtos (cadar pile-pts) 2 1)
-                                ": сечений с ≥3 точками найдено "
-                                (itoa (length valid-secs))
-                                " (нужно ≥2) — пропуск."
-                                "\n    Z-значения точек: "
-                                (apply 'strcat
-                                  (mapcar '(lambda (p)
-                                    (strcat (rtos (caddr p) 2 3) " "))
-                                  pile-pts))))
-                (T
-                 ;; Крайние по Z сечения (min и max Z)
-                 (setq sorted-secs
-                       (vl-sort valid-secs '(lambda (a b) (< (car a) (car b)))))
-                 (setq lo (car sorted-secs)
-                       hi (last sorted-secs))
-                 (setq dz (- (car hi) (car lo)))
-                 (cond
-                   ((< dz *gc-pile-pair-dz-min*)
-                    (princ (strcat "\n[!] Свая: dZ=" (rtos dz 2 3) " м"
-                                   " < " (rtos *gc-pile-pair-dz-min* 2 2) " м — пропуск.")))
-                   ((> dz *gc-pile-pair-dz-max*)
-                    (princ (strcat "\n[!] Свая: dZ=" (rtos dz 2 3) " м"
-                                   " > " (rtos *gc-pile-pair-dz-max* 2 2) " м — пропуск.")))
-                   (T
-                    (setq pairs (cons (cons (cdr lo) (cdr hi)) pairs))))))))))
+          (setq pair (gc-pile-pair-from-cluster pile-pts))
+          (if pair (setq pairs (cons pair pairs))))
         (cond
           ((null pairs)
            (princ "\n[ОШИБКА] Ни одной сваи не удалось сформировать.")
@@ -540,5 +628,5 @@
                     "  всего: "              (itoa total)))))
   (princ))
 
-(princ "\n[gc] sv.lsp v6 загружен. Команда: SV")
+(princ "\n[gc] sv.lsp v7 загружен. Команда: SV")
 (princ)
