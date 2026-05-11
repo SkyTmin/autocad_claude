@@ -1,40 +1,23 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 v11)
-;;; Komanda SV: po tochkam takheomedra -- dva kruga (niz/verkh secheniya)
-;;; i strelki otkloneniy mezhdu centrami s celochisl. podpisyami (mm/1m).
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 v12)
+;;; Komandy:
+;;;   SV  -- dva secheniya svai i otkloneniya mezhdu centrami.
+;;;   SVP -- sechenie svai na zadannoy vysotnoy otmetke.
 ;;;
-;;; v6: novaya logika -- snachala XY-klasterizaciya (gruppa tochek ~ odna svaya),
-;;;     potom Z-klasterizaciya vnutri (razdelyaet secheniya),
-;;;     potom krug po luchshim 3 tochkam kazhdogo secheniya.
+;;; v12: dobavlena komanda SVP (SPEC-003): prodlenie/interpolyaciya svai
+;;;      po dvum naydennym secheniyam. SV v11 ostavlen kak stabilnaya baza.
+;;; v11: gc-pile-strip-hm udalyaet paru otmetchikov vysoty tolko esli ona
+;;;      yavno izolirovana nad secheniem.
 ;;;
-;;; v7: ispravlen krit. baq v gc-pile-mode1 (lishnyaya skobka -> "funkciya T").
-;;;     Logika obrabotki klastera vynesena v gc-pile-pair-from-cluster.
-;;;
-;;; v8: udalyon fallback dlya Z-grupp s 2 tochkami.
-;;;     Krug stroitsya TOLKO po >=3 tochkam.
-;;;
-;;; v11: ispravlena REGRESSIYA v9 — gc-pile-strip-hm udalyala 2 verhnie tochki
-;;;      LYUBOGO ploskogo secheniya (tochki gorizontalnogo sreza tozhe sovpadayut
-;;;      po Z), obeskrovlivaya realnoe sechenie -> "secheniy najdeno 1, propusk".
-;;;      Teper para otmetchikov udalyaetsya TOLKO esli yavno izolirovana nad
-;;;      secheniem: zazor do 3-j sverhu tochki >= *gc-pile-hm-gap-min* (10 mm)
-;;;      I v gruppe >=5 tochek (chtoby ostalos >=3).
-;;;
-;;; v10: ispravlen znak X-smeshcheniya teksta u Y-strelki.
-;;;      Bylo: sxy=sx*sy — davalo nepravilnuyu storonu.
-;;;      Stalo: -sx — tekst vsegda naprotiv X-strelki.
-;;;
-;;; v9: ispravlen baq "otmetchik pogloshchaetsya secheniyem" (CHASTICHNO NEVERNO,
-;;;     sm. v11): esli otmetchiki vysoty (para tochek ΔZ < 2 mm) v toj zhe
-;;;     Z-gruppe, chto i sechenie, gc-pile-strip-hm udalyala etu paru.
-;;;
-;;; Specifikaciya: specs/001-pile-deviation.md, specs/002-pile-multi-batch.md
+;;; Specifikacii: specs/001-pile-deviation.md,
+;;;               specs/002-pile-multi-batch.md,
+;;;               specs/003-pile-extension.md
 ;;; Zagruzka: APPLOAD ili (load "put/k/sv.lsp").
 ;;; Zavisimosti: Visual LISP COM.
 
 (vl-load-com)
 
 ;;; ====================================================================
-;;; КОНСТАНТЫ — Шамиль может править эти значения вручную в начале файла
+;;; КОНСТАНТЫ
 ;;; ====================================================================
 
 (setq *gc-pile-r-norm*           0.710) ; норма радиуса сваи, м (D1420мм / 2)
@@ -42,16 +25,15 @@
 (setq *gc-pile-arrow-len*        0.400) ; длина Leader, м
 (setq *gc-pile-tol-mm-per-m*    20.0)   ; норматив 20 мм/1м
 (setq *gc-pile-text-h*           0.100) ; высота текста, м
-(setq *gc-pile-text-along*       0.200) ; смещение текста ВДОЛЬ стрелки от центра, м
-(setq *gc-pile-text-lateral*     0.100) ; смещение текста ПЕРПЕНДИКУЛЯРНО стрелке, м
-(setq *gc-pile-z-cluster*        0.050) ; порог "одной высоты" по Z, м (50 мм)
+(setq *gc-pile-text-along*       0.200) ; смещение текста вдоль стрелки, м
+(setq *gc-pile-text-lateral*     0.100) ; смещение текста поперек стрелки, м
+(setq *gc-pile-z-cluster*        0.050) ; порог одной высоты по Z, м
 (setq *gc-pile-xy-cluster*       1.800) ; порог XY-кластеризации свай, м
-(setq *gc-pile-pair-dz-min*      0.300) ; минимальный dZ между сечениями одной сваи, м
-(setq *gc-pile-pair-dz-max*      5.000) ; максимальный dZ между сечениями одной сваи, м
-(setq *gc-pile-hm-pair-dz-max*   0.002) ; макс ΔZ ВНУТРИ пары отметчиков высоты, м (2 мм)
-(setq *gc-pile-hm-gap-min*       0.010) ; мин зазор от пары отметчиков до точек сечения, м (10 мм)
+(setq *gc-pile-pair-dz-min*      0.300) ; минимальный dZ между сечениями, м
+(setq *gc-pile-pair-dz-max*      5.000) ; максимальный dZ между сечениями, м
+(setq *gc-pile-hm-pair-dz-max*   0.002) ; макс ΔZ внутри пары отметчиков, м
+(setq *gc-pile-hm-gap-min*       0.010) ; мин зазор от отметчиков до сечения, м
 
-;; Фильтр для ssget: только точки и COGO Points.
 (setq *gc-pile-ssget-filter*
       '((0 . "POINT,AECC*POINT,AEC*POINT")))
 
@@ -59,14 +41,12 @@
 (setq *gc-l-high*   "GC-Сваи-Верх")
 (setq *gc-l-arrows* "GC-Сваи-Отклонения")
 (setq *gc-l-text*   "GC-Сваи-Текст")
+(setq *gc-l-cut*    "GC-Сваи-Срез")
 
 ;;; ====================================================================
 ;;; ИЗВЛЕЧЕНИЕ КООРДИНАТ ИЗ ОБЪЕКТА
 ;;; ====================================================================
 
-;; ПОЧЕМУ через VL-свойства, а не DXF: COGO Point Civil 3D имеет
-;; нестандартный DXF-тип, но через ActiveX доступен Easting/Northing/Elevation
-;; единообразно. Fallback на Coordinates/InsertionPoint покрывает Point/Insert.
 (defun gc-pile-get-coords (ent / obj)
   (setq obj (vlax-ename->vla-object ent))
   (cond
@@ -100,8 +80,6 @@
 ;;; ГЕОМЕТРИЯ
 ;;; ====================================================================
 
-;; Окружность по 3 точкам в плане XY. Возвращает (cx cy r) или nil
-;; при коллинеарности. Z игнорируется (плановое положение).
 (defun gc-pile-circle-3 (p1 p2 p3 / ax ay bx by d ux uy)
   (setq ax (- (car p2)  (car p1))
         ay (- (cadr p2) (cadr p1))
@@ -126,21 +104,6 @@
   (foreach v lst (setq sum (+ sum v)))
   (/ sum (float (length lst))))
 
-;;; ====================================================================
-;;; ВЫБОР ЛУЧШЕЙ ОКРУЖНОСТИ — min |R - norm| по тройкам C(N,3)
-;;; ====================================================================
-
-;; Удаляет пару "отметчиков высоты" из вершины Z-группы — НО только если эта
-;; пара ЯВНО ИЗОЛИРОВАНА над остальными точками сечения.
-;; Признаки отметчика (все одновременно):
-;;   1. две самые верхние точки почти совпадают по Z:
-;;      |ΔZ| < *gc-pile-hm-pair-dz-max* (одна точка на голове сваи, снятая дважды);
-;;   2. между этой парой и третьей сверху точкой — зазор ≥ *gc-pile-hm-gap-min*
-;;      (точки реального сечения лежат плотнее; пара отметчиков сидит на 30-50 мм выше);
-;;   3. в группе ≥5 точек, чтобы после удаления пары осталось ≥3 (круг строится по 3).
-;; ПОЧЕМУ нужен п.2: БЕЗ него (как было в v9) условие срабатывало на ЛЮБОМ
-;; плоском сечении — точки горизонтального среза тоже почти совпадают по Z —
-;; и съедало половину реальных точек, ломая сечение. См. регрессию v9 → v11.
 (defun gc-pile-strip-hm (zg / sorted top1 top2 top3 rest)
   (if (< (length zg) 5)
     zg
@@ -174,8 +137,6 @@
     (setq i (1+ i)))
   res)
 
-;; Возвращает лучший круг (min |R-norm|) из всех троек точек.
-;; Не фильтрует по допуску — просто берёт наилучший.
 (defun gc-pile-best-circle (points / triples best best-err circ err)
   (if (< (length points) 3)
     nil
@@ -191,35 +152,16 @@
               (setq best-err err best circ)))))
       best)))
 
-;;; ====================================================================
-;;; ВСПОМОГАТЕЛЬНАЯ ГЕОМЕТРИЯ
-;;; ====================================================================
-
-;; Расстояние между точками в плане (XY).
 (defun gc-pile-dist-xy (p1 p2 / dx dy)
   (setq dx (- (car p1) (car p2))
         dy (- (cadr p1) (cadr p2)))
   (sqrt (+ (* dx dx) (* dy dy))))
 
-;; Среднее XY-центроида списка точек: возвращает (cx cy).
-(defun gc-pile-centroid-xy (pts)
-  (list (gc-pile-avg (mapcar 'car  pts))
-        (gc-pile-avg (mapcar 'cadr pts))))
-
-;;; ====================================================================
-;;; XY-КЛАСТЕРИЗАЦИЯ — разбиение всех точек по сваям
-;;; ====================================================================
-
-;; Алгоритм: жадный single-linkage.
-;; Каждая точка присоединяется к первому кластеру, где есть хотя бы
-;; один член в радиусе *gc-pile-xy-cluster*. Иначе — новый кластер.
-;; Расстояние между сваями ~2м+, диаметр сваи 1.42м -> порог 1.8м безопасен.
 (defun gc-pile-cluster-by-xy (pts / clusters remaining cur grow keep)
   (setq remaining pts clusters '())
   (while remaining
-    (setq cur      (list (car remaining))
+    (setq cur (list (car remaining))
           remaining (cdr remaining))
-    ;; Растим кластер: пока есть незанятые точки в радиусе от любого члена
     (setq grow T)
     (while grow
       (setq grow nil keep '())
@@ -233,13 +175,6 @@
     (setq clusters (cons cur clusters)))
   (reverse clusters))
 
-;;; ====================================================================
-;;; Z-КЛАСТЕРИЗАЦИЯ — разбиение точек сваи по сечениям (отметкам)
-;;; ====================================================================
-
-;; Внутри одного XY-кластера (сваи) группируем по Z.
-;; Сортируем по Z, затем последовательно добавляем точки в текущую группу
-;; пока разница с первой точкой группы <= z-cluster (50 мм).
 (defun gc-pile-cluster-by-z (pts / sorted groups cur-group cur-z pt)
   (setq sorted (vl-sort pts '(lambda (a b) (< (caddr a) (caddr b)))))
   (setq groups '() cur-group '() cur-z nil)
@@ -257,7 +192,7 @@
   (reverse groups))
 
 ;;; ====================================================================
-;;; СЛОИ И СТИЛЬ ТЕКСТА
+;;; СЛОИ И ОТРИСОВКА
 ;;; ====================================================================
 
 (defun gc-pile-ensure-layer (name color)
@@ -270,16 +205,11 @@
                    (cons 62 color)
                    '(6 . "Continuous")))))
 
-;; Fallback цепочка: GOSTB (СПДС) -> ISOCPEUR -> Standard.
 (defun gc-pile-text-style ( / )
   (cond
     ((tblsearch "STYLE" "GOSTB")    "GOSTB")
     ((tblsearch "STYLE" "ISOCPEUR") "ISOCPEUR")
     (T                              "Standard")))
-
-;;; ====================================================================
-;;; ОТРИСОВКА
-;;; ====================================================================
 
 (defun gc-pile-draw-circle (cx cy z r layer)
   (entmake (list '(0 . "CIRCLE")
@@ -301,7 +231,7 @@
   (if (> len 1.0e-9)
     (progn
       (setq ux (/ dx len) uy (/ dy len))
-      (setq nx (- uy)     ny ux)
+      (setq nx (- uy) ny ux)
       (setq size (* 0.30 len))
       (setq t1 (list (- (car  end) (* size ux) (* (/ size 3.0) nx))
                      (- (cadr end) (* size uy) (* (/ size 3.0) ny))
@@ -316,7 +246,6 @@
                      (cons 12 end)
                      (cons 13 end))))))
 
-;; TEXT с Middle Center относительно pt и заданным углом поворота (рад).
 (defun gc-pile-draw-text-rot (pt text style layer rotation)
   (entmake (list '(0 . "TEXT")
                  (cons 8 layer)
@@ -329,21 +258,15 @@
                  (cons 11 pt)
                  (cons 73 2))))
 
-;;; ====================================================================
-;;; ФОРМАТИРОВАНИЕ ПОДПИСИ
-;;; ====================================================================
-
-;; Только целое число (мм/1м), без единиц.
 (defun gc-pile-mm-rounded (per-m-mm)
   (rtos (abs per-m-mm) 2 0))
 
-;; Со знаком — только для сводки в консоли.
 (defun gc-pile-mm-signed (mm)
   (strcat (if (>= mm 0) "+" "")
           (rtos mm 2 0) " мм"))
 
 ;;; ====================================================================
-;;; ОСНОВНАЯ ОБРАБОТКА — ОТ ГРУПП К ЧЕРТЕЖУ
+;;; ОБРАБОТКА SV
 ;;; ====================================================================
 
 (defun gc-pile-process (low-pts high-pts /
@@ -364,16 +287,13 @@
     (T
      (setq z-low  (gc-pile-avg (mapcar 'caddr low-pts))
            z-high (gc-pile-avg (mapcar 'caddr high-pts)))
-     ;; Слои и стиль
      (gc-pile-ensure-layer *gc-l-low*    1)
      (gc-pile-ensure-layer *gc-l-high*   3)
      (gc-pile-ensure-layer *gc-l-arrows* 7)
      (gc-pile-ensure-layer *gc-l-text*   7)
      (setq tstyle (gc-pile-text-style))
-     ;; Окружности
      (gc-pile-draw-circle (car c-low)  (cadr c-low)  z-low  (caddr c-low)  *gc-l-low*)
      (gc-pile-draw-circle (car c-high) (cadr c-high) z-high (caddr c-high) *gc-l-high*)
-     ;; Отклонения
      (setq dx-mm (* 1000.0 (- (car  c-high) (car  c-low)))
            dy-mm (* 1000.0 (- (cadr c-high) (cadr c-low)))
            dz    (- z-high z-low))
@@ -381,7 +301,6 @@
        (setq dx-pm (/ dx-mm dz)
              dy-pm (/ dy-mm dz))
        (setq dx-pm dx-mm dy-pm dy-mm))
-     ;; Стрелки от центра нижнего, длина = arrow-len, направление по знакам
      (setq p-low (list (car c-low) (cadr c-low) z-low))
      (setq p-end-x (list (+ (car  p-low)
                             (* *gc-pile-arrow-len*
@@ -395,24 +314,20 @@
                          z-low))
      (gc-pile-draw-arrow p-low p-end-x *gc-l-arrows*)
      (gc-pile-draw-arrow p-low p-end-y *gc-l-arrows*)
-     ;; Подписи РЯДОМ со стрелками, в нужном квадранте.
-     (setq sx  (if (>= dx-mm 0) 1.0 -1.0))
-     (setq sy  (if (>= dy-mm 0) 1.0 -1.0))
-     ;; Y-текст — с ПРОТИВОПОЛОЖНОЙ стороны от X-стрелки (-(sx)).
-     ;; Было: (* sxy lateral) = sx*sy*0.1 — давало неверный знак.
+     (setq sx (if (>= dx-mm 0) 1.0 -1.0))
+     (setq sy (if (>= dy-mm 0) 1.0 -1.0))
      (setq pt-text-y
        (list (+ (car  p-low) (* (- sx) *gc-pile-text-lateral*))
              (+ (cadr p-low) (* sy     *gc-pile-text-along*))
              z-low))
      (setq pt-text-x
-       (list (+ (car  p-low) (* sx  *gc-pile-text-along*))
-             (- (cadr p-low) (* sy  *gc-pile-text-lateral*))
+       (list (+ (car  p-low) (* sx *gc-pile-text-along*))
+             (- (cadr p-low) (* sy *gc-pile-text-lateral*))
              z-low))
      (gc-pile-draw-text-rot pt-text-x (gc-pile-mm-rounded dx-pm)
                             tstyle *gc-l-text* 0.0)
      (gc-pile-draw-text-rot pt-text-y (gc-pile-mm-rounded dy-pm)
                             tstyle *gc-l-text* (/ pi 2.0))
-     ;; Сводка в консоль
      (setq dev-low  (* 1000.0 (- (caddr c-low)  *gc-pile-r-norm*)))
      (setq dev-high (* 1000.0 (- (caddr c-high) *gc-pile-r-norm*)))
      (princ "\n--- Свая обработана ---")
@@ -446,23 +361,57 @@
      T)))
 
 ;;; ====================================================================
-;;; ОБРАБОТКА ОДНОГО XY-КЛАСТЕРА В ПАРУ (low-pts . high-pts)
+;;; ОБРАБОТКА SVP
 ;;; ====================================================================
 
-;; Внутри одной сваи (XY-кластера):
-;; 1. Z-кластеризация → сечения по отметкам
-;; 2. Из каждой Z-группы удаляются отметчики высоты (gc-pile-strip-hm)
-;; 3. Z-группы с ≥3 чистыми точками → круг через 3 точки
-;; 4. Сортируем по Z, берём крайние (min и max) — пара низ/верх.
-;; Возвращает cons-пара (low-pts . high-pts) или nil + диагностика.
+(defun gc-pile-process-extension (low-pts high-pts target-z /
+                                   c-low c-high z-low z-high dz k
+                                   target-x target-y)
+  (setq c-low  (gc-pile-best-circle low-pts))
+  (setq c-high (gc-pile-best-circle high-pts))
+  (cond
+    ((null c-low)
+     (princ "\n[ОШИБКА] SVP: не удалось построить круг по нижним точкам.")
+     nil)
+    ((null c-high)
+     (princ "\n[ОШИБКА] SVP: не удалось построить круг по верхним точкам.")
+     nil)
+    (T
+     (setq z-low  (gc-pile-avg (mapcar 'caddr low-pts))
+           z-high (gc-pile-avg (mapcar 'caddr high-pts))
+           dz     (- z-high z-low))
+     (if (<= (abs dz) 1.0e-6)
+       (progn
+         (princ "\n[ОШИБКА] SVP: dZ между сечениями слишком мал для расчета.")
+         nil)
+       (progn
+         (setq k (/ (- target-z z-low) dz))
+         (setq target-x (+ (car c-low) (* k (- (car c-high) (car c-low)))))
+         (setq target-y (+ (cadr c-low) (* k (- (cadr c-high) (cadr c-low)))))
+         (gc-pile-ensure-layer *gc-l-cut* 4)
+         (gc-pile-draw-circle target-x target-y target-z *gc-pile-r-norm* *gc-l-cut*)
+         (princ "\n--- SVP: сечение построено ---")
+         (princ (strcat "\nZ среза: " (rtos target-z 2 3) " м"
+                        "  |  Центр: ("
+                        (rtos target-x 2 3) ", "
+                        (rtos target-y 2 3) ", "
+                        (rtos target-z 2 3) ")"
+                        "  |  R = " (rtos *gc-pile-r-norm* 2 3) " м"))
+         (princ (strcat "\nОпорные Z: низ=" (rtos z-low 2 3)
+                        " м, верх=" (rtos z-high 2 3)
+                        " м, k=" (rtos k 2 3)))
+         T)))))
+
+;;; ====================================================================
+;;; ПОДГОТОВКА ПАР СЕЧЕНИЙ
+;;; ====================================================================
+
 (defun gc-pile-pair-from-cluster (pile-pts / z-groups valid-secs zg clean-zg
-                                   circ z-mean
-                                   sorted-secs lo hi dz z-list)
+                                   circ z-mean sorted-secs lo hi dz z-list)
   (cond
     ((< (length pile-pts) 6) nil)
     (T
      (setq z-groups (gc-pile-cluster-by-z pile-pts))
-     ;; Из каждой Z-группы убираем отметчики высоты, затем проверяем ≥3
      (setq valid-secs '())
      (foreach zg z-groups
        (setq clean-zg (gc-pile-strip-hm zg))
@@ -503,16 +452,6 @@
            nil)
           (T (cons (cdr lo) (cdr hi)))))))))
 
-;;; ====================================================================
-;;; РЕЖИМ 1 — АВТО: XY-кластеризация → Z-кластеризация → сечения
-;;; ====================================================================
-
-;; ПОЧЕМУ XY-первой: при глобальном поиске кругов алгоритм перебирает
-;; тройки из ВСЕХ точек. Точки разных сечений одной сваи имеют одинаковый
-;; XY (свая почти вертикальна), но разные Z. Это приводит к неожиданным
-;; тройкам и кругам с "плохим" R, даже если R на самом деле ~710мм.
-;; XY-группировка сначала изолирует каждую сваю, потом Z-группировка
-;; безошибочно разделяет сечения внутри сваи.
 (defun gc-pile-mode1 ( / ss pts n xy-clusters pairs pile-pts pair)
   (princ "\nВыделите точки свай (рамкой). Не-точки игнорируются: ")
   (setq ss (ssget *gc-pile-ssget-filter*))
@@ -536,11 +475,9 @@
                        (rtos (apply 'min (mapcar 'caddr pts)) 2 3)
                        " — "
                        (rtos (apply 'max (mapcar 'caddr pts)) 2 3) " м"))
-        ;; Шаг 1: XY-кластеры (каждый = одна свая, порог *gc-pile-xy-cluster*)
         (setq xy-clusters (gc-pile-cluster-by-xy pts))
         (princ (strcat "\n[i] Выявлено XY-кластеров (свай): "
                        (itoa (length xy-clusters))))
-        ;; Шаг 2: для каждой сваи — формируем пару (low-pts . high-pts) или пропуск
         (setq pairs '())
         (foreach pile-pts xy-clusters
           (setq pair (gc-pile-pair-from-cluster pile-pts))
@@ -552,10 +489,6 @@
           (T
            (princ (strcat "\n[i] Свай для обработки: " (itoa (length pairs))))
            (reverse pairs))))))))
-
-;;; ====================================================================
-;;; РЕЖИМ 2 — ПО ГРУППАМ ВРУЧНУЮ
-;;; ====================================================================
 
 (defun gc-pile-mode2 ( / ss-low ss-high low-pts high-pts)
   (princ "\nВыделите точки нижнего сечения: ")
@@ -578,10 +511,10 @@
           (T (list low-pts high-pts))))))))
 
 ;;; ====================================================================
-;;; КОМАНДА SV
+;;; КОМАНДЫ
 ;;; ====================================================================
 
-(defun c:sv ( / mode-str pairs g idx total ok skipped)
+(defun c:sv ( / mode-str pairs g idx total ok skipped p)
   (princ "\n  1 = все точки сразу (автоопределение свай)")
   (princ "\n  2 = по группам вручную (нижнее/верхнее сечение)")
   (initget "1 2")
@@ -609,5 +542,28 @@
                     "  всего: "              (itoa total)))))
   (princ))
 
-(princ "\n[gc] sv.lsp v11 загружен. Команда: SV")
+(defun c:svp ( / pairs target-z idx total ok skipped p)
+  (princ "\nSVP: сечение сваи на заданной высотной отметке.")
+  (setq pairs (gc-pile-mode1))
+  (cond
+    ((null pairs) (princ "\nКоманда отменена."))
+    (T
+     (setq target-z (getreal "\nВведите целевую отметку Z, м: "))
+     (cond
+       ((null target-z)
+        (princ "\nКоманда отменена: отметка не введена."))
+       (T
+        (setq total (length pairs) idx 1 ok 0 skipped 0)
+        (foreach p pairs
+          (princ (strcat "\n=== SVP: Свая " (itoa idx) " / " (itoa total) " ==="))
+          (if (gc-pile-process-extension (car p) (cdr p) target-z)
+            (setq ok (1+ ok))
+            (setq skipped (1+ skipped)))
+          (setq idx (1+ idx)))
+        (princ (strcat "\n[Итог SVP] построено: " (itoa ok)
+                       "  пропущено: "        (itoa skipped)
+                       "  всего: "            (itoa total)))))))
+  (princ))
+
+(princ "\n[gc] sv.lsp v12 загружен. Команды: SV, SVP")
 (princ)
