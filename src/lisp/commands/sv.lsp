@@ -1,4 +1,4 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 v9)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 v11)
 ;;; Komanda SV: po tochkam takheomedra -- dva kruga (niz/verkh secheniya)
 ;;; i strelki otkloneniy mezhdu centrami s celochisl. podpisyami (mm/1m).
 ;;;
@@ -12,14 +12,20 @@
 ;;; v8: udalyon fallback dlya Z-grupp s 2 tochkami.
 ;;;     Krug stroitsya TOLKO po >=3 tochkam.
 ;;;
+;;; v11: ispravlena REGRESSIYA v9 — gc-pile-strip-hm udalyala 2 verhnie tochki
+;;;      LYUBOGO ploskogo secheniya (tochki gorizontalnogo sreza tozhe sovpadayut
+;;;      po Z), obeskrovlivaya realnoe sechenie -> "secheniy najdeno 1, propusk".
+;;;      Teper para otmetchikov udalyaetsya TOLKO esli yavno izolirovana nad
+;;;      secheniem: zazor do 3-j sverhu tochki >= *gc-pile-hm-gap-min* (10 mm)
+;;;      I v gruppe >=5 tochek (chtoby ostalos >=3).
+;;;
 ;;; v10: ispravlen znak X-smeshcheniya teksta u Y-strelki.
 ;;;      Bylo: sxy=sx*sy — davalo nepravilnuyu storonu.
 ;;;      Stalo: -sx — tekst vsegda naprotiv X-strelki.
 ;;;
-;;; v9: ispravlen baq "otmetchik pogloshchaetsya secheniyem".
-;;;     Esli otmetchiki vysoty (para tochek ΔZ < 2 mm) nahoditsya v toj zhe
-;;;     Z-gruppe, chto i realnoe sechenie (raznica 30-50 mm < porog 50 mm),
-;;;     gc-pile-strip-hm udalyaet etu paru pered podborom kruga.
+;;; v9: ispravlen baq "otmetchik pogloshchaetsya secheniyem" (CHASTICHNO NEVERNO,
+;;;     sm. v11): esli otmetchiki vysoty (para tochek ΔZ < 2 mm) v toj zhe
+;;;     Z-gruppe, chto i sechenie, gc-pile-strip-hm udalyala etu paru.
 ;;;
 ;;; Specifikaciya: specs/001-pile-deviation.md, specs/002-pile-multi-batch.md
 ;;; Zagruzka: APPLOAD ili (load "put/k/sv.lsp").
@@ -42,6 +48,8 @@
 (setq *gc-pile-xy-cluster*       1.800) ; порог XY-кластеризации свай, м
 (setq *gc-pile-pair-dz-min*      0.300) ; минимальный dZ между сечениями одной сваи, м
 (setq *gc-pile-pair-dz-max*      5.000) ; максимальный dZ между сечениями одной сваи, м
+(setq *gc-pile-hm-pair-dz-max*   0.002) ; макс ΔZ ВНУТРИ пары отметчиков высоты, м (2 мм)
+(setq *gc-pile-hm-gap-min*       0.010) ; мин зазор от пары отметчиков до точек сечения, м (10 мм)
 
 ;; Фильтр для ssget: только точки и COGO Points.
 (setq *gc-pile-ssget-filter*
@@ -122,25 +130,33 @@
 ;;; ВЫБОР ЛУЧШЕЙ ОКРУЖНОСТИ — min |R - norm| по тройкам C(N,3)
 ;;; ====================================================================
 
-;; Удаляет пару "отметчиков высоты" из вершины Z-группы.
-;; Признак отметчика: два топовых точки с |ΔZ| < 2 мм (одна точка на голове
-;; сваи, снятая дважды). Условие удаления: группа ≥4 точек, чтобы после
-;; удаления пары осталось ≥2 (вызывающий код проверяет ≥3 отдельно).
-;; ПОЧЕМУ ΔZ < 2 мм, а не 50 мм: реальные точки сечения разнесены по Z на
-;; 5-40 мм; пара отметчиков — почти одинаковые измерения одной и той же точки.
-(defun gc-pile-strip-hm (zg / sorted top1 top2 rest)
-  (if (< (length zg) 4)
+;; Удаляет пару "отметчиков высоты" из вершины Z-группы — НО только если эта
+;; пара ЯВНО ИЗОЛИРОВАНА над остальными точками сечения.
+;; Признаки отметчика (все одновременно):
+;;   1. две самые верхние точки почти совпадают по Z:
+;;      |ΔZ| < *gc-pile-hm-pair-dz-max* (одна точка на голове сваи, снятая дважды);
+;;   2. между этой парой и третьей сверху точкой — зазор ≥ *gc-pile-hm-gap-min*
+;;      (точки реального сечения лежат плотнее; пара отметчиков сидит на 30-50 мм выше);
+;;   3. в группе ≥5 точек, чтобы после удаления пары осталось ≥3 (круг строится по 3).
+;; ПОЧЕМУ нужен п.2: БЕЗ него (как было в v9) условие срабатывало на ЛЮБОМ
+;; плоском сечении — точки горизонтального среза тоже почти совпадают по Z —
+;; и съедало половину реальных точек, ломая сечение. См. регрессию v9 → v11.
+(defun gc-pile-strip-hm (zg / sorted top1 top2 top3 rest)
+  (if (< (length zg) 5)
     zg
     (progn
       (setq sorted (vl-sort zg '(lambda (a b) (> (caddr a) (caddr b)))))
-      (setq top1 (car sorted)
-            top2 (cadr sorted)
-            rest (cddr sorted))
-      (if (< (abs (- (caddr top1) (caddr top2))) 0.002)
+      (setq top1 (car   sorted)
+            top2 (cadr  sorted)
+            top3 (caddr sorted)
+            rest (cddr  sorted))
+      (if (and (< (abs (- (caddr top1) (caddr top2))) *gc-pile-hm-pair-dz-max*)
+               (>= (- (caddr top2) (caddr top3)) *gc-pile-hm-gap-min*))
         (progn
-          (princ (strcat "\n[i] Удалены 2 отметчика высоты"
-                         " (Z=" (rtos (caddr top1) 2 3)
-                         " м, ΔZ=" (rtos (* 1000 (abs (- (caddr top1) (caddr top2)))) 2 1)
+          (princ (strcat "\n[i] Удалена пара отметчиков высоты"
+                         " (Z~" (rtos (caddr top1) 2 3)
+                         " м, зазор до сечения "
+                         (rtos (* 1000 (- (caddr top2) (caddr top3))) 2 1)
                          " мм)"))
           rest)
         zg))))
@@ -593,5 +609,5 @@
                     "  всего: "              (itoa total)))))
   (princ))
 
-(princ "\n[gc] sv.lsp v10 загружен. Команда: SV")
+(princ "\n[gc] sv.lsp v11 загружен. Команда: SV")
 (princ)
