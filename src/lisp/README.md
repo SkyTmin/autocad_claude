@@ -34,8 +34,8 @@ tests/       # Тесты (по мере появления)
 |---|---|---|---|
 | `commands/sv.lsp` | `SV` (режимы 1/2/3) | [SPEC-001](../../specs/001-pile-deviation.md), [SPEC-002](../../specs/002-pile-multi-batch.md), [SPEC-004](../../specs/004-sv-combined.md) | v16, подтверждено вручную |
 | `commands/sv.lsp` | `SVP` | [SPEC-003](../../specs/003-pile-extension.md) | v16, подтверждено вручную |
-| `commands/vid.lsp` | `VID` / `GC-SELECT-BY-SIZE` | [SPEC-005](../../specs/005-vid-window-select.md) | v5, **не проверено** в Civil 3D |
-| `commands/vo.lsp` | `VO` / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v4, **не проверено** в Civil 3D |
+| `commands/vid.lsp` | `VID` / `GC-SELECT-BY-SIZE` | [SPEC-005](../../specs/005-vid-window-select.md) | v6, **не проверено** в Civil 3D |
+| `commands/vo.lsp` | `VO` / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v6, подтверждено вручную |
 
 > **Два правила, добытые кровью на `vo.lsp`:**
 >
