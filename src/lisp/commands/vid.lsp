@@ -1,9 +1,14 @@
-;;; vid.lsp -- vydelenie obyektov ramkoy zadannogo razmera (SPEC-005 v2)
+;;; vid.lsp -- vydelenie obyektov ramkoy zadannogo razmera (SPEC-005 v3)
 ;;; Komandy:
 ;;;   VID               -- korotkiy alias dlya ezhednevnoy raboty.
 ;;;   GC-SELECT-BY-SIZE -- polnoe imya toy zhe komandy.
 ;;;
 ;;; Tochka privyazki -- LEVYY VERHNIY ugol: ramka rastet vpravo i vniz.
+;;;
+;;; v3: opcii perevedeny na CIFRY (1 - razmery, 2 - tip). Kirillicheskie
+;;;     klyuchevye slova initget ne rabotayut: AutoCAD ishchet zaglavnuyu
+;;;     LATINSKUYU bukvu kak sokrashchenie, v "Razmery" ee net, i nazhatie
+;;;     "R" ne sovpadaet ni s chem. Tot zhe defekt byl nayden v vo.lsp v1.
 ;;;
 ;;; v2: 1) Razmery stali SHABLONOM: zadayutsya odin raz, dalshe kazhdyy zapusk
 ;;;        eto odin klik. Oprosy vozvrashchayutsya tolko po zaprosu [Razmery].
@@ -148,7 +153,7 @@
            (< (min *gc-vid-size-x* *gc-vid-size-y*) 0.100))
     (princ (strcat "\n[!] Рамка узкая, а тип СИНИЙ — попадут только объекты"
                    " уже самой рамки.\n    Для полосы обычно нужен ЗЕЛЁНЫЙ:"
-                   " перезапустите VID и выберите [Тип].")))
+                   " перезапустите VID и нажмите 2.")))
   (setq ss (if (= *gc-vid-mode* "C")
              (ssget "_CP" poly)
              (ssget "_WP" poly)))
@@ -179,19 +184,22 @@
                    (gc-vid-fmt *gc-vid-size-x*) " x "
                    (gc-vid-fmt *gc-vid-size-y*) " м (X x Y)  |  тип "
                    (gc-vid-mode-name)))
-    ;; Латинские дубли ключевых слов — на случай, если раскладка не переключена.
-    (initget "Размеры Тип Razmery Tip")
-    (setq inp (getpoint "\nЛевый верхний угол области [Размеры/Тип]: "))
+    ;; ПОЧЕМУ цифры, а не слова вроде [Размеры/Тип]: кириллические ключевые
+    ;; слова initget не работают. AutoCAD ищет в ключевом слове заглавную
+    ;; ЛАТИНСКУЮ букву, чтобы понять допустимое сокращение; в «Размеры» её
+    ;; нет, и нажатие «Р» не совпадает ни с чем — кнопка молча ничего не
+    ;; делает. Цифры ASCII и не зависят ни от раскладки, ни от кодировки.
+    (initget "1 2")
+    (setq inp (getpoint
+                "\nЛевый верхний угол (1 - размеры, 2 - тип, Enter - выход): "))
     (cond
       ((null inp)
        (princ "\n[ОТМЕНА] VID завершён.")
        (setq done T))
-      ((member inp '("Размеры" "Razmery"))
-       (gc-vid-set-sizes))
-      ((member inp '("Тип" "Tip"))
-       (gc-vid-toggle-mode))
+      ((= inp "1") (gc-vid-set-sizes))
+      ((= inp "2") (gc-vid-toggle-mode))
       ((= (type inp) 'STR)
-       (princ "\n[!] Не понял ответ. Кликните угол либо выберите Размеры/Тип."))
+       (princ "\n[!] Не понял ответ. Кликните угол, либо 1 — размеры, 2 — тип."))
       (T
        (gc-vid-select inp)
        (setq done T))))
@@ -217,5 +225,5 @@
 (defun c:gc-select-by-size ( / )
   (c:vid))
 
-(princ "\n[gc] vid.lsp v2 загружен. Команды: VID, GC-SELECT-BY-SIZE")
+(princ "\n[gc] vid.lsp v3 загружен. Команды: VID, GC-SELECT-BY-SIZE")
 (princ)
