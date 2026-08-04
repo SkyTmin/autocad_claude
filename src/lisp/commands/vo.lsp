@@ -1,10 +1,16 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v5)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v6)
 ;;; Komandy:
 ;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
 ;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
+;;;
+;;; v6: Zadanie otmetki cherez knopku [Otmetka] teper SAMO pereklyuchaet
+;;;     rezhim na "odna otmetka na vse tochki". Ranshe, esli byl vklyuchen
+;;;     rezhim "sprashivat kazhdyy raz", vvedennaya vruchnuyu otmetka nikak
+;;;     ne ispolzovalas i komanda prodolzhala trebovat proektnuyu tochku
+;;;     obyektom pered kazhdoy fakticheskoy.
 ;;;
 ;;; v5: KNOPKI VERNULIS. v4 ubrala initget sovsem -- eto byla oshibka:
 ;;;     tolko initget delaet opcii KLIKABELNYMI v komandnoy stroke.
@@ -186,6 +192,17 @@
 (defun gc-vo-apply-proj (z / )
   (setq *gc-vo-proj-z* z)
   (princ (strcat "\n[i] Проектная отметка теперь " (gc-vo-fmt z) " м"))
+  ;; ПОЧЕМУ здесь же переключаем режим: в режиме «спрашивать каждый раз»
+  ;; заданная отметка вообще не используется — команда берёт проектную высоту
+  ;; у отдельной точки перед каждой фактической. Пользователь, задавший
+  ;; отметку явно, хочет сравнивать именно с ней, иначе действие было бы
+  ;; бессмысленным, а команда продолжала бы требовать проектную точку.
+  (if (= *gc-vo-proj-mode* "ASK")
+    (progn
+      (setq *gc-vo-proj-mode* "TPL")
+      (princ "\n[i] Режим переключён: одна отметка на все точки.")
+      (princ "\n    Дальше сразу выбирайте фактические точки.")
+      (princ "\n    Вернуть запрос проектной точки — кнопка Режим.")))
   z)
 
 ;; Ввод отметки числом.
@@ -541,5 +558,5 @@
 (defun c:gc-height-deviation ( / )
   (c:vo))
 
-(princ "\n[gc] vo.lsp v5 загружен. Команда: VO")
+(princ "\n[gc] vo.lsp v6 загружен. Команда: VO")
 (princ)
