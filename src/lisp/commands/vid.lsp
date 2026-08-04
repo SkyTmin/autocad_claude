@@ -1,9 +1,18 @@
-;;; vid.lsp -- vydelenie obyektov ramkoy zadannogo razmera (SPEC-005 v4)
+;;; vid.lsp -- vydelenie obyektov ramkoy zadannogo razmera (SPEC-005 v5)
 ;;; Komandy:
 ;;;   VID               -- korotkiy alias dlya ezhednevnoy raboty.
 ;;;   GC-SELECT-BY-SIZE -- polnoe imya toy zhe komandy.
 ;;;
 ;;; Tochka privyazki -- LEVYY VERHNIY ugol: ramka rastet vpravo i vniz.
+;;;
+;;; v5: KLYUCHEVYE SLOVA initget UBRANY SOVSEM. U Shamilya oni ne
+;;;     srabatyvali (podtverzhdeno na vo.lsp): nabrannaya bukva ne
+;;;     raspoznavalas kak opciya, zapros proglatyval ee i prinimal
+;;;     sleduyushchiy klik za ukazanie ugla.
+;;;     Teper zapros prinimaet TOLKO klik ili Enter. Enter otkryvaet menyu,
+;;;     gde vvod chitaetsya getstring i razbiraetsya nami -- eto ne zavisit
+;;;     ni ot initget, ni ot raskladki, ni ot kodirovki.
+;;;     V menyu prinimayutsya i cifra, i russkaya bukva, i slovo celikom.
 ;;;
 ;;; v4: opcii vozvrashcheny na russkie slova [Razmery/Tip].
 ;;;     v3 perevodila ih na cifry iz-za oshibochnoy gipotezy, budto
@@ -123,6 +132,47 @@
     "ЗЕЛЁНОЕ (всё, чего коснулась рамка)"
     "СИНЕЕ (только попавшие целиком)"))
 
+;; Обрезка пробелов по краям без vl-string-trim — чтобы не зависеть от того,
+;; как конкретная сборка обрабатывает не-ASCII.
+(defun gc-vid-trim (s / )
+  (while (and (> (strlen s) 0) (= (substr s 1 1) " "))
+    (setq s (substr s 2)))
+  (while (and (> (strlen s) 0) (= (substr s (strlen s) 1) " "))
+    (setq s (substr s 1 (1- (strlen s)))))
+  s)
+
+;; ПОЧЕМУ меню по Enter, а не опции [Размеры/Тип] в самом запросе точки:
+;; ключевые слова initget у Шамиля не срабатывали — набранная буква не
+;; распознавалась как опция, запрос проглатывал её и принимал следующий клик
+;; за указание угла. Здесь ввод читает getstring, а разбираем его мы сами:
+;; это не зависит ни от initget, ни от раскладки, ни от кодировки.
+;; Принимается и цифра, и русская буква, и слово целиком.
+;; Возвращает "BACK" (вернуться к выделению) либо "EXIT" (выйти из команды).
+(defun gc-vid-menu ( / done s res)
+  (setq res "BACK" done nil)
+  (while (not done)
+    (princ "\n\n--- МЕНЮ VID ---")
+    (princ (strcat "\n  рамка : " (gc-vid-fmt *gc-vid-size-x*) " x "
+                   (gc-vid-fmt *gc-vid-size-y*) " м (X x Y)"))
+    (princ (strcat "\n  тип   : " (gc-vid-mode-name)))
+    (princ "\n")
+    (princ "\n  1 или Р — размеры рамки")
+    (princ "\n  2 или Т — тип выделения: синее / зелёное")
+    (princ "\n  0 или К — выйти из команды")
+    (princ "\n  Enter   — вернуться к выделению")
+    (setq s (gc-vid-trim (getstring T "\nВыбор: ")))
+    (cond
+      ((= s "") (setq res "BACK" done T))
+      ((member s '("1" "р" "Р" "r" "R" "размеры" "Размеры" "размер"))
+       (gc-vid-set-sizes))
+      ((member s '("2" "т" "Т" "t" "T" "тип" "Тип"))
+       (gc-vid-toggle-mode))
+      ((member s '("0" "к" "К" "k" "K" "q" "Q" "выход" "Выход"))
+       (setq res "EXIT" done T))
+      (T (princ (strcat "\n[!] Не понял \"" s
+                        "\". Введите 1, 2, 0 или просто Enter.")))))
+  res)
+
 (defun gc-vid-toggle-mode ( / )
   (setq *gc-vid-mode* (if (= *gc-vid-mode* "C") "W" "C"))
   (princ (strcat "\n[i] Тип выделения: " (gc-vid-mode-name)))
@@ -155,7 +205,7 @@
            (< (min *gc-vid-size-x* *gc-vid-size-y*) 0.100))
     (princ (strcat "\n[!] Рамка узкая, а тип СИНИЙ — попадут только объекты"
                    " уже самой рамки.\n    Для полосы обычно нужен ЗЕЛЁНЫЙ:"
-                   " перезапустите VID и выберите Тип.")))
+                   " нажмите Enter и выберите тип.")))
   (setq ss (if (= *gc-vid-mode* "C")
              (ssget "_CP" poly)
              (ssget "_WP" poly)))
@@ -186,19 +236,13 @@
                    (gc-vid-fmt *gc-vid-size-x*) " x "
                    (gc-vid-fmt *gc-vid-size-y*) " м (X x Y)  |  тип "
                    (gc-vid-mode-name)))
-    ;; Латинские дубли ключевых слов — на случай непереключённой раскладки.
-    (initget "Размеры Тип Razmery Tip")
-    (setq inp (getpoint "\nЛевый верхний угол области [Размеры/Тип]: "))
+    ;; Запрос принимает ТОЛЬКО клик или Enter — никаких ключевых слов,
+    ;; см. комментарий у gc-vid-menu. Enter открывает меню.
+    (setq inp (getpoint "\nЛевый верхний угол области (Enter — меню): "))
     (cond
       ((null inp)
-       (princ "\n[ОТМЕНА] VID завершён.")
-       (setq done T))
-      ((member inp '("Размеры" "Razmery"))
-       (gc-vid-set-sizes))
-      ((member inp '("Тип" "Tip"))
-       (gc-vid-toggle-mode))
-      ((= (type inp) 'STR)
-       (princ "\n[!] Не понял ответ. Кликните угол либо выберите Размеры/Тип."))
+       (if (= (gc-vid-menu) "EXIT")
+         (progn (princ "\n[i] VID завершён.") (setq done T))))
       (T
        (gc-vid-select inp)
        (setq done T))))
@@ -224,5 +268,5 @@
 (defun c:gc-select-by-size ( / )
   (c:vid))
 
-(princ "\n[gc] vid.lsp v4 загружен. Команды: VID, GC-SELECT-BY-SIZE")
+(princ "\n[gc] vid.lsp v5 загружен. Команды: VID, GC-SELECT-BY-SIZE")
 (princ)
