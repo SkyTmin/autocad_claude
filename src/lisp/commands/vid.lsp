@@ -1,11 +1,21 @@
-;;; vid.lsp -- vydelenie obyektov ramkoy zadannogo razmera (SPEC-005 v5)
+;;; vid.lsp -- vydelenie obyektov ramkoy zadannogo razmera (SPEC-005 v6)
 ;;; Komandy:
 ;;;   VID               -- korotkiy alias dlya ezhednevnoy raboty.
 ;;;   GC-SELECT-BY-SIZE -- polnoe imya toy zhe komandy.
 ;;;
 ;;; Tochka privyazki -- LEVYY VERHNIY ugol: ramka rastet vpravo i vniz.
 ;;;
-;;; v5: KLYUCHEVYE SLOVA initget UBRANY SOVSEM. U Shamilya oni ne
+;;; v6: KNOPKI VERNULIS. v5 ubrala initget sovsem -- eto byla oshibka:
+;;;     tolko initget delaet opcii KLIKABELNYMI v komandnoy stroke.
+;;;     Nastoyashchaya prichina, pochemu nabrannaya bukva ne srabatyvala:
+;;;     AutoCAD opredelyaet dopustimoe sokrashchenie klyuchevogo slova po
+;;;     ZAGLAVNOY bukve vnutri nego, a u kirillicy on ee ne raspoznaet --
+;;;     poetomu trebovalos nabrat slovo CELIKOM ("Razmery").
+;;;     Reshenie: registriruem I slovo, I odnu bukvu:
+;;;         (initget "Razmery R Tip T")
+;;;     Enter po-prezhnemu otkryvaet zapasnoe tekstovoe menyu.
+;;;
+;;; v5 (otmenena): KLYUCHEVYE SLOVA initget UBRANY SOVSEM. U Shamilya oni ne
 ;;;     srabatyvali (podtverzhdeno na vo.lsp): nabrannaya bukva ne
 ;;;     raspoznavalas kak opciya, zapros proglatyval ee i prinimal
 ;;;     sleduyushchiy klik za ukazanie ugla.
@@ -205,7 +215,7 @@
            (< (min *gc-vid-size-x* *gc-vid-size-y*) 0.100))
     (princ (strcat "\n[!] Рамка узкая, а тип СИНИЙ — попадут только объекты"
                    " уже самой рамки.\n    Для полосы обычно нужен ЗЕЛЁНЫЙ:"
-                   " нажмите Enter и выберите тип.")))
+                   " нажмите кнопку Тип.")))
   (setq ss (if (= *gc-vid-mode* "C")
              (ssget "_CP" poly)
              (ssget "_WP" poly)))
@@ -236,16 +246,25 @@
                    (gc-vid-fmt *gc-vid-size-x*) " x "
                    (gc-vid-fmt *gc-vid-size-y*) " м (X x Y)  |  тип "
                    (gc-vid-mode-name)))
-    ;; Запрос принимает ТОЛЬКО клик или Enter — никаких ключевых слов,
-    ;; см. комментарий у gc-vid-menu. Enter открывает меню.
-    (setq inp (getpoint "\nЛевый верхний угол области (Enter — меню): "))
+    ;; Ключевые слова продублированы одной буквой: для кириллицы AutoCAD
+    ;; не распознаёт заглавную букву как допустимое сокращение и требует
+    ;; набрать слово целиком. Отдельное ключевое слово «Р» решает это —
+    ;; работает и клик по кнопке, и «Р», и «Размеры».
+    ;; ПОЧЕМУ listp, а не (= (type x) 'STR): сравнение символов через =
+    ;; в AutoLISP ненадёжно. getpoint возвращает nil, список или строку.
+    (initget "Размеры Р Тип Т")
+    (setq inp (getpoint "\nЛевый верхний угол области [Размеры/Тип]: "))
     (cond
+      ;; Enter — запасное текстовое меню на случай, если кнопки не отработают.
       ((null inp)
        (if (= (gc-vid-menu) "EXIT")
          (progn (princ "\n[i] VID завершён.") (setq done T))))
-      (T
+      ((listp inp)
        (gc-vid-select inp)
-       (setq done T))))
+       (setq done T))
+      ((member inp '("Размеры" "Р")) (gc-vid-set-sizes))
+      ((member inp '("Тип" "Т"))     (gc-vid-toggle-mode))
+      (T (princ (strcat "\n[!] Кнопка \"" inp "\" не распознана.")))))
   (princ))
 
 ;;; ====================================================================
@@ -268,5 +287,5 @@
 (defun c:gc-select-by-size ( / )
   (c:vid))
 
-(princ "\n[gc] vid.lsp v5 загружен. Команды: VID, GC-SELECT-BY-SIZE")
+(princ "\n[gc] vid.lsp v6 загружен. Команды: VID, GC-SELECT-BY-SIZE")
 (princ)
