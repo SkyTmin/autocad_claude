@@ -1,22 +1,27 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v2)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v3)
 ;;; Komandy:
-;;;   VO                  -- osnovnaya komanda (Vysotnoe Otklonenie).
-;;;   VOS                 -- srazu nastroyki VO.
-;;;   GC-HEIGHT-DEVIATION -- polnoe imya komandy VO.
+;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
+;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
 ;;;
-;;; v2: KRITICHNYY FIX -- knopka [Proekt] v v1 ne rabotala.
-;;;     Prichina: klyuchevye slova initget kirillicey nenadezhny. AutoCAD
-;;;     ne raspoznaet kirillicheskuyu zaglavnuyu bukvu kak sokrashchenie
-;;;     klyuchevogo slova, poetomu "P" ni s chem ne sovpadalo. V sv.lsp eta
-;;;     problema uzhe reshalas perehodom na cifry (initget "1 2 3").
-;;;     Reshenie: VSE menyu VO na cifrah -- oni ASCII i ne zavisyat ni ot
-;;;     raskladki klaviatury, ni ot kodirovki.
-;;;     Takzhe v v2: rezhim proektnoy otmetki (shablon / sprashivat kazhdyy
-;;;     raz), vybor istochnika vysoty fakta (obyekt / klik s privyazkoy),
-;;;     razvernutye poyasneniya vo vseh menyu.
+;;; v3: ISPRAVLENA prichina, pochemu opciya [Proekt] "srazu podstavlyala
+;;;     proshluyu otmetku". V v1 tam byla CEPOCHKA iz dvuh vlozhennyh
+;;;     zaprosov, u kazhdogo svoyo umolchanie:
+;;;         getkword "Proektnaya otmetka [Obyekt/Vvod] <Vvod>"
+;;;         -> getstring "Proektnaya otmetka, m <4,398>"
+;;;     Dva Enter'a podryad molcha ostavlyali staroe znachenie, hotya
+;;;     Shamil zhal [Proekt] imenno chtoby ego pomenyat.
+;;;     Teper zapros ODIN: chislo vvoditsya pryamo v nem, O / T -- eto
+;;;     alternativy (vzyat s obyekta / vzyat klikom), a u Enter net
+;;;     umolchaniya "podstavit proshloe" -- on lish vyhodit i vsluh
+;;;     soobshchaet, chto otmetka ne izmenena.
+;;;     Opcii vernuty na russkie slova (v2 oshibochno perevodila ih na cifry:
+;;;     gipoteza pro kirillicu v initget okazalas nevernoy -- opciya [Vysota]
+;;;     u Shamilya rabotala).
+;;;     Otdelnaya komanda VOS ubrana: vse nastroyki dostupny iz VO.
+;;;     Dobavleny opcii [Rezhim] i [Sposob] -- prostye pereklyuchateli.
 ;;;
 ;;; Helpery razbora chisla i chteniya vysoty namerenno dublirovany iz
 ;;; sv.lsp / vid.lsp -- sm. docs/decisions/0003-standalone-command-files.md.
@@ -44,8 +49,24 @@
 ;;; несвязанного символа, а сброс на nil при каждом APPLOAD стирал бы настройки.
 
 ;;; ====================================================================
-;;; РАЗБОР ЧИСЛА: "4,398" / "4.398" / "-1,25" -> метры
+;;; СТРОКИ И ЧИСЛА
 ;;; ====================================================================
+
+;; Обрезка пробелов по краям без vl-string-trim — чтобы не зависеть от того,
+;; как конкретная сборка обрабатывает не-ASCII.
+(defun gc-vo-trim (s / )
+  (while (and (> (strlen s) 0) (= (substr s 1 1) " "))
+    (setq s (substr s 2)))
+  (while (and (> (strlen s) 0) (= (substr s (strlen s) 1) " "))
+    (setq s (substr s 1 (1- (strlen s)))))
+  s)
+
+;; Сравнение введённого слова со списком допустимых написаний.
+;; ПОЧЕМУ списком, а не strcase: strcase кириллицу приводит к одному регистру
+;; не во всех сборках AutoCAD, поэтому перечисляем варианты явно —
+;; и русские, и латинские на случай непереключённой раскладки.
+(defun gc-vo-is-word (s variants)
+  (if (member s variants) T nil))
 
 ;; Запятая и точка равнозначны, пробелы игнорируются, знак допустим.
 ;; ПОЧЕМУ свой парсер, а не getreal: getreal не принимает запятую, а Шамиль
@@ -87,7 +108,7 @@
 (defun gc-vo-fmt (m)
   (vl-string-subst "," "." (rtos m 2 3)))
 
-;; Отметка для показа в меню: до первого задания её ещё нет.
+;; Отметка для показа: до первого задания её ещё нет.
 (defun gc-vo-proj-disp ( / )
   (if *gc-vo-proj-z*
     (strcat (gc-vo-fmt *gc-vo-proj-z*) " м")
@@ -108,36 +129,6 @@
     ((> mm 0) (strcat "+" (itoa mm)))
     ((< mm 0) (itoa mm))          ; itoa сам ставит минус
     (T        "0")))
-
-;;; ====================================================================
-;;; МЕНЮ — всё на цифрах
-;;; ====================================================================
-
-;; ПОЧЕМУ цифры, а не слова вроде [Проект/Высота]: кириллические ключевые
-;; слова initget не работают. AutoCAD ищет в ключевом слове заглавную
-;; латинскую букву, чтобы понять допустимое сокращение; в «Проект» её нет,
-;; и нажатие «П» не совпадает ни с чем — кнопка молча ничего не делает.
-;; Ровно этот баг был в v1. Цифры — ASCII, они не зависят ни от раскладки
-;; клавиатуры, ни от кодировки файла.
-
-;; "1 2 3" -> "1/2/3" для показа в подсказке.
-(defun gc-vo-keys-disp (keys / s)
-  (setq s keys)
-  (while (vl-string-search " " s)
-    (setq s (vl-string-subst "/" " " s)))
-  s)
-
-;; title  — заголовок меню
-;; lines  — список строк-пунктов (печатаются как есть)
-;; keys   — строка для initget, например "1 2 3"
-;; defkey — что вернуть, если пользователь нажал Enter
-(defun gc-vo-menu (title lines keys defkey / kw)
-  (princ (strcat "\n\n=== " title " ==="))
-  (foreach ln lines (princ (strcat "\n" ln)))
-  (initget keys)
-  (setq kw (getkword (strcat "\nВаш выбор [" (gc-vo-keys-disp keys)
-                             "] <" defkey ">: ")))
-  (if kw kw defkey))
 
 ;;; ====================================================================
 ;;; ЧТЕНИЕ ВЫСОТЫ ИЗ ОБЪЕКТА
@@ -197,180 +188,120 @@
 (defun gc-vo-proj-mode-name ( / )
   (if (= *gc-vo-proj-mode* "ASK")
     "спрашивать проектную точку каждый раз"
-    "одна отметка на все точки (шаблон)"))
+    "одна отметка на все точки"))
 
 (defun gc-vo-fact-src-name ( / )
   (if (= *gc-vo-fact-src* "PT")
     "кликом по месту (нужна объектная привязка)"
-    "выбором объекта (надёжнее)"))
-
-;; positive-only = T для высоты текста: нулевой или минусовый текст не бывает.
-(defun gc-vo-ask-num (label default positive-only / res s val)
-  (setq res nil)
-  (while (null res)
-    ;; getstring с флагом T — иначе ввод обрывается на пробеле и "4, 398"
-    ;; молча превратилось бы в "4," = 4.000 м.
-    (setq s (getstring T
-              (if default
-                (strcat "\n" label " <" (gc-vo-fmt default) ">: ")
-                (strcat "\n" label ": "))))
-    (cond
-      ((and (= s "") default)
-       (setq res default))
-      ((= s "")
-       (princ "\n[!] Значение обязательно. Пример ввода: 4,398"))
-      (T
-       (setq val (gc-vo-parse-num s))
-       (cond
-         ((null val)
-          (princ (strcat "\n[!] Не понял \"" s "\". Нужно число вида 4,398")))
-         ((and positive-only (<= val 1.0e-9))
-          (princ "\n[!] Высота текста должна быть больше нуля."))
-         (T (setq res val))))))
-  res)
-
-(defun gc-vo-set-proj-manual ( / )
-  (princ "\nВведите проектную отметку в метрах.")
-  (princ "\nНапример 4,398 — это 4 метра 398 миллиметров.")
-  (princ "\nЗапятая и точка равнозначны, отрицательные отметки допустимы.")
-  (setq *gc-vo-proj-z*
-        (gc-vo-ask-num "Проектная отметка, м" *gc-vo-proj-z* nil))
-  (princ (strcat "\n[i] Проектная отметка: " (gc-vo-fmt *gc-vo-proj-z*) " м"))
-  *gc-vo-proj-z*)
+    "выбором объекта"))
 
 (defun gc-vo-apply-proj (z / )
-  (cond
-    (z
-     (setq *gc-vo-proj-z* z)
-     (princ (strcat "\n[i] Проектная отметка: " (gc-vo-fmt z) " м")))
-    (T
-     (princ "\n[!] Отменено, отметка не изменена.")
-     ;; Отметки нет вообще — иначе дальше считали бы от nil.
-     (if (null *gc-vo-proj-z*) (gc-vo-set-proj-manual))))
+  (setq *gc-vo-proj-z* z)
+  (princ (strcat "\n[i] Проектная отметка теперь " (gc-vo-fmt z) " м"))
+  z)
+
+;;; ПРОЕКТНАЯ ОТМЕТКА.
+;;; Тот самый запрос, который в v1 «сразу подставлял прошлую отметку».
+;;; ПРИЧИНА была в цепочке из двух вложенных запросов, у каждого своё
+;;; умолчание: getkword "[Объект/Ввод] <Ввод>" -> getstring "<4,398>".
+;;; Два Enter'а подряд молча оставляли старое значение, хотя Шамиль жал
+;;; [Проект] именно чтобы его поменять.
+;;; Теперь запрос ОДИН, число вводится прямо в нём, у Enter нет умолчания
+;;; «подставить прошлое» — он лишь выходит и вслух говорит, что не изменил.
+(defun gc-vo-set-proj ( / done s z val)
+  (princ "\n\n--- ПРОЕКТНАЯ ОТМЕТКА ---")
+  (princ (strcat "\nСейчас: " (gc-vo-proj-disp)))
+  (princ "\nЧто можно ввести:")
+  (princ "\n  число  — сама отметка, например 4,398 (это 4 м 398 мм)")
+  (princ "\n  О      — взять высоту с объекта: щёлкнете по нему")
+  (princ "\n  Т      — взять высоту кликом по месту (нужна привязка)")
+  (setq done nil)
+  (while (not done)
+    (setq s (gc-vo-trim
+              (getstring T "\nОтметка, либо О, либо Т (Enter — ничего не менять): ")))
+    (cond
+      ;; Enter — выход БЕЗ изменения, но всегда с явным сообщением, что
+      ;; именно осталось. Молча подставлять прошлое значение нельзя: ровно
+      ;; это в v1 выглядело как «кнопка сама выбрала старую отметку».
+      ((= s "")
+       (if *gc-vo-proj-z*
+         (progn
+           (princ (strcat "\n[i] Отметка НЕ изменена, осталась "
+                          (gc-vo-fmt *gc-vo-proj-z*) " м"))
+           (setq done T))
+         (princ "\n[!] Отметка ещё не задана — введите число, О или Т.")))
+      ((gc-vo-is-word s '("о" "О" "o" "O" "объект" "Объект" "ОБЪЕКТ"))
+       (setq z (gc-vo-pick-z-object "\nВыберите объект, его высота станет отметкой: "))
+       (if z
+         (progn (gc-vo-apply-proj z) (setq done T))
+         (princ "\n[!] Объект не выбран. Введите число, О или Т.")))
+      ((gc-vo-is-word s '("т" "Т" "t" "T" "точка" "Точка" "ТОЧКА"))
+       (setq z (gc-vo-pick-z-point "\nУкажите точку, её высота станет отметкой: "))
+       (if z
+         (progn (gc-vo-apply-proj z) (setq done T))
+         (princ "\n[!] Точка не указана. Введите число, О или Т.")))
+      (T
+       (setq val (gc-vo-parse-num s))
+       (if val
+         (progn (gc-vo-apply-proj val) (setq done T))
+         (princ (strcat "\n[!] Не понял \"" s "\". Нужно число вида 4,398,"
+                        " либо О, либо Т."))))))
   *gc-vo-proj-z*)
 
-(defun gc-vo-set-proj ( / choice)
-  (setq choice
-    (gc-vo-menu
-      "ПРОЕКТНАЯ ОТМЕТКА"
-      (list
-        (strcat "  Сейчас: " (gc-vo-proj-disp))
-        ""
-        "  1 = ввести число вручную"
-        "      Например 4,398 — это 4 метра 398 миллиметров."
-        "      Запятая и точка равнозначны, минус допустим."
-        ""
-        "  2 = взять с объекта"
-        "      Щёлкнете по объекту — его высота Z станет проектной отметкой."
-        "      Подходит для COGO Point, точки, круга, линии, блока."
-        ""
-        "  3 = взять кликом по месту"
-        "      Щёлкнете место в модели — возьмётся высота точки клика."
-        "      ВАЖНО: включите объектную привязку (Узел, Конточка),"
-        "      иначе вернётся высота плоскости построений, обычно 0.")
-      "1 2 3" "1"))
-  (cond
-    ((= choice "1") (gc-vo-set-proj-manual))
-    ((= choice "2")
-     (gc-vo-apply-proj
-       (gc-vo-pick-z-object
-         "\nВыберите объект, его высота станет проектной отметкой: ")))
-    (T
-     (gc-vo-apply-proj
-       (gc-vo-pick-z-point
-         "\nУкажите точку, её высота станет проектной отметкой: "))))
-  *gc-vo-proj-z*)
-
-(defun gc-vo-set-proj-mode ( / choice)
-  (setq choice
-    (gc-vo-menu
-      "РЕЖИМ ПРОЕКТНОЙ ОТМЕТКИ"
-      (list
-        (strcat "  Сейчас: " (gc-vo-proj-mode-name))
-        ""
-        "  1 = ОДНА отметка на все точки (шаблон)"
-        "      Задали один раз — дальше команда её не спрашивает."
-        "      Каждая фактическая точка сравнивается с этой отметкой."
-        "      Подходит, когда весь участок на одном горизонте:"
-        "      плита, площадка, один уровень."
-        ""
-        "  2 = СПРАШИВАТЬ проектную точку каждый раз"
-        "      Перед каждой фактической точкой команда сначала попросит"
-        "      проектную. Подходит, когда у каждой точки свой проект:"
-        "      уклон, лестница, разные отметки по осям.")
-      "1 2"
-      (if (= *gc-vo-proj-mode* "ASK") "2" "1")))
-  (setq *gc-vo-proj-mode* (if (= choice "2") "ASK" "TPL"))
-  (princ (strcat "\n[i] Режим: " (gc-vo-proj-mode-name)))
-  ;; В режиме шаблона отметка обязана быть задана до начала работы.
+;; ПОЧЕМУ переключатель, а не вложенное меню: у опции всего два состояния,
+;; и любое вложенное меню — лишний шанс застрять, как это было с [Проект] в v1.
+(defun gc-vo-toggle-proj-mode ( / )
+  (setq *gc-vo-proj-mode* (if (= *gc-vo-proj-mode* "ASK") "TPL" "ASK"))
+  (princ (strcat "\n[i] Режим отметки: " (gc-vo-proj-mode-name)))
+  (if (= *gc-vo-proj-mode* "ASK")
+    (princ (strcat "\n    Перед каждой фактической точкой команда спросит"
+                   " проектную.\n    Подходит для уклона, лестницы, разных"
+                   " отметок по осям."))
+    (princ (strcat "\n    Одна отметка сравнивается со всеми точками."
+                   "\n    Подходит для плиты, площадки, одного горизонта.")))
+  ;; В режиме одной отметки она обязана быть задана — иначе считать не от чего.
   (if (and (= *gc-vo-proj-mode* "TPL") (null *gc-vo-proj-z*))
     (gc-vo-set-proj))
   *gc-vo-proj-mode*)
 
-(defun gc-vo-set-fact-src ( / choice)
-  (setq choice
-    (gc-vo-menu
-      "КАК ВЫБИРАТЬ ТОЧКИ"
-      (list
-        (strcat "  Сейчас: " (gc-vo-fact-src-name))
-        ""
-        "  1 = ВЫБОРОМ ОБЪЕКТА — надёжнее"
-        "      Щёлкаете прямо по объекту точки съёмки, берётся его высота Z."
-        "      Промахнётесь мимо объекта — команда заметит и переспросит."
-        "      Ошибиться высотой практически невозможно."
-        ""
-        "  2 = КЛИКОМ ПО МЕСТУ — быстрее"
-        "      Щёлкаете место в модели, высота берётся из точки клика."
-        "      ВАЖНО: нужна включённая объектная привязка (Узел, Конточка)."
-        "      Без привязки или при промахе вернётся высота плоскости"
-        "      построений — обычно 0 — и отклонение будет неверным,"
-        "      причём команда об этом не узнает.")
-      "1 2"
-      (if (= *gc-vo-fact-src* "PT") "2" "1")))
-  (setq *gc-vo-fact-src* (if (= choice "2") "PT" "OBJ"))
-  (princ (strcat "\n[i] Выбор точек: " (gc-vo-fact-src-name)))
+(defun gc-vo-toggle-fact-src ( / )
+  (setq *gc-vo-fact-src* (if (= *gc-vo-fact-src* "PT") "OBJ" "PT"))
+  (princ (strcat "\n[i] Способ выбора точек: " (gc-vo-fact-src-name)))
+  (if (= *gc-vo-fact-src* "PT")
+    (princ (strcat "\n    Щёлкаете место в модели, высота берётся из точки"
+                   " клика.\n    ВНИМАНИЕ: нужна включённая объектная привязка"
+                   " (Узел, Конточка).\n    Без неё вернётся высота плоскости"
+                   " построений — обычно 0 — и\n    отклонение будет неверным,"
+                   " а команда об этом не узнает."))
+    (princ (strcat "\n    Щёлкаете прямо по объекту точки съёмки, берётся его"
+                   " высота Z.\n    Промах мимо объекта команда заметит"
+                   " и переспросит.")))
   *gc-vo-fact-src*)
 
-(defun gc-vo-set-text-h ( / )
-  (princ "\n\n=== ВЫСОТА ТЕКСТА ПОДПИСИ ===")
+(defun gc-vo-set-text-h ( / res s val)
+  (princ "\n\n--- ВЫСОТА ТЕКСТА ПОДПИСИ ---")
   (princ "\nВысота символов подписи в метрах чертежа.")
   (princ "\nНапример 0,100 — это 100 мм на чертеже.")
-  (setq *gc-vo-text-h*
-        (gc-vo-ask-num "Высота текста, м"
-                       (if *gc-vo-text-h* *gc-vo-text-h* *gc-vo-text-h-init*)
-                       T))
-  (princ (strcat "\n[i] Высота текста: " (gc-vo-fmt *gc-vo-text-h*) " м"))
-  *gc-vo-text-h*)
-
-(defun gc-vo-settings ( / choice done)
-  (gc-vo-defaults)
-  (setq done nil)
-  (while (not done)
-    (setq choice
-      (gc-vo-menu
-        "НАСТРОЙКИ VO"
-        (list
-          "  1 = проектная отметка"
-          (strcat "      сейчас: " (gc-vo-proj-disp))
-          ""
-          "  2 = режим проектной отметки"
-          (strcat "      сейчас: " (gc-vo-proj-mode-name))
-          ""
-          "  3 = как выбирать точки"
-          (strcat "      сейчас: " (gc-vo-fact-src-name))
-          ""
-          "  4 = высота текста подписи"
-          (strcat "      сейчас: " (gc-vo-fmt *gc-vo-text-h*) " м")
-          ""
-          "  5 = закрыть настройки и вернуться к работе")
-        "1 2 3 4 5" "5"))
+  (setq res nil)
+  (while (null res)
+    ;; getstring с флагом T — иначе ввод обрывается на пробеле и "0, 100"
+    ;; молча превратилось бы в "0," = 0 м.
+    (setq s (gc-vo-trim
+              (getstring T (strcat "\nВысота текста, м <"
+                                   (gc-vo-fmt *gc-vo-text-h*) ">: "))))
     (cond
-      ((= choice "1") (gc-vo-set-proj))
-      ((= choice "2") (gc-vo-set-proj-mode))
-      ((= choice "3") (gc-vo-set-fact-src))
-      ((= choice "4") (gc-vo-set-text-h))
-      (T (setq done T))))
-  (princ))
+      ((= s "") (setq res *gc-vo-text-h*))
+      (T
+       (setq val (gc-vo-parse-num s))
+       (cond
+         ((null val)
+          (princ (strcat "\n[!] Не понял \"" s "\". Нужно число вида 0,100")))
+         ((<= val 1.0e-9)
+          (princ "\n[!] Высота текста должна быть больше нуля."))
+         (T (setq res val))))))
+  (setq *gc-vo-text-h* res)
+  (princ (strcat "\n[i] Высота текста теперь " (gc-vo-fmt *gc-vo-text-h*) " м"))
+  *gc-vo-text-h*)
 
 ;;; ====================================================================
 ;;; ОТРИСОВКА ПОДПИСИ
@@ -411,21 +342,22 @@
 ;;; ЗАПРОС ТОЧКИ
 ;;; ====================================================================
 
-;; Спрашивает точку способом из настроек и возвращает её высоту.
-;; Возвращает: число    — высота выбранной точки,
-;;             "SET"    — пользователь нажал 1, нужны настройки,
-;;             nil      — Enter/Esc, выход.
+;; Спрашивает точку способом из настроек.
+;; Возвращает: число — высота выбранной точки,
+;;             строка — нажата опция (Проект / Режим / Способ / Высота),
+;;             nil    — Enter/Esc, выход из команды.
 (defun gc-vo-prompt-z (prompt / res sel z)
   (setq res nil)
   (while (null res)
-    (initget "1")
+    ;; Латинские дубли — на случай непереключённой раскладки.
+    (initget "Проект Режим Способ Высота Proekt Rezhim Sposob Vysota")
     (cond
       ((= *gc-vo-fact-src* "PT")
        (setq sel (getpoint prompt))
        (cond
-         ((null sel)                (setq res 'EXIT))
-         ((= (type sel) 'STR)       (setq res 'SET))
-         (T                         (setq res (caddr sel)))))
+         ((null sel)          (setq res 'EXIT))
+         ((= (type sel) 'STR) (setq res sel))
+         (T                   (setq res (caddr sel)))))
       (T
        (setq sel (entsel prompt))
        (cond
@@ -433,16 +365,23 @@
          ((and (null sel) (= (getvar "ERRNO") 7))
           (princ "\n[!] Мимо объекта. Щёлкните точно по объекту."))
          ((null sel)          (setq res 'EXIT))
-         ((= (type sel) 'STR) (setq res 'SET))
+         ((= (type sel) 'STR) (setq res sel))
          (T
           (setq z (gc-vo-entity-z (car sel)))
           (if z
             (setq res z)
             (princ "\n[!] У этого объекта нет высоты. Выберите другой.")))))))
+  (if (equal res 'EXIT) nil res))
+
+;; Обработка нажатой опции.
+(defun gc-vo-handle-option (kw / )
   (cond
-    ((equal res 'EXIT) nil)
-    ((equal res 'SET)  "SET")
-    (T                 res)))
+    ((member kw '("Проект" "Proekt")) (gc-vo-set-proj))
+    ((member kw '("Режим"  "Rezhim")) (gc-vo-toggle-proj-mode))
+    ((member kw '("Способ" "Sposob")) (gc-vo-toggle-fact-src))
+    ((member kw '("Высота" "Vysota")) (gc-vo-set-text-h))
+    (T (princ (strcat "\n[!] Опция \"" kw "\" не распознана."))))
+  T)
 
 ;;; ====================================================================
 ;;; ЯДРО КОМАНДЫ
@@ -456,10 +395,15 @@
 (defun gc-vo-intro ( / )
   (princ "\n\n=== VO — отклонение фактической высоты от проектной ===")
   (princ "\nПодписывает, насколько точка выше (+) или ниже (-) проекта, в мм.")
-  (princ "\nВ любом запросе точки: 1 — настройки, Enter — выход."))
+  (princ "\nВ запросе точки доступны опции:")
+  (princ "\n  Проект — задать проектную отметку (число, объект или клик)")
+  (princ "\n  Режим  — одна отметка на все точки / спрашивать каждый раз")
+  (princ "\n  Способ — выбирать точки объектом / кликом по месту")
+  (princ "\n  Высота — высота текста подписи")
+  (princ "\n  Enter  — выход"))
 
 (defun gc-vo-status ( / )
-  (princ (strcat "\n\n--- VO | проект: "
+  (princ (strcat "\n\n--- VO | отметка: "
                  (if (= *gc-vo-proj-mode* "ASK")
                    "спрашивается каждый раз"
                    (gc-vo-proj-disp))
@@ -467,25 +411,25 @@
                  (if (= *gc-vo-fact-src* "PT") "кликом" "объектом")
                  " | текст: " (gc-vo-fmt *gc-vo-text-h*) " м ---")))
 
-(defun gc-vo-run ( / done step-ok r z-proj z-fact dev-mm txt pt)
+(defun gc-vo-run ( / done step-ok r z-proj z-fact dev-mm txt pt prm)
   (gc-vo-defaults)
   (gc-vo-intro)
-  ;; В режиме шаблона отметка нужна до старта; в режиме ASK — не нужна.
+  ;; В режиме одной отметки она нужна до старта; в режиме ASK — не нужна.
   (if (and (= *gc-vo-proj-mode* "TPL") (null *gc-vo-proj-z*))
     (gc-vo-set-proj))
-  (setq done nil)
+  (setq prm  " [Проект/Режим/Способ/Высота]: "
+        done nil)
   (while (not done)
     (gc-vo-status)
     (setq step-ok T
           z-proj  nil)
-    ;; --- Шаг 1: проектная отметка (только в режиме "спрашивать каждый раз")
+    ;; --- Шаг 1: проектная отметка (только в режиме «спрашивать каждый раз»)
     (if (= *gc-vo-proj-mode* "ASK")
       (progn
-        (setq r (gc-vo-prompt-z
-                  "\nПРОЕКТНАЯ точка (1 - настройки, Enter - выход): "))
+        (setq r (gc-vo-prompt-z (strcat "\nПРОЕКТНАЯ точка" prm)))
         (cond
-          ((null r)         (setq done T step-ok nil))
-          ((equal r "SET")  (gc-vo-settings) (setq step-ok nil))
+          ((null r)          (setq done T step-ok nil))
+          ((= (type r) 'STR) (gc-vo-handle-option r) (setq step-ok nil))
           (T
            (setq z-proj r)
            (princ (strcat "\n[i] Проект этой точки: " (gc-vo-fmt z-proj) " м")))))
@@ -493,11 +437,10 @@
     ;; --- Шаг 2: фактическая точка
     (if step-ok
       (progn
-        (setq r (gc-vo-prompt-z
-                  "\nФАКТИЧЕСКАЯ точка (1 - настройки, Enter - выход): "))
+        (setq r (gc-vo-prompt-z (strcat "\nФАКТИЧЕСКАЯ точка" prm)))
         (cond
-          ((null r)        (setq done T))
-          ((equal r "SET") (gc-vo-settings))
+          ((null r)          (setq done T))
+          ((= (type r) 'STR) (gc-vo-handle-option r))
           (T
            (setq z-fact r)
            (setq dev-mm (gc-vo-round (* 1000.0 (- z-fact z-proj))))
@@ -518,7 +461,7 @@
   (princ))
 
 ;;; ====================================================================
-;;; КОМАНДЫ
+;;; КОМАНДА
 ;;; ====================================================================
 
 ;; *error* объявлен локальным: на выходе AutoLISP сам вернёт прежний
@@ -533,20 +476,9 @@
   (gc-vo-run)
   (princ))
 
-;; Отдельный вход в настройки — на случай, если удобнее открыть их сразу.
-(defun c:vos ( / *error*)
-  (defun *error* (msg)
-    (if (and msg
-             (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*QUIT*")))
-      (princ (strcat "\n[ОШИБКА] VOS: " msg))
-      (princ "\n[ОТМЕНА] VOS прерван."))
-    (princ))
-  (gc-vo-settings)
-  (princ))
-
 ;; Полное имя по docs/conventions.md: короткий алиас плюс gc-имя.
 (defun c:gc-height-deviation ( / )
   (c:vo))
 
-(princ "\n[gc] vo.lsp v2 загружен. Команды: VO (работа), VOS (настройки)")
+(princ "\n[gc] vo.lsp v3 загружен. Команда: VO")
 (princ)
