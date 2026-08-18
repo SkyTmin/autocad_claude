@@ -1,7 +1,12 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v17)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v18)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v18: strelki pererisovany v stile ol.lsp -- LWPOLYLINE iz 3 vershin
+;;;      s plavno suzhayushchimsya nakonechnikom vmesto LINE + treugolnik
+;;;      SOLID. Proporcii iz obrazca menuGEO: shirina nakonechnika 0.2 ot
+;;;      dliny strelki (0.080 pri 0.400), nakonechnik vo vtoroy polovine.
 ;;;
 ;;; v17: zashchita ot otsutstviya Visual LISP COM. U Kosti vyletala oshibka
 ;;;      "no function definition: VLAX-ENAME->VLA-OBJECT" -- (vl-load-com)
@@ -33,6 +38,9 @@
 (setq *gc-pile-r-norm*             0.710) ; норма радиуса сваи, м
 (setq *gc-pile-r-warn*             0.050)
 (setq *gc-pile-arrow-len*          0.400)
+;; Ширина наконечника = доля от длины стрелки. 0.2 x 0.400 = 0.080 —
+;; ровно как в образце menuGEO, тот же вид, что у стрелок ol.lsp.
+(setq *gc-pile-arrow-head-k*       0.2)
 (setq *gc-pile-tol-mm-per-m*      20.0)
 (setq *gc-pile-text-h*             0.100)
 (setq *gc-pile-text-along*         0.200)
@@ -334,34 +342,41 @@
                  (cons 10 (list cx cy z))
                  (cons 40 r))))
 
-(defun gc-pile-draw-arrow (start end layer)
-  (entmake (list '(0 . "LINE")
-                 (cons 8 layer)
-                 (cons 10 start)
-                 (cons 11 end)))
-  (gc-pile-draw-arrow-head start end layer))
-
-(defun gc-pile-draw-arrow-head (start end layer / dx dy len ux uy nx ny size t1 t2)
-  (setq dx (- (car end) (car start))
-        dy (- (cadr end) (cadr start)))
-  (setq len (sqrt (+ (* dx dx) (* dy dy))))
+;; Стрелка = LWPOLYLINE из 3 вершин: тонкий хвост, затем плавно сужающийся
+;; наконечник во второй половине. Раньше здесь была LINE плюс треугольник
+;; SOLID — выглядело грубее. Теперь тот же вид, что в ol.lsp, а пропорции
+;; взяты из образца menuGEO: наконечник шириной 0.2 от длины стрелки
+;; (0.080 при длине 0.400) и занимает вторую половину.
+;;
+;; Ширина задаётся ПОСЕГМЕНТНО: группа 40 — начальная ширина сегмента,
+;; начинающегося в этой вершине, группа 41 — конечная. Поэтому наконечник
+;; описывается на средней вершине.
+;;
+;; LWPOLYLINE плоская, высота хранится в группе 38 — берём Z начала, чтобы
+;; стрелка легла на ту же отметку, что и раньше LINE.
+(defun gc-pile-draw-arrow (start end layer / dx dy len ux uy mid head z)
+  (setq dx  (- (car  end) (car  start))
+        dy  (- (cadr end) (cadr start))
+        len (sqrt (+ (* dx dx) (* dy dy))))
   (if (> len 1.0e-9)
     (progn
-      (setq ux (/ dx len) uy (/ dy len))
-      (setq nx (- uy) ny ux)
-      (setq size (* 0.30 len))
-      (setq t1 (list (- (car end) (* size ux) (* (/ size 3.0) nx))
-                     (- (cadr end) (* size uy) (* (/ size 3.0) ny))
-                     (caddr end)))
-      (setq t2 (list (+ (- (car end) (* size ux)) (* (/ size 3.0) nx))
-                     (+ (- (cadr end) (* size uy)) (* (/ size 3.0) ny))
-                     (caddr end)))
-      (entmake (list '(0 . "SOLID")
-                     (cons 8 layer)
-                     (cons 10 t1)
-                     (cons 11 t2)
-                     (cons 12 end)
-                     (cons 13 end))))))
+      (setq ux (/ dx len)
+            uy (/ dy len))
+      (setq mid (list (+ (car  start) (* ux (/ len 2.0)))
+                      (+ (cadr start) (* uy (/ len 2.0)))))
+      (setq head (* *gc-pile-arrow-head-k* len))
+      (setq z (if (caddr start) (caddr start) 0.0))
+      (entmake
+        (list '(0 . "LWPOLYLINE")
+              '(100 . "AcDbEntity")
+              (cons 8 layer)
+              '(100 . "AcDbPolyline")
+              '(90 . 3)
+              '(70 . 0)
+              (cons 38 z)
+              (cons 10 (list (car start) (cadr start))) (cons 40 0.0)  (cons 41 0.0)
+              (cons 10 (list (car mid)   (cadr mid)))   (cons 40 head) (cons 41 0.0)
+              (cons 10 (list (car end)   (cadr end)))   (cons 40 0.0)  (cons 41 0.0))))))
 
 (defun gc-pile-draw-text-rot (pt text style layer rotation)
   (entmake (list '(0 . "TEXT")
@@ -814,5 +829,5 @@
         (gc-pile-run-svp-core pairs target-z project-centers "SVP")))))
   (princ))
 
-(princ "\n[gc] sv.lsp v17 загружен. Команды: SV, SVP")
+(princ "\n[gc] sv.lsp v18 загружен. Команды: SV, SVP")
 (princ)
