@@ -1,10 +1,15 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v6)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v7)
 ;;; Komandy:
 ;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
 ;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
+;;;
+;;; v7: zashchita ot otsutstviya Visual LISP COM (oshibka "no function
+;;;     definition: VLAX-ENAME->VLA-OBJECT"). Vysota obychnoy tochki teper
+;;;     beretsya iz DXF-gruppy 10 BEZ COM; COM nuzhen tolko dlya COGO Point
+;;;     i blokov, i ego nalichie proveryaetsya.
 ;;;
 ;;; v6: Zadanie otmetki cherez knopku [Otmetka] teper SAMO pereklyuchaet
 ;;;     rezhim na "odna otmetka na vse tochki". Ranshe, esli byl vklyuchen
@@ -149,21 +154,39 @@
 ;; 3. InsertionPoint — блоки.
 ;; Coordinates намеренно НЕ используется: у LWPOLYLINE это плоские пары
 ;; (x y x y …), и третий элемент оказался бы Y второй вершины, а не высотой.
-(defun gc-vo-entity-z (ent / obj ed p10 z)
-  (setq obj (vlax-ename->vla-object ent)
+;; Проверяет, доступен ли Visual LISP COM, и при необходимости догружает его.
+;; ПОЧЕМУ нужно: бывает ошибка "no function definition: VLAX-ENAME->VLA-OBJECT",
+;; то есть (vl-load-com) в шапке файла не отработал. Ссылка на несвязанный
+;; символ в AutoLISP возвращает nil и не падает — так и проверяем.
+(defun gc-vo-com-ok ( / )
+  (if (null vlax-ename->vla-object) (vl-load-com))
+  (if vlax-ename->vla-object T nil))
+
+;; Высота объекта.
+;; ПОРЯДОК ВАЖЕН. DXF-группа 10 есть у обычной точки и не требует COM —
+;; пробуем её первой. COM трогаем только для COGO Point Civil 3D и блоков.
+;; Так команда работает и там, где Visual LISP COM недоступен.
+(defun gc-vo-entity-z (ent / obj ed typ p10 z)
+  (setq ed  (entget ent)
+        typ (cdr (assoc 0 ed))
+        p10 (cdr (assoc 10 ed))
         z   nil)
-  (if (vlax-property-available-p obj 'Elevation)
-    (setq z (vla-get-Elevation obj)))
-  (if (null z)
+  ;; COGO Point и LWPOLYLINE отдают высоту только через Elevation.
+  (if (and (or (wcmatch typ "AECC*POINT,AEC*POINT")
+               (= typ "LWPOLYLINE")
+               (null p10)
+               (null (caddr p10)))
+           (gc-vo-com-ok))
     (progn
-      (setq ed  (entget ent))
-      (setq p10 (cdr (assoc 10 ed)))
-      (if (and p10 (caddr p10))
-        (setq z (caddr p10)))))
-  (if (null z)
-    (if (vlax-property-available-p obj 'InsertionPoint)
-      (setq z (caddr (vlax-safearray->list
-                       (vlax-variant-value (vla-get-InsertionPoint obj)))))))
+      (setq obj (vlax-ename->vla-object ent))
+      (if (vlax-property-available-p obj 'Elevation)
+        (setq z (vla-get-Elevation obj)))
+      (if (and (null z) (vlax-property-available-p obj 'InsertionPoint))
+        (setq z (caddr (vlax-safearray->list
+                         (vlax-variant-value (vla-get-InsertionPoint obj))))))))
+  ;; Обычная точка, окружность, текст, линия — из DXF, без COM.
+  (if (and (null z) p10 (caddr p10))
+    (setq z (caddr p10)))
   z)
 
 ;; Выбор объекта и чтение его высоты. Возвращает Z либо nil при отказе.
@@ -558,5 +581,5 @@
 (defun c:gc-height-deviation ( / )
   (c:vo))
 
-(princ "\n[gc] vo.lsp v6 загружен. Команда: VO")
+(princ "\n[gc] vo.lsp v7 загружен. Команда: VO")
 (princ)

@@ -1,7 +1,11 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v4)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v5)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v5: zashchita ot otsutstviya Visual LISP COM (oshibka "no function
+;;;     definition: VLAX-ENAME->VLA-OBJECT"). XY obychnoy tochki teper
+;;;     beretsya iz DXF-gruppy 10 BEZ COM; COM nuzhen tolko dlya COGO Point.
 ;;;
 ;;; v4: strelka rastet OT PRYAMOY, a ne ot tochki. Nachalo strelki -- na
 ;;;     pryamoy, v osnovanii perpendikulyara iz fakticheskoy tochki; ostrie
@@ -195,19 +199,47 @@
 
 ;; XY объекта. COGO Point Civil 3D отдаЄт координаты через Easting/Northing,
 ;; обычна€ точка Ч через DXF-группу 10, блок Ч через InsertionPoint.
-(defun gc-ol-entity-xy (ent / obj ed p10)
-  (setq obj (vlax-ename->vla-object ent))
+;; ѕровер€ет, доступен ли Visual LISP COM, и при необходимости догружает его.
+;; ѕќ„≈ћ” нужно: бывает ошибка "no function definition: VLAX-ENAME->VLA-OBJECT",
+;; то есть (vl-load-com) в шапке файла не отработал. —сылка на несв€занный
+;; символ в AutoLISP возвращает nil и не падает Ч так и провер€ем.
+(defun gc-ol-com-ok ( / )
+  (if (null vlax-ename->vla-object) (vl-load-com))
+  (if vlax-ename->vla-object T nil))
+
+;; XY объекта.
+;; ѕќ–яƒќ  ¬ј∆≈Ќ. DXF-группа 10 есть у обычной точки и не требует COM Ч
+;; пробуем еЄ первой. COM трогаем только дл€ COGO Point Civil 3D и блоков.
+(defun gc-ol-entity-xy (ent / obj ed typ p10)
+  (setq ed  (entget ent)
+        typ (cdr (assoc 0 ed))
+        p10 (cdr (assoc 10 ed)))
   (cond
-    ((vlax-property-available-p obj 'Easting)
-     (list (vla-get-Easting obj) (vla-get-Northing obj)))
-    ((progn (setq ed  (entget ent))
-            (setq p10 (cdr (assoc 10 ed)))
-            (and p10 (cadr p10)))
-     (list (car p10) (cadr p10)))
-    ((vlax-property-available-p obj 'InsertionPoint)
-     (setq p10 (vlax-safearray->list
-                 (vlax-variant-value (vla-get-InsertionPoint obj))))
-     (list (car p10) (cadr p10)))
+    ;; COGO Point Ч координаты только через COM.
+    ((wcmatch typ "AECC*POINT,AEC*POINT")
+     (if (gc-ol-com-ok)
+       (progn
+         (setq obj (vlax-ename->vla-object ent))
+         (cond
+           ((vlax-property-available-p obj 'Easting)
+            (list (vla-get-Easting obj) (vla-get-Northing obj)))
+           ((vlax-property-available-p obj 'InsertionPoint)
+            (setq p10 (vlax-safearray->list
+                        (vlax-variant-value (vla-get-InsertionPoint obj))))
+            (list (car p10) (cadr p10)))
+           (T nil)))
+       nil))
+    ;; ќбычна€ точка Ч из DXF, без COM.
+    ((and p10 (cadr p10)) (list (car p10) (cadr p10)))
+    ;; ќстальное Ч через COM, если он есть.
+    ((gc-ol-com-ok)
+     (setq obj (vlax-ename->vla-object ent))
+     (if (vlax-property-available-p obj 'InsertionPoint)
+       (progn
+         (setq p10 (vlax-safearray->list
+                     (vlax-variant-value (vla-get-InsertionPoint obj))))
+         (list (car p10) (cadr p10)))
+       nil))
     (T nil)))
 
 (defun gc-ol-ss-points (ss / i n ent c pts skipped)
@@ -220,7 +252,12 @@
       (setq skipped (1+ skipped)))
     (setq i (1+ i)))
   (if (> skipped 0)
-    (princ (strcat "\n[!] ѕропущено объектов без координат: " (itoa skipped))))
+    (progn
+      (princ (strcat "\n[!] ѕропущено объектов без координат: " (itoa skipped)))
+      (if (null (gc-ol-com-ok))
+        (princ (strcat "\n[!] Visual LISP COM недоступен в этой версии CAD."
+                       "\n    COGO Point Civil 3D без него прочитать нельз€."
+                       "\n    ќбычные точки (POINT) читаютс€ и без него.")))))
   (reverse pts))
 
 ;; —торона спрашиваетс€ сразу после выбора пр€мой Ч как в menuGEO.
@@ -586,5 +623,5 @@
 (defun c:gc-line-deviation ( / )
   (c:ol))
 
-(princ "\n[gc] ol.lsp v4 загружен.  оманда: OL")
+(princ "\n[gc] ol.lsp v5 загружен.  оманда: OL")
 (princ)

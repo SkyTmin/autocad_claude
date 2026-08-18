@@ -1,7 +1,13 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v16)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v17)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v17: zashchita ot otsutstviya Visual LISP COM. U Kosti vyletala oshibka
+;;;      "no function definition: VLAX-ENAME->VLA-OBJECT" -- (vl-load-com)
+;;;      v shapke fayla ne otrabotal. Teper koordinaty obychnoy tochki
+;;;      berutsya iz DXF-gruppy 10 BEZ COM, a COM trogaetsya tolko dlya
+;;;      COGO Point Civil 3D, prichem s proverkoy i vnyatnym soobshcheniem.
 ;;;
 ;;; v16: ubrano verhnee ogranichenie dZ mezhdu nizhnim i verhnim secheniem.
 ;;;      Svai s bolshim raznosom po vysote, naprimer Z 1.000 -> 12.000,
@@ -62,19 +68,57 @@
 ;;; ИЗВЛЕЧЕНИЕ КООРДИНАТ
 ;;; ====================================================================
 
-(defun gc-pile-get-coords (ent / obj)
-  (setq obj (vlax-ename->vla-object ent))
+;; Проверяет, доступен ли Visual LISP COM, и при необходимости догружает его.
+;; ПОЧЕМУ нужно: у Кости вылетала ошибка
+;;   "no function definition: VLAX-ENAME->VLA-OBJECT"
+;; то есть (vl-load-com) в шапке файла не отработал. Ссылка на несвязанный
+;; символ в AutoLISP возвращает nil и не падает, поэтому наличие функции
+;; можно проверить прямо так.
+(defun gc-pile-com-ok ( / )
+  (if (null vlax-ename->vla-object) (vl-load-com))
+  (if vlax-ename->vla-object T nil))
+
+;; Координаты объекта: (x y z).
+;; ПОРЯДОК ВАЖЕН. Сначала пробуем DXF-группу 10 — она есть у обычной точки
+;; и не требует Visual LISP COM вообще. COM трогаем только для COGO Point
+;; Civil 3D, где координаты доступны лишь через Easting/Northing.
+;; Так команда продолжает работать даже там, где COM недоступен.
+(defun gc-pile-get-coords (ent / ed typ p10 obj)
+  (setq ed  (entget ent)
+        typ (cdr (assoc 0 ed))
+        p10 (cdr (assoc 10 ed)))
   (cond
-    ((vlax-property-available-p obj 'Easting)
-     (list (vla-get-Easting obj)
-           (vla-get-Northing obj)
-           (vla-get-Elevation obj)))
-    ((vlax-property-available-p obj 'Coordinates)
-     (vlax-safearray->list
-       (vlax-variant-value (vla-get-Coordinates obj))))
-    ((vlax-property-available-p obj 'InsertionPoint)
-     (vlax-safearray->list
-       (vlax-variant-value (vla-get-InsertionPoint obj))))
+    ;; COGO Point — только через COM.
+    ((wcmatch typ "AECC*POINT,AEC*POINT")
+     (if (gc-pile-com-ok)
+       (progn
+         (setq obj (vlax-ename->vla-object ent))
+         (cond
+           ((vlax-property-available-p obj 'Easting)
+            (list (vla-get-Easting obj)
+                  (vla-get-Northing obj)
+                  (vla-get-Elevation obj)))
+           ((vlax-property-available-p obj 'Coordinates)
+            (vlax-safearray->list
+              (vlax-variant-value (vla-get-Coordinates obj))))
+           ((vlax-property-available-p obj 'InsertionPoint)
+            (vlax-safearray->list
+              (vlax-variant-value (vla-get-InsertionPoint obj))))
+           (T nil)))
+       nil))
+    ;; Обычная точка и всё, у чего есть группа 10 — без COM.
+    ((and p10 (caddr p10)) p10)
+    ;; Остальное — пробуем COM, если он есть.
+    ((gc-pile-com-ok)
+     (setq obj (vlax-ename->vla-object ent))
+     (cond
+       ((vlax-property-available-p obj 'Coordinates)
+        (vlax-safearray->list
+          (vlax-variant-value (vla-get-Coordinates obj))))
+       ((vlax-property-available-p obj 'InsertionPoint)
+        (vlax-safearray->list
+          (vlax-variant-value (vla-get-InsertionPoint obj))))
+       (T nil)))
     (T nil)))
 
 (defun gc-pile-get-project-center (ent / ed typ c)
@@ -99,8 +143,12 @@
       (setq skipped (1+ skipped)))
     (setq i (1+ i)))
   (if (> skipped 0)
-    (princ (strcat "\n[!] Пропущено объектов неподдерживаемого типа: "
-                   (itoa skipped))))
+    (progn
+      (princ (strcat "\n[!] Пропущено объектов без координат: " (itoa skipped)))
+      (if (null (gc-pile-com-ok))
+        (princ (strcat "\n[!] Visual LISP COM недоступен в этой версии CAD."
+                       "\n    COGO Point Civil 3D без него прочитать нельзя."
+                       "\n    Обычные точки (POINT) читаются и без него.")))))
   (reverse pts))
 
 (defun gc-pile-ss-to-project-centers (ss / i n centers ent c skipped)
@@ -766,5 +814,5 @@
         (gc-pile-run-svp-core pairs target-z project-centers "SVP")))))
   (princ))
 
-(princ "\n[gc] sv.lsp v16 загружен. Команды: SV, SVP")
+(princ "\n[gc] sv.lsp v17 загружен. Команды: SV, SVP")
 (princ)
