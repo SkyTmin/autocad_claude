@@ -1,7 +1,16 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v20)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v21)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v21: vysota teksta stala VEDUSHCHIM razmerom, kak v ol.lsp: dlina strelki
+;;;      = 2 x vysota, nakonechnik = 0.4 x vysota, smeshchenie cifry = 1 x
+;;;      vysota. Ranshe dlina strelki byla zafiksirovana 0.400 pri tekste
+;;;      0.100 -- sootnoshenie 1:4, i cifra vyglyadela melkoy ryadom so
+;;;      strelkoy. Teper 1:2, kak u OL. Umolchanie teksta 0.100 -> 0.200,
+;;;      dlina strelki pri etom ostalas 0.400.
+;;;      Dobavlena knopka [Tekst] v zapros rezhima: menyaet vysotu i tem samym
+;;;      masshtabiruet vsyu grafiku. Znachenie obshchee dlya SV i SVP.
 ;;;
 ;;; v20: raspolozhenie cifr privedeno k ol.lsp. Ranshe storona podpisi
 ;;;      schitalas ot znakov otkloneniya i zavisela ot kvadranta -- cifra
@@ -49,12 +58,15 @@
 
 (setq *gc-pile-r-norm*             0.710) ; норма радиуса сваи, м
 (setq *gc-pile-r-warn*             0.050)
-(setq *gc-pile-arrow-len*          0.400)
+;; ВЫСОТА ТЕКСТА ЗАДАЁТ ВСЮ ГРАФИКУ — как в ol.lsp. Длина стрелки и ширина
+;; наконечника считаются от неё, поэтому цифра и стрелка всегда в одной
+;; пропорции. Меняется кнопкой [Текст] в запросе режима.
+(setq *gc-pile-arrow-k*            2.0)   ; длина стрелки = 2.0 x высота текста
 ;; Ширина наконечника = доля от длины стрелки. 0.2 x 0.400 = 0.080 —
 ;; ровно как в образце menuGEO, тот же вид, что у стрелок ol.lsp.
 (setq *gc-pile-arrow-head-k*       0.2)
 (setq *gc-pile-tol-mm-per-m*      20.0)
-(setq *gc-pile-text-h*             0.100)
+(setq *gc-pile-text-h*             0.200) ; высота текста, м — ведущий размер
 ;; *gc-pile-text-along* и *gc-pile-text-lateral* удалены в v20: смещение
 ;; подписи теперь выводится из геометрии, как в ol.lsp — вдоль стрелки это
 ;; ровно её середина, поперёк — высота текста. Отдельные константы только
@@ -424,6 +436,10 @@
 ;; ни смотрела. Ровно как в OL.
 ;;
 ;; Возвращает (точка угол) либо nil, если стрелка нулевой длины.
+;; Длина стрелки выводится из высоты текста — те же пропорции, что в ol.lsp.
+(defun gc-pile-arrow-len ( / )
+  (* *gc-pile-arrow-k* *gc-pile-text-h*))
+
 (defun gc-pile-text-at-arrow (start end / dx dy len ux uy mid ang td nx ny)
   (setq dx  (- (car  end) (car  start))
         dy  (- (cadr end) (cadr start))
@@ -454,11 +470,11 @@
   (setq tstyle (gc-pile-text-style))
   (setq sx (if (>= dir-dx-mm 0) 1.0 -1.0))
   (setq sy (if (>= dir-dy-mm 0) 1.0 -1.0))
-  (setq p-end-x (list (+ (car base-pt) (* *gc-pile-arrow-len* sx))
+  (setq p-end-x (list (+ (car base-pt) (* (gc-pile-arrow-len) sx))
                       (cadr base-pt)
                       (caddr base-pt)))
   (setq p-end-y (list (car base-pt)
-                      (+ (cadr base-pt) (* *gc-pile-arrow-len* sy))
+                      (+ (cadr base-pt) (* (gc-pile-arrow-len) sy))
                       (caddr base-pt)))
   (gc-pile-draw-arrow base-pt p-end-x arrow-layer)
   (gc-pile-draw-arrow base-pt p-end-y arrow-layer)
@@ -821,13 +837,86 @@
 ;;; КОМАНДЫ
 ;;; ====================================================================
 
+;;; ====================================================================
+;;; ВЫСОТА ТЕКСТА — кнопка [Текст]
+;;; ====================================================================
+
+;; Обрезка пробелов по краям без vl-string-trim — чтобы не зависеть от того,
+;; как конкретная сборка обрабатывает не-ASCII.
+(defun gc-pile-trim (s / )
+  (while (and (> (strlen s) 0) (= (substr s 1 1) " "))
+    (setq s (substr s 2)))
+  (while (and (> (strlen s) 0) (= (substr s (strlen s) 1) " "))
+    (setq s (substr s 1 (1- (strlen s)))))
+  s)
+
+;; Запятая и точка равнозначны, пробелы игнорируются.
+;; ПОЧЕМУ свой парсер, а не getreal: getreal не принимает запятую, а Шамиль
+;; вводит размеры именно через запятую.
+(defun gc-pile-parse-size (s / n i ch bad seps digits norm val)
+  (setq n (strlen s) i 1 bad nil seps 0 digits 0 norm "")
+  (while (<= i n)
+    (setq ch (substr s i 1))
+    (cond
+      ((and (>= (ascii ch) 48) (<= (ascii ch) 57))
+       (setq digits (1+ digits) norm (strcat norm ch)))
+      ((or (= ch ",") (= ch "."))
+       (setq seps (1+ seps) norm (strcat norm ".")))
+      ((or (= ch " ") (= ch "\t")) nil)
+      (T (setq bad T)))
+    (setq i (1+ i)))
+  (cond
+    (bad          nil)
+    ((= digits 0) nil)
+    ((> seps 1)   nil)
+    (T
+     (setq val (atof norm))
+     (if (> val 1.0e-9) val nil))))
+
+(defun gc-pile-fmt (m)
+  (vl-string-subst "," "." (rtos m 2 3)))
+
+(defun gc-pile-set-text-h ( / res s val)
+  (princ "\n\n--- ВЫСОТА ТЕКСТА ---")
+  (princ "\nВысота цифры в метрах чертежа. От неё считается вся графика:")
+  (princ "\n  длина стрелки = 2 x высота, наконечник = 0.4 x высота,")
+  (princ "\n  смещение цифры от стрелки = 1 x высота.")
+  (princ "\nЗначение общее для SV и SVP.")
+  (setq res nil)
+  (while (null res)
+    ;; getstring с флагом T — иначе ввод обрывается на пробеле и "0, 200"
+    ;; молча превратилось бы в "0," = 0 м.
+    (setq s (gc-pile-trim
+              (getstring T (strcat "\nВысота текста, м <"
+                                   (gc-pile-fmt *gc-pile-text-h*) ">: "))))
+    (cond
+      ((= s "") (setq res *gc-pile-text-h*))
+      (T
+       (setq val (gc-pile-parse-size s))
+       (if val
+         (setq res val)
+         (princ (strcat "\n[!] Не понял \"" s "\". Нужно число вида 0,200"))))))
+  (setq *gc-pile-text-h* res)
+  (princ (strcat "\n[i] Высота текста " (gc-pile-fmt *gc-pile-text-h*)
+                 " м, длина стрелки " (gc-pile-fmt (gc-pile-arrow-len)) " м"))
+  *gc-pile-text-h*)
+
 (defun c:sv ( / mode-str pairs g idx total ok skipped p)
   (princ "\n  1 = все точки сразу (автоопределение свай)")
   (princ "\n  2 = по группам вручную (нижнее/верхнее сечение)")
   (princ "\n  3 = все сразу: SV 1 + SVP")
-  (initget "1 2 3")
-  (setq mode-str (getkword "\nРежим [1/2/3] <1>: "))
-  (if (null mode-str) (setq mode-str "1"))
+  ;; Ключевое слово продублировано одной буквой: для кириллицы AutoCAD
+  ;; не распознаёт заглавную букву как сокращение и требует слово целиком.
+  ;; Цикл — чтобы после смены высоты снова спросить режим.
+  (setq mode-str nil)
+  (while (null mode-str)
+    (princ (strcat "\n  Высота текста: " (gc-pile-fmt *gc-pile-text-h*)
+                   " м  |  длина стрелки: " (gc-pile-fmt (gc-pile-arrow-len)) " м"))
+    (initget "1 2 3 Текст Т")
+    (setq mode-str (getkword "\nРежим [1/2/3/Текст] <1>: "))
+    (if (null mode-str) (setq mode-str "1"))
+    (if (member mode-str '("Текст" "Т"))
+      (progn (gc-pile-set-text-h) (setq mode-str nil))))
   (princ (strcat "\nРежим: " mode-str))
   (cond
     ((= mode-str "3")
@@ -873,5 +962,5 @@
         (gc-pile-run-svp-core pairs target-z project-centers "SVP")))))
   (princ))
 
-(princ "\n[gc] sv.lsp v20 загружен. Команды: SV, SVP")
+(princ "\n[gc] sv.lsp v21 загружен. Команды: SV, SVP")
 (princ)
