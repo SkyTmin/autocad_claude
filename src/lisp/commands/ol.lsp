@@ -1,7 +1,14 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v2)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v3)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v3: v paketnom rezhime poyavilis knopki. Ranshe tam byl srazu ssget,
+;;;     a ssget ne podderzhivaet klyuchevye slova initget -- poetomu smenit
+;;;     proektnuyu pryamuyu dlya novogo uchastka bylo nelzya, ne vyhodya iz
+;;;     komandy: povtornyy zapusk OL srazu prosil vybrat tochki.
+;;;     Teper pered vyborkoy idet zapros s knopkami, Enter vedet k vyborke.
+;;;     Takzhe dobavlena knopka [Vyhod] v oba rezhima.
 ;;;
 ;;; v2: dva rezhima raboty, pereklyuchatel [Rezhim]:
 ;;;     -- po odnoy tochke: klik -- srazu podpis, knopki v stroke zaprosa;
@@ -155,8 +162,9 @@
   (princ (strcat "\n[i] Режим: " (gc-ol-mode-name)))
   (if *gc-ol-batch*
     (princ (strcat "\n    Выделяете точки рамкой — команда подпишет все сразу."
-                   "\n    Кнопок в запросе выборки нет: настройки открываются"
-                   "\n    по Enter вместо выбора."))
+                   "\n    Кнопки показываются ПЕРЕД выборкой: там же меняется"
+                   "\n    прямая при переходе на новый участок. Enter в этом"
+                   "\n    запросе сразу ведёт к выборке рамкой."))
     (princ "\n    Тыкаете точки по одной, кнопки настроек в строке запроса."))
   *gc-ol-batch*)
 
@@ -441,7 +449,9 @@
   (princ "\n  Текст     — высота цифры, от неё считается вся графика")
   (princ "\n  Режим     — по одной точке / пачкой рамкой")
   (princ "\nКнопку можно щёлкнуть мышью или набрать её первую букву.")
-  (princ "\nEnter — запасное текстовое меню, Esc — выход."))
+  (princ "\nEnter — запасное текстовое меню, Esc — выход.")
+  (princ "\nВ пакетном режиме кнопки показываются ПЕРЕД выборкой рамкой:")
+  (princ "\nтам же меняется прямая при переходе на новый участок."))
 
 (defun gc-ol-status ( / )
   (princ (strcat "\n\n--- OL | прямая: "
@@ -468,23 +478,26 @@
   ;; Ключевые слова продублированы одной буквой — см. шапку файла.
   ;; ПОЧЕМУ listp, а не (= (type x) 'STR): сравнение символов через =
   ;; в AutoLISP ненадёжно. getpoint возвращает nil, список или строку.
-  (initget "Линия Л Сторона С Переворот П Текст Т Режим Р")
+  (initget "Линия Л Сторона С Переворот П Текст Т Режим Р Выход В")
   (setq p (getpoint (strcat "\nФактическая точка" prm)))
   (cond
     ;; Enter — запасное текстовое меню.
     ((null p)  (gc-ol-menu))
     ((listp p) (gc-ol-label p) T)
+    ((gc-ol-is-word p '("Выход" "В")) nil)
     (T         (gc-ol-do-option p))))
 
 ;; Режим «пачкой»: выделяем много точек рамкой, подписываем все разом.
 ;; ПОЧЕМУ здесь нет кнопок: ssget не поддерживает ключевые слова initget,
 ;; поэтому настройки открываются по Enter вместо выборки.
 ;; Возвращает T — продолжать, nil — выйти из команды.
-(defun gc-ol-batch-step ( / ss pts n ok)
-  (princ "\nВыделите фактические точки рамкой (Enter — меню и настройки): ")
+(defun gc-ol-batch-select ( / ss pts n ok)
+  (princ "\nВыделите фактические точки рамкой: ")
   (setq ss (ssget *gc-ol-ssget-filter*))
   (cond
-    ((null ss) (gc-ol-menu))
+    ((null ss)
+     (princ "\n[i] Ничего не выбрано.")
+     T)
     (T
      (setq pts (gc-ol-ss-points ss))
      (setq n (length pts) ok 0)
@@ -494,12 +507,27 @@
                     " из " (itoa n)))
      T)))
 
+;; ПОЧЕМУ кнопки вынесены в отдельный запрос ПЕРЕД выборкой: ssget не
+;; поддерживает ключевые слова initget, поэтому в самом запросе выборки
+;; кнопок быть не может. Без этого шага в пакетном режиме нельзя было
+;; сменить проектную прямую для следующего участка, не выходя из команды.
+;; Enter сразу ведёт к выборке — на участок это один лишний Enter.
+(defun gc-ol-batch-step ( / kw)
+  (initget "Линия Л Сторона С Переворот П Текст Т Режим Р Выход В")
+  (setq kw (getkword
+             (strcat "\nДальше [Линия/Сторона/Переворот/Текст/Режим/Выход]"
+                     " <Enter — выбрать точки>: ")))
+  (cond
+    ((null kw)                          (gc-ol-batch-select))
+    ((gc-ol-is-word kw '("Выход" "В"))  nil)
+    (T                                  (gc-ol-do-option kw))))
+
 (defun gc-ol-run ( / done prm)
   (gc-ol-defaults)
   (gc-ol-intro)
   ;; Без прямой считать не от чего.
   (if (null *gc-ol-a*) (gc-ol-ask-line))
-  (setq prm  " [Линия/Сторона/Переворот/Текст/Режим]: "
+  (setq prm  " [Линия/Сторона/Переворот/Текст/Режим/Выход]: "
         done nil)
   (while (not done)
     (cond
@@ -535,5 +563,5 @@
 (defun c:gc-line-deviation ( / )
   (c:ol))
 
-(princ "\n[gc] ol.lsp v2 загружен. Команда: OL")
+(princ "\n[gc] ol.lsp v3 загружен. Команда: OL")
 (princ)
