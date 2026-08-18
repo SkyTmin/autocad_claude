@@ -1,7 +1,15 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v19)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v20)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v20: raspolozhenie cifr privedeno k ol.lsp. Ranshe storona podpisi
+;;;      schitalas ot znakov otkloneniya i zavisela ot kvadranta -- cifra
+;;;      prygala to nad strelkoy, to pod ney. Teper smeshchenie beretsya ot
+;;;      NORMALIZOVANNOGO napravleniya strelki, i storona postoyannaya:
+;;;      u gorizontalnoy strelki cifra vsegda sverhu, u vertikalnoy -- sleva.
+;;;      Konstanty *gc-pile-text-along* / *gc-pile-text-lateral* udaleny:
+;;;      smeshchenie vyvoditsya iz dliny strelki i vysoty teksta.
 ;;;
 ;;; v19: stil teksta privedyon k ol.lsp -- v cepochku podbora dobavlen "MGS"
 ;;;      pervym. Imenno etot stil stoit v chertezhah Shamilya, a SV bez nego
@@ -47,8 +55,10 @@
 (setq *gc-pile-arrow-head-k*       0.2)
 (setq *gc-pile-tol-mm-per-m*      20.0)
 (setq *gc-pile-text-h*             0.100)
-(setq *gc-pile-text-along*         0.200)
-(setq *gc-pile-text-lateral*       0.100)
+;; *gc-pile-text-along* и *gc-pile-text-lateral* удалены в v20: смещение
+;; подписи теперь выводится из геометрии, как в ol.lsp — вдоль стрелки это
+;; ровно её середина, поперёк — высота текста. Отдельные константы только
+;; расходились бы с реальным размером стрелки.
 (setq *gc-pile-z-cluster*          0.050)
 (setq *gc-pile-xy-cluster*         1.800)
 (setq *gc-pile-pair-dz-min*        0.300)
@@ -402,9 +412,43 @@
   (strcat (if (>= mm 0) "+" "")
           (rtos mm 2 0) " мм"))
 
+;; Точка вставки и поворот подписи у стрелки — правило из ol.lsp:
+;; середина стрелки плюс смещение на высоту текста по перпендикуляру,
+;; поворот вдоль стрелки с нормализацией, чтобы цифра не встала вверх ногами.
+;;
+;; ПОЧЕМУ это лучше прежнего: раньше сторона подписи считалась от знаков
+;; отклонения (sx, sy) и потому зависела от квадранта — цифра прыгала то над
+;; стрелкой, то под ней. Теперь смещение берётся от НОРМАЛИЗОВАННОГО
+;; направления, и сторона получается постоянной: у горизонтальной стрелки
+;; цифра всегда сверху, у вертикальной — всегда слева, куда бы стрелка
+;; ни смотрела. Ровно как в OL.
+;;
+;; Возвращает (точка угол) либо nil, если стрелка нулевой длины.
+(defun gc-pile-text-at-arrow (start end / dx dy len ux uy mid ang td nx ny)
+  (setq dx  (- (car  end) (car  start))
+        dy  (- (cadr end) (cadr start))
+        len (sqrt (+ (* dx dx) (* dy dy))))
+  (if (< len 1.0e-9)
+    nil
+    (progn
+      (setq ux (/ dx len)
+            uy (/ dy len))
+      (setq mid (list (+ (car  start) (* ux (/ len 2.0)))
+                      (+ (cadr start) (* uy (/ len 2.0)))))
+      (setq ang (atan uy ux))
+      (if (or (> ang (/ pi 2.0)) (<= ang (- (/ pi 2.0))))
+        (setq ang (+ ang pi)))
+      (setq td (list (cos ang) (sin ang)))
+      (setq nx (- (cadr td))
+            ny (car  td))
+      (list (list (+ (car  mid) (* nx *gc-pile-text-h*))
+                  (+ (cadr mid) (* ny *gc-pile-text-h*))
+                  (caddr start))
+            ang))))
+
 (defun gc-pile-draw-xy-deviation (base-pt dir-dx-mm dir-dy-mm label-x-mm label-y-mm
                                   arrow-layer text-layer color /
-                                  tstyle sx sy p-end-x p-end-y pt-text-x pt-text-y)
+                                  tstyle sx sy p-end-x p-end-y tx ty)
   (gc-pile-ensure-layer arrow-layer color)
   (gc-pile-ensure-layer text-layer color)
   (setq tstyle (gc-pile-text-style))
@@ -418,18 +462,13 @@
                       (caddr base-pt)))
   (gc-pile-draw-arrow base-pt p-end-x arrow-layer)
   (gc-pile-draw-arrow base-pt p-end-y arrow-layer)
-  (setq pt-text-y
-    (list (+ (car base-pt) (* (- sx) *gc-pile-text-lateral*))
-          (+ (cadr base-pt) (* sy *gc-pile-text-along*))
-          (caddr base-pt)))
-  (setq pt-text-x
-    (list (+ (car base-pt) (* sx *gc-pile-text-along*))
-          (- (cadr base-pt) (* sy *gc-pile-text-lateral*))
-          (caddr base-pt)))
-  (gc-pile-draw-text-rot pt-text-x (gc-pile-mm-rounded label-x-mm)
-                         tstyle text-layer 0.0)
-  (gc-pile-draw-text-rot pt-text-y (gc-pile-mm-rounded label-y-mm)
-                         tstyle text-layer (/ pi 2.0))
+  ;; Подписи размещаются по правилу ol.lsp (см. gc-pile-text-at-arrow).
+  (setq tx (gc-pile-text-at-arrow base-pt p-end-x))
+  (setq ty (gc-pile-text-at-arrow base-pt p-end-y))
+  (if tx (gc-pile-draw-text-rot (car tx) (gc-pile-mm-rounded label-x-mm)
+                                tstyle text-layer (cadr tx)))
+  (if ty (gc-pile-draw-text-rot (car ty) (gc-pile-mm-rounded label-y-mm)
+                                tstyle text-layer (cadr ty)))
   T)
 
 (defun gc-pile-draw-project-deviation (project-pt target-pt / dx-mm dy-mm p-base)
@@ -834,5 +873,5 @@
         (gc-pile-run-svp-core pairs target-z project-centers "SVP")))))
   (princ))
 
-(princ "\n[gc] sv.lsp v19 загружен. Команды: SV, SVP")
+(princ "\n[gc] sv.lsp v20 загружен. Команды: SV, SVP")
 (princ)

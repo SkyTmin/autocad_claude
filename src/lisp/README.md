@@ -38,8 +38,8 @@ tests/       # Тесты (по мере появления)
 
 | Файл | Команда | Спека | Статус |
 |---|---|---|---|
-| `commands/sv.lsp` | `SV` (режимы 1/2/3) | [SPEC-001](../../specs/001-pile-deviation.md), [SPEC-002](../../specs/002-pile-multi-batch.md), [SPEC-004](../../specs/004-sv-combined.md) | v19, v18 подтверждено вручную (v19 — не проверено) |
-| `commands/sv.lsp` | `SVP` | [SPEC-003](../../specs/003-pile-extension.md) | v19, v18 подтверждено вручную (v19 — не проверено) |
+| `commands/sv.lsp` | `SV` (режимы 1/2/3) | [SPEC-001](../../specs/001-pile-deviation.md), [SPEC-002](../../specs/002-pile-multi-batch.md), [SPEC-004](../../specs/004-sv-combined.md) | v20, v18 подтверждено вручную (v20 — не проверено) |
+| `commands/sv.lsp` | `SVP` | [SPEC-003](../../specs/003-pile-extension.md) | v20, v18 подтверждено вручную (v20 — не проверено) |
 | `commands/vid.lsp` | `VID` / `GC-SELECT-BY-SIZE` | [SPEC-005](../../specs/005-vid-window-select.md) | v6, **не проверено** в Civil 3D |
 | `commands/vo.lsp` | `VO` / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v8, v6 подтверждено вручную (v8 — не проверено) |
 | `commands/ol.lsp` | `OL` / `GC-LINE-DEVIATION` | [SPEC-007](../../specs/007-line-deviation.md) | v5, **не проверено** в Civil 3D |
