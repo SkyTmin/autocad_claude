@@ -1,7 +1,13 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v1)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v2)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v2: dva rezhima raboty, pereklyuchatel [Rezhim]:
+;;;     -- po odnoy tochke: klik -- srazu podpis, knopki v stroke zaprosa;
+;;;     -- pachkoy: vydelyaete mnogo tochek ramkoy, podpisyvayutsya vse srazu.
+;;;     V rezhime "pachkoy" knopok net: ssget ne podderzhivaet klyuchevye
+;;;     slova initget, poetomu nastroyki otkryvayutsya po Enter vmesto vyborki.
 ;;;
 ;;; Geometriya vyvedena iz obrazca Shamilya (menuGEO) pri vysote teksta 0.200:
 ;;;   strelka  -- polilinia iz 3 vershin, dlina 0.400 = 2*h;
@@ -38,10 +44,15 @@
 (setq *gc-ol-head-k*   0.4)  ; ширина наконечника  = 0.4 * h  (0.080 при h=0.2)
 (setq *gc-ol-text-k*   1.0)  ; смещение текста     = 1.0 * h  (0.200 при h=0.2)
 
+;; Фильтр для ssget в режиме «пачкой»: только точки и COGO Points.
+;; Тот же, что в sv.lsp — защищает от захвата уже нарисованных стрелок и подписей.
+(setq *gc-ol-ssget-filter* '((0 . "POINT,AECC*POINT,AEC*POINT")))
+
 ;;; НАСТРОЙКИ — живут до закрытия чертежа:
 ;;;   *gc-ol-a* / *gc-ol-b* — концы проектной прямой
 ;;;   *gc-ol-side*          — "L" стрелка слева от направления A->B / "R" справа
 ;;;   *gc-ol-flip*          — T = цифра с другой стороны стрелки
+;;;   *gc-ol-batch*         — nil = по одной точке, T = пачкой рамкой
 ;;;   *gc-ol-text-h*        — высота текста, м
 ;;; Намеренно НЕ инициализируются при загрузке: AutoLISP возвращает nil для
 ;;; несвязанного символа, а сброс при каждом APPLOAD стирал бы настройки.
@@ -135,6 +146,53 @@
 
 (defun gc-ol-flip-name ( / )
   (if *gc-ol-flip* "снизу от стрелки" "сверху от стрелки"))
+
+(defun gc-ol-mode-name ( / )
+  (if *gc-ol-batch* "пачкой — выбрать много точек рамкой" "по одной точке"))
+
+(defun gc-ol-toggle-mode ( / )
+  (setq *gc-ol-batch* (not *gc-ol-batch*))
+  (princ (strcat "\n[i] Режим: " (gc-ol-mode-name)))
+  (if *gc-ol-batch*
+    (princ (strcat "\n    Выделяете точки рамкой — команда подпишет все сразу."
+                   "\n    Кнопок в запросе выборки нет: настройки открываются"
+                   "\n    по Enter вместо выбора."))
+    (princ "\n    Тыкаете точки по одной, кнопки настроек в строке запроса."))
+  *gc-ol-batch*)
+
+;;; ====================================================================
+;;; ВЫБОР ТОЧЕК ПАЧКОЙ
+;;; ====================================================================
+
+;; XY объекта. COGO Point Civil 3D отдаёт координаты через Easting/Northing,
+;; обычная точка — через DXF-группу 10, блок — через InsertionPoint.
+(defun gc-ol-entity-xy (ent / obj ed p10)
+  (setq obj (vlax-ename->vla-object ent))
+  (cond
+    ((vlax-property-available-p obj 'Easting)
+     (list (vla-get-Easting obj) (vla-get-Northing obj)))
+    ((progn (setq ed  (entget ent))
+            (setq p10 (cdr (assoc 10 ed)))
+            (and p10 (cadr p10)))
+     (list (car p10) (cadr p10)))
+    ((vlax-property-available-p obj 'InsertionPoint)
+     (setq p10 (vlax-safearray->list
+                 (vlax-variant-value (vla-get-InsertionPoint obj))))
+     (list (car p10) (cadr p10)))
+    (T nil)))
+
+(defun gc-ol-ss-points (ss / i n ent c pts skipped)
+  (setq pts '() skipped 0 i 0 n (sslength ss))
+  (while (< i n)
+    (setq ent (ssname ss i))
+    (setq c (gc-ol-entity-xy ent))
+    (if c
+      (setq pts (cons c pts))
+      (setq skipped (1+ skipped)))
+    (setq i (1+ i)))
+  (if (> skipped 0)
+    (princ (strcat "\n[!] Пропущено объектов без координат: " (itoa skipped))))
+  (reverse pts))
 
 ;; Сторона спрашивается сразу после выбора прямой — как в menuGEO.
 (defun gc-ol-ask-side ( / kw)
@@ -336,11 +394,13 @@
     (princ (strcat "\n  сторона : " (gc-ol-side-name)))
     (princ (strcat "\n  цифра   : " (gc-ol-flip-name)))
     (princ (strcat "\n  текст   : " (gc-ol-fmt *gc-ol-text-h*) " м"))
+    (princ (strcat "\n  режим   : " (gc-ol-mode-name)))
     (princ "\n")
     (princ "\n  1 или Л — заново указать проектную прямую и сторону")
     (princ "\n  2 или С — сторона стрелки: слева / справа")
     (princ "\n  3 или П — перевернуть цифру на другую сторону стрелки")
     (princ "\n  4 или Т — высота текста")
+    (princ "\n  5 или Р — режим: по одной точке / пачкой рамкой")
     (princ "\n  0 или К — выйти из команды")
     (princ "\n  Enter   — вернуться к точкам")
     (setq s (gc-ol-trim (getstring T "\nВыбор: ")))
@@ -354,6 +414,8 @@
        (gc-ol-toggle-flip))
       ((gc-ol-is-word s '("4" "т" "Т" "t" "T" "текст" "Текст" "высота"))
        (gc-ol-set-text-h))
+      ((gc-ol-is-word s '("5" "р" "Р" "r" "R" "режим" "Режим"))
+       (gc-ol-toggle-mode))
       ((gc-ol-is-word s '("0" "к" "К" "k" "K" "q" "Q" "выход" "Выход"))
        (setq res nil done T))
       (T (princ (strcat "\n[!] Не понял \"" s
@@ -377,6 +439,7 @@
   (princ "\n  Сторона   — стрелка слева / справа от прямой")
   (princ "\n  Переворот — цифра над / под стрелкой")
   (princ "\n  Текст     — высота цифры, от неё считается вся графика")
+  (princ "\n  Режим     — по одной точке / пачкой рамкой")
   (princ "\nКнопку можно щёлкнуть мышью или набрать её первую букву.")
   (princ "\nEnter — запасное текстовое меню, Esc — выход."))
 
@@ -385,7 +448,8 @@
                  (if *gc-ol-a* "задана" "НЕ задана")
                  " | сторона: " (if (= *gc-ol-side* "R") "справа" "слева")
                  " | цифра: " (if *gc-ol-flip* "снизу" "сверху")
-                 " | текст: " (gc-ol-fmt *gc-ol-text-h*) " м ---")))
+                 " | текст: " (gc-ol-fmt *gc-ol-text-h*) " м"
+                 " | режим: " (if *gc-ol-batch* "пачкой" "по одной") " ---")))
 
 ;; Обработка нажатой кнопки. Возвращает T — продолжать, nil — выйти.
 (defun gc-ol-do-option (kw / )
@@ -395,14 +459,47 @@
     ((gc-ol-is-word kw '("Сторона" "С"))       (gc-ol-toggle-side) T)
     ((gc-ol-is-word kw '("Переворот" "П"))     (gc-ol-toggle-flip) T)
     ((gc-ol-is-word kw '("Текст" "Т"))         (gc-ol-set-text-h) T)
+    ((gc-ol-is-word kw '("Режим" "Р"))         (gc-ol-toggle-mode) T)
     (T (princ (strcat "\n[!] Кнопка \"" kw "\" не распознана.")) T)))
 
-(defun gc-ol-run ( / done p prm)
+;; Режим «по одной точке»: клик — сразу подпись.
+;; Возвращает T — продолжать, nil — выйти из команды.
+(defun gc-ol-single-step (prm / p)
+  ;; Ключевые слова продублированы одной буквой — см. шапку файла.
+  ;; ПОЧЕМУ listp, а не (= (type x) 'STR): сравнение символов через =
+  ;; в AutoLISP ненадёжно. getpoint возвращает nil, список или строку.
+  (initget "Линия Л Сторона С Переворот П Текст Т Режим Р")
+  (setq p (getpoint (strcat "\nФактическая точка" prm)))
+  (cond
+    ;; Enter — запасное текстовое меню.
+    ((null p)  (gc-ol-menu))
+    ((listp p) (gc-ol-label p) T)
+    (T         (gc-ol-do-option p))))
+
+;; Режим «пачкой»: выделяем много точек рамкой, подписываем все разом.
+;; ПОЧЕМУ здесь нет кнопок: ssget не поддерживает ключевые слова initget,
+;; поэтому настройки открываются по Enter вместо выборки.
+;; Возвращает T — продолжать, nil — выйти из команды.
+(defun gc-ol-batch-step ( / ss pts n ok)
+  (princ "\nВыделите фактические точки рамкой (Enter — меню и настройки): ")
+  (setq ss (ssget *gc-ol-ssget-filter*))
+  (cond
+    ((null ss) (gc-ol-menu))
+    (T
+     (setq pts (gc-ol-ss-points ss))
+     (setq n (length pts) ok 0)
+     (foreach p pts
+       (if (gc-ol-label p) (setq ok (1+ ok))))
+     (princ (strcat "\n[Итог] подписано точек: " (itoa ok)
+                    " из " (itoa n)))
+     T)))
+
+(defun gc-ol-run ( / done prm)
   (gc-ol-defaults)
   (gc-ol-intro)
   ;; Без прямой считать не от чего.
   (if (null *gc-ol-a*) (gc-ol-ask-line))
-  (setq prm  " [Линия/Сторона/Переворот/Текст]: "
+  (setq prm  " [Линия/Сторона/Переворот/Текст/Режим]: "
         done nil)
   (while (not done)
     (cond
@@ -411,17 +508,10 @@
        (setq done T))
       (T
        (gc-ol-status)
-       ;; Ключевые слова продублированы одной буквой — см. шапку файла.
-       ;; ПОЧЕМУ listp, а не (= (type x) 'STR): сравнение символов через =
-       ;; в AutoLISP ненадёжно. getpoint возвращает nil, список или строку.
-       (initget "Линия Л Сторона С Переворот П Текст Т")
-       (setq p (getpoint (strcat "\nФактическая точка" prm)))
-       (cond
-         ;; Enter — запасное текстовое меню.
-         ((null p)
-          (if (null (gc-ol-menu)) (setq done T)))
-         ((listp p) (gc-ol-label p))
-         (T (if (null (gc-ol-do-option p)) (setq done T)))))))
+       (if (null (if *gc-ol-batch*
+                   (gc-ol-batch-step)
+                   (gc-ol-single-step prm)))
+         (setq done T)))))
   (princ "\n[i] OL завершена.")
   (princ))
 
@@ -445,5 +535,5 @@
 (defun c:gc-line-deviation ( / )
   (c:ol))
 
-(princ "\n[gc] ol.lsp v1 загружен. Команда: OL")
+(princ "\n[gc] ol.lsp v2 загружен. Команда: OL")
 (princ)
