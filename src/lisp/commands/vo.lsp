@@ -1,10 +1,13 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v7)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v8)
 ;;; Komandy:
 ;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
 ;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
+;;;
+;;; v8: stil teksta privedyon k ol.lsp -- v cepochku podbora dobavlen "MGS"
+;;;     pervym, chtoby cifry vyglyadeli odinakovo vo vseh komandah.
 ;;;
 ;;; v7: zashchita ot otsutstviya Visual LISP COM (oshibka "no function
 ;;;     definition: VLAX-ENAME->VLA-OBJECT"). Vysota obychnoy tochki teper
@@ -412,6 +415,7 @@
 ;; Fallback цепочка: GOSTB (СПДС) -> ISOCPEUR -> Standard.
 (defun gc-vo-text-style ( / )
   (cond
+    ((tblsearch "STYLE" "МГС")      "МГС")
     ((tblsearch "STYLE" "GOSTB")    "GOSTB")
     ((tblsearch "STYLE" "ISOCPEUR") "ISOCPEUR")
     (T                              "Standard")))
@@ -581,5 +585,5 @@
 (defun c:gc-height-deviation ( / )
   (c:vo))
 
-(princ "\n[gc] vo.lsp v7 загружен. Команда: VO")
+(princ "\n[gc] vo.lsp v8 загружен. Команда: VO")
 (princ)

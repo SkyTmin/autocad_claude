@@ -1,7 +1,11 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v18)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v19)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v19: stil teksta privedyon k ol.lsp -- v cepochku podbora dobavlen "MGS"
+;;;      pervym. Imenno etot stil stoit v chertezhah Shamilya, a SV bez nego
+;;;      padal na GOSTB/Standard -- otsyuda drugoy shrift u cifr.
 ;;;
 ;;; v18: strelki pererisovany v stile ol.lsp -- LWPOLYLINE iz 3 vershin
 ;;;      s plavno suzhayushchimsya nakonechnikom vmesto LINE + treugolnik
@@ -332,6 +336,7 @@
 
 (defun gc-pile-text-style ( / )
   (cond
+    ((tblsearch "STYLE" "МГС")      "МГС")
     ((tblsearch "STYLE" "GOSTB")    "GOSTB")
     ((tblsearch "STYLE" "ISOCPEUR") "ISOCPEUR")
     (T                              "Standard")))
@@ -829,5 +834,5 @@
         (gc-pile-run-svp-core pairs target-z project-centers "SVP")))))
   (princ))
 
-(princ "\n[gc] sv.lsp v18 загружен. Команды: SV, SVP")
+(princ "\n[gc] sv.lsp v19 загружен. Команды: SV, SVP")
 (princ)
