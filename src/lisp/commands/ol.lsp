@@ -1,7 +1,13 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v3)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v4)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v4: strelka rastet OT PRYAMOY, a ne ot tochki. Nachalo strelki -- na
+;;;     pryamoy, v osnovanii perpendikulyara iz fakticheskoy tochki; ostrie
+;;;     smotrit ot pryamoy na vybrannuyu storonu. Ranshe ostrie bylo v samoy
+;;;     tochke, a hvost uhodil v storonu -- eto bylo nevernoe prochtenie
+;;;     obrazca (po odnim koordinatam strelki oba varianta neotlichimy).
 ;;;
 ;;; v3: v paketnom rezhime poyavilis knopki. Ranshe tam byl srazu ssget,
 ;;;     a ssget ne podderzhivaet klyuchevye slova initget -- poetomu smenit
@@ -141,6 +147,21 @@
       (setq vx (- (car  p) (car  *gc-ol-a*))
             vy (- (cadr p) (cadr *gc-ol-a*)))
       (- (* (car u) vy) (* (cadr u) vx)))))
+
+;; Основание перпендикуляра из точки p на прямую A->B — точка НА прямой.
+;; Именно отсюда растёт стрелка (решение Шамиля: «начало стрелки на линии»).
+;; ПОЧЕМУ переменная proj, а не t: T в AutoLISP — это «истина», занятое имя.
+(defun gc-ol-foot (p / u vx vy proj)
+  (setq u (gc-ol-unit *gc-ol-a* *gc-ol-b*))
+  (if (null u)
+    nil
+    (progn
+      (setq vx (- (car  p) (car  *gc-ol-a*))
+            vy (- (cadr p) (cadr *gc-ol-a*)))
+      ;; Проекция вектора A->p на направление прямой.
+      (setq proj (+ (* (car u) vx) (* (cadr u) vy)))
+      (list (+ (car  *gc-ol-a*) (* (car  u) proj))
+            (+ (cadr *gc-ol-a*) (* (cadr u) proj))))))
 
 ;;; ====================================================================
 ;;; НАСТРОЙКИ
@@ -335,7 +356,7 @@
                  (cons 73 2))))
 
 ;; Строит стрелку с подписью для фактической точки p.
-(defun gc-ol-label (p / u n h len head v1 v2 v3 ux uy ang td nx ny tp
+(defun gc-ol-label (p / u n f h len head v1 v2 v3 ux uy ang td nx ny tp
                       off dev txt)
   (setq u (gc-ol-unit *gc-ol-a* *gc-ol-b*))
   (cond
@@ -350,15 +371,17 @@
      (setq n (list (- (cadr u)) (car u)))
      (if (= *gc-ol-side* "R")
        (setq n (list (- (car n)) (- (cadr n)))))
-     ;; Остриё — в самой фактической точке, хвост уходит на выбранную сторону.
-     (setq v3 (list (car p) (cadr p)))
-     (setq v2 (list (+ (car p) (* (car n) (/ len 2.0)))
-                    (+ (cadr p) (* (cadr n) (/ len 2.0)))))
-     (setq v1 (list (+ (car p) (* (car n) len))
-                    (+ (cadr p) (* (cadr n) len))))
-     ;; Направление стрелки — от хвоста к острию, то есть против нормали.
-     (setq ux (- (car n))
-           uy (- (cadr n)))
+     ;; НАЧАЛО стрелки — на прямой, в основании перпендикуляра из точки.
+     ;; Оттуда стрелка уходит на выбранную сторону, остриё смотрит от прямой.
+     (setq f (gc-ol-foot p))
+     (setq v1 (list (car f) (cadr f)))
+     (setq v2 (list (+ (car  f) (* (car  n) (/ len 2.0)))
+                    (+ (cadr f) (* (cadr n) (/ len 2.0)))))
+     (setq v3 (list (+ (car  f) (* (car  n) len))
+                    (+ (cadr f) (* (cadr n) len))))
+     ;; Направление стрелки — от прямой наружу, то есть по нормали.
+     (setq ux (car  n)
+           uy (cadr n))
      ;; Поворот текста вдоль стрелки. Нормализуем, чтобы цифра не вставала
      ;; вверх ногами: угол приводим в (-90°; 90°].
      (setq ang (atan uy ux))
@@ -563,5 +586,5 @@
 (defun c:gc-line-deviation ( / )
   (c:ol))
 
-(princ "\n[gc] ol.lsp v3 загружен. Команда: OL")
+(princ "\n[gc] ol.lsp v4 загружен. Команда: OL")
 (princ)
