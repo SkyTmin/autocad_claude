@@ -1,7 +1,16 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v6)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v7)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v7: tretiy rezhim -- "Mesto". Snachala tykaete fakticheskuyu tochku,
+;;;     potom sami ukazyvaete, gde ee podpisat. Ukazannoe mesto snositsya
+;;;     na pryamuyu, poetomu strelka vse ravno nachinaetsya na pryamoy,
+;;;     a velichina i storona berutsya ot samoy tochki.
+;;;     Nuzhno, kogda tochki stoyat plotno i podpisi naprotiv kazhdoy
+;;;     nalezayut drug na druga -- teper ih mozhno raznesti vdol pryamoy.
+;;;     Knopka [Rezhim] otkryvaet zapros [Odna/Mesto/Pachka] vmesto slepogo
+;;;     pereklyucheniya: rezhimov stalo tri.
 ;;;
 ;;; v6: STORONA STRELKI BOLSHE NE NASTROYKA -- ona vsegda ta, s kakoy stoit
 ;;;     fakticheskaya tochka. Znak otkloneniya zadaet normal, i strelka
@@ -77,7 +86,8 @@
 ;;;   *gc-ol-a* / *gc-ol-b* — концы проектной прямой
 ;;;   *gc-ol-dir*           — "OUT" остриё на точку / "IN" остриё на прямую
 ;;;   *gc-ol-flip*          — T = цифра с другой стороны стрелки
-;;;   *gc-ol-batch*         — nil = по одной точке, T = пачкой рамкой
+;;;   *gc-ol-mode*          — "ONE" по одной / "PLACE" с выбором места /
+;;;                           "BATCH" пачкой рамкой
 ;;;   *gc-ol-text-h*        — высота текста, м
 ;;; Намеренно НЕ инициализируются при загрузке: AutoLISP возвращает nil для
 ;;; несвязанного символа, а сброс при каждом APPLOAD стирал бы настройки.
@@ -188,18 +198,38 @@
   (if *gc-ol-flip* "снизу от стрелки" "сверху от стрелки"))
 
 (defun gc-ol-mode-name ( / )
-  (if *gc-ol-batch* "пачкой — выбрать много точек рамкой" "по одной точке"))
+  (cond
+    ((= *gc-ol-mode* "BATCH") "пачкой — много точек рамкой")
+    ((= *gc-ol-mode* "PLACE") "по одной, место подписи указываю сам")
+    (T                        "по одной, подпись напротив точки")))
 
-(defun gc-ol-toggle-mode ( / )
-  (setq *gc-ol-batch* (not *gc-ol-batch*))
+;; ПОЧЕМУ отдельный запрос, а не циклическое переключение: режимов стало три,
+;; и вслепую перебирать их кнопкой неудобно — не видно, куда попадёшь.
+(defun gc-ol-toggle-mode ( / kw)
+  (princ "\n\n--- РЕЖИМ РАБОТЫ ---")
+  (princ "\n  Одна  — тыкаете точку, стрелка встаёт напротив неё")
+  (princ "\n  Место — тыкаете точку, потом сами указываете, где её подписать.")
+  (princ "\n          Нужно, когда точки стоят плотно и подписи налезают")
+  (princ "\n          друг на друга: разносите их вдоль прямой.")
+  (princ "\n  Пачка — выделяете много точек рамкой, подписываются все разом")
+  (initget "Одна О Место М Пачка П")
+  (setq kw (getkword
+             (strcat "\nРежим [Одна/Место/Пачка] <"
+                     (cond ((= *gc-ol-mode* "BATCH") "Пачка")
+                           ((= *gc-ol-mode* "PLACE") "Место")
+                           (T                        "Одна"))
+                     ">: ")))
+  (cond
+    ((null kw) nil)                                  ; Enter — оставить как было
+    ((gc-ol-is-word kw '("Место" "М")) (setq *gc-ol-mode* "PLACE"))
+    ((gc-ol-is-word kw '("Пачка" "П")) (setq *gc-ol-mode* "BATCH"))
+    (T                                 (setq *gc-ol-mode* "ONE")))
   (princ (strcat "\n[i] Режим: " (gc-ol-mode-name)))
-  (if *gc-ol-batch*
-    (princ (strcat "\n    Выделяете точки рамкой — команда подпишет все сразу."
-                   "\n    Кнопки показываются ПЕРЕД выборкой: там же меняется"
-                   "\n    прямая при переходе на новый участок. Enter в этом"
-                   "\n    запросе сразу ведёт к выборке рамкой."))
-    (princ "\n    Тыкаете точки по одной, кнопки настроек в строке запроса."))
-  *gc-ol-batch*)
+  (if (= *gc-ol-mode* "BATCH")
+    (princ (strcat "\n    Кнопки в пакетном режиме показываются ПЕРЕД выборкой:"
+                   "\n    там же меняется прямая при переходе на новый участок."
+                   "\n    Enter в том запросе сразу ведёт к выборке рамкой.")))
+  *gc-ol-mode*)
 
 ;;; ====================================================================
 ;;; ВЫБОР ТОЧЕК ПАЧКОЙ
@@ -404,7 +434,12 @@
                  (cons 73 2))))
 
 ;; Строит стрелку с подписью для фактической точки p.
-(defun gc-ol-label (p / u n f h len head v1 v2 v3 ux uy ang td nx ny tp
+;; p  — фактическая точка, от неё считается отклонение и сторона стрелки.
+;; at — где ставить подпись; nil = напротив точки. Точка сносится на прямую,
+;;      поэтому стрелка в любом случае начинается на прямой.
+;; ПОЧЕМУ так: на одной прямой точки могут стоять плотно, и подписи напротив
+;; каждой налезают друг на друга. Разнеся их вдоль прямой, чертёж читается.
+(defun gc-ol-label (p at / u n f h len head v1 v2 v3 ux uy ang td nx ny tp
                       off dev txt)
   (setq u (gc-ol-unit *gc-ol-a* *gc-ol-b*))
   (cond
@@ -430,7 +465,7 @@
      ;; f — основание перпендикуляра, то есть точка НА прямой.
      ;; "OUT" — остриё наружу, от прямой к точке (по умолчанию).
      ;; "IN"  — остриё на прямой, стрелка идёт от точки к прямой.
-     (setq f (gc-ol-foot p))
+     (setq f (gc-ol-foot (if at at p)))
      (setq v2 (list (+ (car  f) (* (car  n) (/ len 2.0)))
                     (+ (cadr f) (* (cadr n) (/ len 2.0)))))
      (if (= *gc-ol-dir* "IN")
@@ -494,7 +529,7 @@
     (princ "\n  2 или Н — остриё стрелки: на точку / на прямую")
     (princ "\n  3 или П — перевернуть цифру на другую сторону стрелки")
     (princ "\n  4 или Т — высота текста")
-    (princ "\n  5 или Р — режим: по одной точке / пачкой рамкой")
+    (princ "\n  5 или Р — режим: одна / место сам / пачкой рамкой")
     (princ "\n  0 или К — выйти из команды")
     (princ "\n  Enter   — вернуться к точкам")
     (setq s (gc-ol-trim (getstring T "\nВыбор: ")))
@@ -522,6 +557,7 @@
 
 (defun gc-ol-defaults ( / )
   (if (null *gc-ol-dir*)    (setq *gc-ol-dir*    "OUT"))
+  (if (null *gc-ol-mode*)   (setq *gc-ol-mode*   "ONE"))
   (if (null *gc-ol-text-h*) (setq *gc-ol-text-h* *gc-ol-text-h-init*)))
 
 (defun gc-ol-intro ( / )
@@ -533,7 +569,7 @@
   (princ "\n  Направление — остриё на точку / на прямую")
   (princ "\n  Переворот — цифра над / под стрелкой")
   (princ "\n  Текст     — высота цифры, от неё считается вся графика")
-  (princ "\n  Режим     — по одной точке / пачкой рамкой")
+  (princ "\n  Режим     — одна точка / место подписи сам / пачкой рамкой")
   (princ "\nКнопку можно щёлкнуть мышью или набрать её первую букву.")
   (princ "\nEnter — запасное текстовое меню, Esc — выход.")
   (princ "\nВ пакетном режиме кнопки показываются ПЕРЕД выборкой рамкой:")
@@ -545,7 +581,10 @@
                  " | остриё: " (if (= *gc-ol-dir* "IN") "на прямую" "на точку")
                  " | цифра: " (if *gc-ol-flip* "снизу" "сверху")
                  " | текст: " (gc-ol-fmt *gc-ol-text-h*) " м"
-                 " | режим: " (if *gc-ol-batch* "пачкой" "по одной") " ---")))
+                 " | режим: " (cond ((= *gc-ol-mode* "BATCH") "пачкой")
+                                    ((= *gc-ol-mode* "PLACE") "место сам")
+                                    (T "по одной"))
+                 " ---")))
 
 ;; Обработка нажатой кнопки. Возвращает T — продолжать, nil — выйти.
 (defun gc-ol-do-option (kw / )
@@ -569,7 +608,7 @@
   (cond
     ;; Enter — запасное текстовое меню.
     ((null p)  (gc-ol-menu))
-    ((listp p) (gc-ol-label p) T)
+    ((listp p) (gc-ol-label p nil) T)
     ((gc-ol-is-word p '("Выход" "В")) nil)
     (T         (gc-ol-do-option p))))
 
@@ -577,6 +616,23 @@
 ;; ПОЧЕМУ здесь нет кнопок: ssget не поддерживает ключевые слова initget,
 ;; поэтому настройки открываются по Enter вместо выборки.
 ;; Возвращает T — продолжать, nil — выйти из команды.
+;; Режим «Место»: сначала фактическая точка, потом место подписи.
+;; Возвращает T — продолжать, nil — выйти из команды.
+(defun gc-ol-place-step (prm / p at)
+  (initget "Линия Л Направление Н Переворот П Текст Т Режим Р Выход В")
+  (setq p (getpoint (strcat "\nФактическая точка" prm)))
+  (cond
+    ((null p) (gc-ol-menu))
+    ((listp p)
+     ;; Резинка тянется от самой точки — видно, куда относится подпись.
+     (setq at (getpoint p "\nГде поставить подпись (место сносится на прямую): "))
+     (if (null at)
+       (princ "\n[!] Место не указано, подпись не поставлена.")
+       (gc-ol-label p at))
+     T)
+    ((gc-ol-is-word p '("Выход" "В")) nil)
+    (T (gc-ol-do-option p))))
+
 (defun gc-ol-batch-select ( / ss pts n ok)
   (princ "\nВыделите фактические точки рамкой: ")
   (setq ss (ssget *gc-ol-ssget-filter*))
@@ -588,7 +644,7 @@
      (setq pts (gc-ol-ss-points ss))
      (setq n (length pts) ok 0)
      (foreach p pts
-       (if (gc-ol-label p) (setq ok (1+ ok))))
+       (if (gc-ol-label p nil) (setq ok (1+ ok))))
      (princ (strcat "\n[Итог] подписано точек: " (itoa ok)
                     " из " (itoa n)))
      T)))
@@ -622,9 +678,10 @@
        (setq done T))
       (T
        (gc-ol-status)
-       (if (null (if *gc-ol-batch*
-                   (gc-ol-batch-step)
-                   (gc-ol-single-step prm)))
+       (if (null (cond
+                   ((= *gc-ol-mode* "BATCH") (gc-ol-batch-step))
+                   ((= *gc-ol-mode* "PLACE") (gc-ol-place-step prm))
+                   (T                        (gc-ol-single-step prm))))
          (setq done T)))))
   (princ "\n[i] OL завершена.")
   (princ))
@@ -649,5 +706,5 @@
 (defun c:gc-line-deviation ( / )
   (c:ol))
 
-(princ "\n[gc] ol.lsp v6 загружен. Команда: OL")
+(princ "\n[gc] ol.lsp v7 загружен. Команда: OL")
 (princ)
