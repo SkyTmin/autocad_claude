@@ -1,10 +1,12 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v8)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v9)
 ;;; Komandy:
 ;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
 ;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
+;;;
+;;; v9: proverka chertezha pri zapuske -- sloy i tekstovyy stil. Sm. ol.lsp v10.
 ;;;
 ;;; v8: stil teksta privedyon k ol.lsp -- v cepochku podbora dobavlen "MGS"
 ;;;     pervym, chtoby cifry vyglyadeli odinakovo vo vseh komandah.
@@ -486,6 +488,85 @@
     ((gc-vo-is-word kw '("Текст"  "Т"))    (gc-vo-set-text-h) T)
     (T (princ (strcat "\n[!] Кнопка \"" kw "\" не распознана.")) T)))
 
+
+;;; ====================================================================
+;;; ПРОВЕРКА ЧЕРТЕЖА
+;;; ====================================================================
+
+;; ПОЧЕМУ это нужно: «команда отработала, а на чертеже ничего нет» — почти
+;; всегда свойство КОНКРЕТНОГО чертежа, а не кода. Отсюда и «в одном чертеже
+;; не работает, в других работает». Частые причины:
+;;   1. слой выключен или заморожен — объекты создаются, но их не видно;
+;;   2. слой заблокирован;
+;;   3. текстовый стиль аннотативный — без масштаба аннотаций текст не
+;;      отображается вовсе;
+;;   4. у стиля фиксированная высота — заданная нами высота игнорируется.
+;; Проверяем один раз за запуск команды и говорим вслух.
+
+;; Слой выключен (отрицательный цвет), заморожен (бит 1) или заблокирован
+;; (бит 4). Выключенный и замороженный включаем: иначе команда рисует
+;; в пустоту, и это выглядит как «ничего не происходит».
+(defun gc-vo-check-layer (lay / e flags col off frozen locked ent ed)
+  (setq e (tblsearch "LAYER" lay))
+  (if e
+    (progn
+      (setq flags  (cdr (assoc 70 e))
+            col    (cdr (assoc 62 e)))
+      (setq frozen (= 1 (logand flags 1))
+            locked (= 4 (logand flags 4))
+            off    (< col 0))
+      (if (or off frozen)
+        (progn
+          (princ (strcat "\n[!] Слой " lay
+                         (if off " был ВЫКЛЮЧЕН" "")
+                         (if frozen " был ЗАМОРОЖЕН" "")
+                         "."))
+          (princ "\n    Объекты создавались, но их не было видно.")
+          (setq ent (tblobjname "LAYER" lay)
+                ed  (entget ent))
+          (if off
+            (setq ed (subst (cons 62 (abs col)) (assoc 62 ed) ed)))
+          (if frozen
+            (setq ed (subst (cons 70 (- flags 1)) (assoc 70 ed) ed)))
+          (entmod ed)
+          (princ "\n    Слой включён — перезапустите команду.")))
+      (if locked
+        (princ (strcat "\n[!] Слой " lay " ЗАБЛОКИРОВАН: объекты создадутся,"
+                       "\n    но выделить и править их будет нельзя.")))))
+  T)
+
+;; Аннотативный стиль хранит признак в XDATA приложения AcadAnnotative.
+(defun gc-vo-style-annotative-p (name / o ed)
+  (setq o (tblobjname "STYLE" name))
+  (if o
+    (if (assoc -3 (entget o '("AcadAnnotative"))) T nil)
+    nil))
+
+(defun gc-vo-check-style ( / name e fixh)
+  (setq name (gc-vo-text-style))
+  (setq e (tblsearch "STYLE" name))
+  (if e
+    (progn
+      (setq fixh (cdr (assoc 40 e)))
+      (if (and fixh (> fixh 1.0e-9))
+        (princ (strcat "\n[!] У стиля " name " ФИКСИРОВАННАЯ высота "
+                       (gc-vo-fmt fixh) " м."
+                       "\n    AutoCAD игнорирует высоту, заданную командой.")))
+      (if (gc-vo-style-annotative-p name)
+        (progn
+          (princ (strcat "\n[!] Стиль " name " АННОТАТИВНЫЙ."))
+          (princ "\n    Такой текст не отображается, пока в чертеже не выбран")
+          (princ "\n    масштаб аннотаций. Если подписей не видно — включите")
+          (princ "\n    масштаб аннотаций в строке состояния либо возьмите")
+          (princ "\n    неаннотативный стиль."))))
+    (princ (strcat "\n[!] Текстовый стиль " name " не найден.")))
+  name)
+
+(defun gc-vo-check-env ( / )
+  (gc-vo-check-layer *gc-vo-layer*)
+  (gc-vo-check-style)
+  (princ))
+
 ;;; ====================================================================
 ;;; ЯДРО КОМАНДЫ
 ;;; ====================================================================
@@ -518,6 +599,9 @@
 (defun gc-vo-run ( / done step-ok r z-proj z-fact dev-mm txt pt prm)
   (gc-vo-defaults)
   (gc-vo-intro)
+  ;; Проверяем чертёж до работы: слой и стиль могут молча съесть всю графику.
+  (gc-vo-ensure-layer *gc-vo-layer* *gc-vo-layer-color*)
+  (gc-vo-check-env)
   ;; В режиме одной отметки она нужна до старта; в режиме ASK — не нужна.
   (if (and (= *gc-vo-proj-mode* "TPL") (null *gc-vo-proj-z*))
     (gc-vo-set-proj))
@@ -585,5 +669,5 @@
 (defun c:gc-height-deviation ( / )
   (c:vo))
 
-(princ "\n[gc] vo.lsp v8 загружен. Команда: VO")
+(princ "\n[gc] vo.lsp v9 загружен. Команда: VO")
 (princ)

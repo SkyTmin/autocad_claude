@@ -1,7 +1,14 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v9)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v10)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v10: proverka chertezha pri zapuske. "V odnom chertezhe ne rabotaet,
+;;;      v drugih rabotaet" -- pochti vsegda svoystvo samogo chertezha:
+;;;      sloy vyklyuchen/zamorozhen/zablokirovan libo tekstovyy stil
+;;;      annotativnyy (bez masshtaba annotaciy tekst ne otobrazhaetsya)
+;;;      ili s fiksirovannoy vysotoy. Teper komanda proveryaet eto odin raz
+;;;      za zapusk, govorit vsluh i vklyuchaet sloy, esli on byl vyklyuchen.
 ;;;
 ;;; v9: v rezhime "Mesto" poyavilsya ZHIVOY PREDPROSMOTR: poka dvigaesh mysh,
 ;;;     pod kursorom vidno, gde vstanet strelka i ramka na meste cifry.
@@ -692,6 +699,85 @@
                         "\". Введите 1, 2, 3, 4, 0 или просто Enter.")))))
   res)
 
+
+;;; ====================================================================
+;;; ПРОВЕРКА ЧЕРТЕЖА
+;;; ====================================================================
+
+;; ПОЧЕМУ это нужно: «команда отработала, а на чертеже ничего нет» — почти
+;; всегда свойство КОНКРЕТНОГО чертежа, а не кода. Отсюда и «в одном чертеже
+;; не работает, в других работает». Частые причины:
+;;   1. слой выключен или заморожен — объекты создаются, но их не видно;
+;;   2. слой заблокирован;
+;;   3. текстовый стиль аннотативный — без масштаба аннотаций текст не
+;;      отображается вовсе;
+;;   4. у стиля фиксированная высота — заданная нами высота игнорируется.
+;; Проверяем один раз за запуск команды и говорим вслух.
+
+;; Слой выключен (отрицательный цвет), заморожен (бит 1) или заблокирован
+;; (бит 4). Выключенный и замороженный включаем: иначе команда рисует
+;; в пустоту, и это выглядит как «ничего не происходит».
+(defun gc-ol-check-layer (lay / e flags col off frozen locked ent ed)
+  (setq e (tblsearch "LAYER" lay))
+  (if e
+    (progn
+      (setq flags  (cdr (assoc 70 e))
+            col    (cdr (assoc 62 e)))
+      (setq frozen (= 1 (logand flags 1))
+            locked (= 4 (logand flags 4))
+            off    (< col 0))
+      (if (or off frozen)
+        (progn
+          (princ (strcat "\n[!] Слой " lay
+                         (if off " был ВЫКЛЮЧЕН" "")
+                         (if frozen " был ЗАМОРОЖЕН" "")
+                         "."))
+          (princ "\n    Объекты создавались, но их не было видно.")
+          (setq ent (tblobjname "LAYER" lay)
+                ed  (entget ent))
+          (if off
+            (setq ed (subst (cons 62 (abs col)) (assoc 62 ed) ed)))
+          (if frozen
+            (setq ed (subst (cons 70 (- flags 1)) (assoc 70 ed) ed)))
+          (entmod ed)
+          (princ "\n    Слой включён — перезапустите команду.")))
+      (if locked
+        (princ (strcat "\n[!] Слой " lay " ЗАБЛОКИРОВАН: объекты создадутся,"
+                       "\n    но выделить и править их будет нельзя.")))))
+  T)
+
+;; Аннотативный стиль хранит признак в XDATA приложения AcadAnnotative.
+(defun gc-ol-style-annotative-p (name / o ed)
+  (setq o (tblobjname "STYLE" name))
+  (if o
+    (if (assoc -3 (entget o '("AcadAnnotative"))) T nil)
+    nil))
+
+(defun gc-ol-check-style ( / name e fixh)
+  (setq name (gc-ol-text-style))
+  (setq e (tblsearch "STYLE" name))
+  (if e
+    (progn
+      (setq fixh (cdr (assoc 40 e)))
+      (if (and fixh (> fixh 1.0e-9))
+        (princ (strcat "\n[!] У стиля " name " ФИКСИРОВАННАЯ высота "
+                       (gc-ol-fmt fixh) " м."
+                       "\n    AutoCAD игнорирует высоту, заданную командой.")))
+      (if (gc-ol-style-annotative-p name)
+        (progn
+          (princ (strcat "\n[!] Стиль " name " АННОТАТИВНЫЙ."))
+          (princ "\n    Такой текст не отображается, пока в чертеже не выбран")
+          (princ "\n    масштаб аннотаций. Если подписей не видно — включите")
+          (princ "\n    масштаб аннотаций в строке состояния либо возьмите")
+          (princ "\n    неаннотативный стиль."))))
+    (princ (strcat "\n[!] Текстовый стиль " name " не найден.")))
+  name)
+
+(defun gc-ol-check-env ( / )
+  (gc-ol-check-layer *gc-ol-layer*)
+  (gc-ol-check-style)
+  (princ))
+
 ;;; ====================================================================
 ;;; ЯДРО КОМАНДЫ
 ;;; ====================================================================
@@ -817,6 +903,9 @@
 (defun gc-ol-run ( / done prm)
   (gc-ol-defaults)
   (gc-ol-intro)
+  ;; Проверяем чертёж до работы: слой и стиль могут молча съесть всю графику.
+  (gc-ol-ensure-layer *gc-ol-layer* *gc-ol-layer-color*)
+  (gc-ol-check-env)
   ;; Без прямой считать не от чего.
   (if (null *gc-ol-a*) (gc-ol-ask-line))
   (setq prm  " [Линия/Сторона/Направление/Переворот/Текст/Режим/Выход]: "
@@ -856,5 +945,5 @@
 (defun c:gc-line-deviation ( / )
   (c:ol))
 
-(princ "\n[gc] ol.lsp v9 загружен. Команда: OL")
+(princ "\n[gc] ol.lsp v10 загружен. Команда: OL")
 (princ)

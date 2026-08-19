@@ -41,8 +41,8 @@ tests/       # Тесты (по мере появления)
 | `commands/sv.lsp` | `SV` (режимы 1/2/3) | [SPEC-001](../../specs/001-pile-deviation.md), [SPEC-002](../../specs/002-pile-multi-batch.md), [SPEC-004](../../specs/004-sv-combined.md) | v21, v18 подтверждено вручную (v21 — не проверено) |
 | `commands/sv.lsp` | `SVP` | [SPEC-003](../../specs/003-pile-extension.md) | v21, v18 подтверждено вручную (v21 — не проверено) |
 | `commands/vid.lsp` | `VID` / `GC-SELECT-BY-SIZE` | [SPEC-005](../../specs/005-vid-window-select.md) | v6, **не проверено** в Civil 3D |
-| `commands/vo.lsp` | `VO` / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v8, v6 подтверждено вручную (v8 — не проверено) |
-| `commands/ol.lsp` | `OL` / `GC-LINE-DEVIATION` | [SPEC-007](../../specs/007-line-deviation.md) | v9, **не проверено** в Civil 3D |
+| `commands/vo.lsp` | `VO` / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v9, v6 подтверждено вручную (v9 — не проверено) |
+| `commands/ol.lsp` | `OL` / `GC-LINE-DEVIATION` | [SPEC-007](../../specs/007-line-deviation.md) | v10, **не проверено** в Civil 3D |
 
 > **Три правила, добытые на отладке `vo.lsp` (6 ревизий до рабочей версии):**
 >
@@ -60,6 +60,10 @@ tests/       # Тесты (по мере появления)
 >    изменил — сказать вслух.
 > 3. **Тип проверять через `listp`, а не `(= (type x) 'STR)`** — сравнение
 >    символов через `=` в AutoLISP ненадёжно.
+> 5. **«В одном чертеже не работает» — проверяй сам чертёж.** Выключенный,
+>    замороженный или заблокированный слой; аннотативный текстовый стиль
+>    (текст не виден без масштаба аннотаций); стиль с фиксированной высотой.
+>    `ol.lsp v10` и `vo.lsp v9` проверяют это при запуске и говорят вслух.
 > 4. **Не полагаться на Visual LISP COM.** У коллеги Шамиля вылетала ошибка
 >    `no function definition: VLAX-ENAME->VLA-OBJECT` — `(vl-load-com)`
 >    не отработал. Координаты читать из DXF (`entget`, группа 10), а `vlax-*`
