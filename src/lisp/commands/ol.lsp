@@ -1,7 +1,15 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v5)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v6)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v6: STORONA STRELKI BOLSHE NE NASTROYKA -- ona vsegda ta, s kakoy stoit
+;;;     fakticheskaya tochka. Znak otkloneniya zadaet normal, i strelka
+;;;     vsegda pokazyvaet NA tochku. Ranshe storona byla obshchey nastroykoy
+;;;     na vsyu pryamuyu, i dlya tochek s drugoy storony strelka smotrela
+;;;     v protivopolozhnuyu ot nih storonu -- ukazyvala v pustotu.
+;;;     Knopka [Storona] zamenena na [Napravlenie]: kuda smotrit ostrie --
+;;;     na tochku (po umolchaniyu) ili na pryamuyu.
 ;;;
 ;;; v5: zashchita ot otsutstviya Visual LISP COM (oshibka "no function
 ;;;     definition: VLAX-ENAME->VLA-OBJECT"). XY obychnoy tochki teper
@@ -67,7 +75,7 @@
 
 ;;; НАСТРОЙКИ — живут до закрытия чертежа:
 ;;;   *gc-ol-a* / *gc-ol-b* — концы проектной прямой
-;;;   *gc-ol-side*          — "L" стрелка слева от направления A->B / "R" справа
+;;;   *gc-ol-dir*           — "OUT" остриё на точку / "IN" остриё на прямую
 ;;;   *gc-ol-flip*          — T = цифра с другой стороны стрелки
 ;;;   *gc-ol-batch*         — nil = по одной точке, T = пачкой рамкой
 ;;;   *gc-ol-text-h*        — высота текста, м
@@ -171,10 +179,10 @@
 ;;; НАСТРОЙКИ
 ;;; ====================================================================
 
-(defun gc-ol-side-name ( / )
-  (if (= *gc-ol-side* "R")
-    "справа от направления прямой"
-    "слева от направления прямой"))
+(defun gc-ol-dir-name ( / )
+  (if (= *gc-ol-dir* "IN")
+    "остриём НА прямую (от точки к прямой)"
+    "остриём НА ТОЧКУ (от прямой к точке)"))
 
 (defun gc-ol-flip-name ( / )
   (if *gc-ol-flip* "снизу от стрелки" "сверху от стрелки"))
@@ -261,23 +269,26 @@
   (reverse pts))
 
 ;; Сторона спрашивается сразу после выбора прямой — как в menuGEO.
-(defun gc-ol-ask-side ( / kw)
-  (princ "\nС какой стороны прямой рисовать стрелку с подписью.")
-  (princ "\nСторона считается по направлению от 1-й указанной точки ко 2-й.")
-  ;; ПОЧЕМУ «Лево/Право», а не «Слева/Справа»: у последних одна и та же первая
-  ;; буква «С», и сокращение стало бы неоднозначным.
-  (initget "Лево Л Право П")
-  (setq kw (getkword (strcat "\nСторона [Лево/Право] <"
-                             (if (= *gc-ol-side* "R") "Право" "Лево")
+;; Сторона стрелки НЕ настраивается: она всегда та, с какой стоит точка.
+;; Настраивается только куда смотрит остриё — на точку или на прямую.
+(defun gc-ol-ask-dir ( / kw)
+  (princ "\nСтрелка всегда лежит на перпендикуляре от прямой к точке,")
+  (princ "\nи сторона выбирается сама — та, с которой стоит точка.")
+  (princ "\nВыберите только, куда смотрит остриё:")
+  (princ "\n  Точка  — остриё на точку, стрелка растёт от прямой")
+  (princ "\n  Прямая — остриё на прямую, стрелка идёт от точки")
+  (initget "Точка Т Прямая П")
+  (setq kw (getkword (strcat "\nОстриё [Точка/Прямая] <"
+                             (if (= *gc-ol-dir* "IN") "Прямая" "Точка")
                              ">: ")))
   (cond
-    ((null kw) nil)                               ; Enter — оставить как было
-    ((gc-ol-is-word kw '("Право" "П")) (setq *gc-ol-side* "R"))
-    (T                                 (setq *gc-ol-side* "L")))
-  (princ (strcat "\n[i] Стрелка рисуется " (gc-ol-side-name)))
-  *gc-ol-side*)
+    ((null kw) nil)                                ; Enter — оставить как было
+    ((gc-ol-is-word kw '("Прямая" "П")) (setq *gc-ol-dir* "IN"))
+    (T                                  (setq *gc-ol-dir* "OUT")))
+  (princ (strcat "\n[i] Стрелка " (gc-ol-dir-name)))
+  *gc-ol-dir*)
 
-;; Выбор проектной прямой двумя точками, затем сразу сторона.
+;; Выбор проектной прямой двумя точками, затем сразу направление остриё.
 (defun gc-ol-ask-line ( / a b done)
   (princ "\n\n--- ПРОЕКТНАЯ ПРЯМАЯ ---")
   (princ "\nУкажите две точки. Прямая считается бесконечной: фактическая")
@@ -300,16 +311,16 @@
                 *gc-ol-b* b)
           (princ (strcat "\n[i] Прямая задана, длина отрезка "
                          (gc-ol-fmt (distance a b)) " м"))
-          ;; Сторона спрашивается сразу — так просил Шамиль.
-          (if (null *gc-ol-side*) (setq *gc-ol-side* "L"))
-          (gc-ol-ask-side)
+          ;; Направление остриё спрашивается сразу после прямой.
+          (if (null *gc-ol-dir*) (setq *gc-ol-dir* "OUT"))
+          (gc-ol-ask-dir)
           (setq done T))))))
   *gc-ol-a*)
 
-(defun gc-ol-toggle-side ( / )
-  (setq *gc-ol-side* (if (= *gc-ol-side* "R") "L" "R"))
-  (princ (strcat "\n[i] Стрелка теперь " (gc-ol-side-name)))
-  *gc-ol-side*)
+(defun gc-ol-toggle-dir ( / )
+  (setq *gc-ol-dir* (if (= *gc-ol-dir* "IN") "OUT" "IN"))
+  (princ (strcat "\n[i] Стрелка теперь " (gc-ol-dir-name)))
+  *gc-ol-dir*)
 
 (defun gc-ol-toggle-flip ( / )
   (setq *gc-ol-flip* (not *gc-ol-flip*))
@@ -404,21 +415,37 @@
      (setq h    *gc-ol-text-h*
            len  (* *gc-ol-arrow-k* h)
            head (* *gc-ol-head-k*  h))
-     ;; Левая нормаль к прямой; для стороны «справа» берём противоположную.
-     (setq n (list (- (cadr u)) (car u)))
-     (if (= *gc-ol-side* "R")
+     ;; Знак отклонения задаёт СТОРОНУ: положительное — точка слева от
+     ;; направления прямой, отрицательное — справа.
+     (setq dev (gc-ol-signed-offset p))
+     ;; Нормаль ВСЕГДА в сторону фактической точки.
+     ;; ПОЧЕМУ так, а не фиксированной настройкой: стрелка обязана показывать
+     ;; на точку. Раньше сторона была общей настройкой на всю прямую, и для
+     ;; точек с другой стороны стрелка смотрела в противоположную от них
+     ;; сторону — то есть указывала в пустоту.
+     (setq n (list (- (cadr u)) (car u)))          ; левая нормаль
+     (if (< dev 0.0)                                ; точка справа
        (setq n (list (- (car n)) (- (cadr n)))))
-     ;; НАЧАЛО стрелки — на прямой, в основании перпендикуляра из точки.
-     ;; Оттуда стрелка уходит на выбранную сторону, остриё смотрит от прямой.
+     ;; Стрелка лежит на перпендикуляре между прямой и точкой.
+     ;; f — основание перпендикуляра, то есть точка НА прямой.
+     ;; "OUT" — остриё наружу, от прямой к точке (по умолчанию).
+     ;; "IN"  — остриё на прямой, стрелка идёт от точки к прямой.
      (setq f (gc-ol-foot p))
-     (setq v1 (list (car f) (cadr f)))
      (setq v2 (list (+ (car  f) (* (car  n) (/ len 2.0)))
                     (+ (cadr f) (* (cadr n) (/ len 2.0)))))
-     (setq v3 (list (+ (car  f) (* (car  n) len))
-                    (+ (cadr f) (* (cadr n) len))))
-     ;; Направление стрелки — от прямой наружу, то есть по нормали.
-     (setq ux (car  n)
-           uy (cadr n))
+     (if (= *gc-ol-dir* "IN")
+       (progn
+         (setq v1 (list (+ (car  f) (* (car  n) len))
+                        (+ (cadr f) (* (cadr n) len))))
+         (setq v3 (list (car f) (cadr f)))
+         (setq ux (- (car  n))
+               uy (- (cadr n))))
+       (progn
+         (setq v1 (list (car f) (cadr f)))
+         (setq v3 (list (+ (car  f) (* (car  n) len))
+                        (+ (cadr f) (* (cadr n) len))))
+         (setq ux (car  n)
+               uy (cadr n))))
      ;; Поворот текста вдоль стрелки. Нормализуем, чтобы цифра не вставала
      ;; вверх ногами: угол приводим в (-90°; 90°].
      (setq ang (atan uy ux))
@@ -436,7 +463,6 @@
                     (+ (cadr v2) (* ny off))
                     0.0))
      ;; Величина отклонения — модуль, без знака (решение Шамиля).
-     (setq dev (gc-ol-signed-offset p))
      (setq txt (itoa (gc-ol-round (* 1000.0 (abs dev)))))
      (gc-ol-ensure-layer *gc-ol-layer* *gc-ol-layer-color*)
      (gc-ol-draw-arrow v1 v2 v3 head)
@@ -459,13 +485,13 @@
     (princ "\n\n--- МЕНЮ OL ---")
     (princ (strcat "\n  прямая  : "
                    (if *gc-ol-a* "задана" "ещё не задана")))
-    (princ (strcat "\n  сторона : " (gc-ol-side-name)))
+    (princ (strcat "\n  стрелка : " (gc-ol-dir-name)))
     (princ (strcat "\n  цифра   : " (gc-ol-flip-name)))
     (princ (strcat "\n  текст   : " (gc-ol-fmt *gc-ol-text-h*) " м"))
     (princ (strcat "\n  режим   : " (gc-ol-mode-name)))
     (princ "\n")
-    (princ "\n  1 или Л — заново указать проектную прямую и сторону")
-    (princ "\n  2 или С — сторона стрелки: слева / справа")
+    (princ "\n  1 или Л — заново указать проектную прямую")
+    (princ "\n  2 или Н — остриё стрелки: на точку / на прямую")
     (princ "\n  3 или П — перевернуть цифру на другую сторону стрелки")
     (princ "\n  4 или Т — высота текста")
     (princ "\n  5 или Р — режим: по одной точке / пачкой рамкой")
@@ -476,8 +502,8 @@
       ((= s "") (setq done T))
       ((gc-ol-is-word s '("1" "л" "Л" "l" "L" "линия" "Линия" "прямая"))
        (gc-ol-ask-line))
-      ((gc-ol-is-word s '("2" "с" "С" "s" "S" "c" "C" "сторона" "Сторона"))
-       (gc-ol-toggle-side))
+      ((gc-ol-is-word s '("2" "н" "Н" "n" "N" "направление" "Направление"))
+       (gc-ol-toggle-dir))
       ((gc-ol-is-word s '("3" "п" "П" "p" "P" "переворот" "Переворот"))
        (gc-ol-toggle-flip))
       ((gc-ol-is-word s '("4" "т" "Т" "t" "T" "текст" "Текст" "высота"))
@@ -495,7 +521,7 @@
 ;;; ====================================================================
 
 (defun gc-ol-defaults ( / )
-  (if (null *gc-ol-side*)   (setq *gc-ol-side*   "L"))
+  (if (null *gc-ol-dir*)    (setq *gc-ol-dir*    "OUT"))
   (if (null *gc-ol-text-h*) (setq *gc-ol-text-h* *gc-ol-text-h-init*)))
 
 (defun gc-ol-intro ( / )
@@ -503,8 +529,8 @@
   (princ "\nПрямая задаётся двумя точками. По каждой снятой точке считается")
   (princ "\nперпендикулярное расстояние до прямой и подписывается у стрелки.")
   (princ "\nКнопки в строке запроса:")
-  (princ "\n  Линия     — заново указать прямую и сторону")
-  (princ "\n  Сторона   — стрелка слева / справа от прямой")
+  (princ "\n  Линия     — заново указать прямую")
+  (princ "\n  Направление — остриё на точку / на прямую")
   (princ "\n  Переворот — цифра над / под стрелкой")
   (princ "\n  Текст     — высота цифры, от неё считается вся графика")
   (princ "\n  Режим     — по одной точке / пачкой рамкой")
@@ -516,7 +542,7 @@
 (defun gc-ol-status ( / )
   (princ (strcat "\n\n--- OL | прямая: "
                  (if *gc-ol-a* "задана" "НЕ задана")
-                 " | сторона: " (if (= *gc-ol-side* "R") "справа" "слева")
+                 " | остриё: " (if (= *gc-ol-dir* "IN") "на прямую" "на точку")
                  " | цифра: " (if *gc-ol-flip* "снизу" "сверху")
                  " | текст: " (gc-ol-fmt *gc-ol-text-h*) " м"
                  " | режим: " (if *gc-ol-batch* "пачкой" "по одной") " ---")))
@@ -526,7 +552,7 @@
   (cond
     ((gc-ol-is-word kw '("MENU"))              (gc-ol-menu))
     ((gc-ol-is-word kw '("Линия" "Л"))         (gc-ol-ask-line) T)
-    ((gc-ol-is-word kw '("Сторона" "С"))       (gc-ol-toggle-side) T)
+    ((gc-ol-is-word kw '("Направление" "Н"))   (gc-ol-toggle-dir) T)
     ((gc-ol-is-word kw '("Переворот" "П"))     (gc-ol-toggle-flip) T)
     ((gc-ol-is-word kw '("Текст" "Т"))         (gc-ol-set-text-h) T)
     ((gc-ol-is-word kw '("Режим" "Р"))         (gc-ol-toggle-mode) T)
@@ -538,7 +564,7 @@
   ;; Ключевые слова продублированы одной буквой — см. шапку файла.
   ;; ПОЧЕМУ listp, а не (= (type x) 'STR): сравнение символов через =
   ;; в AutoLISP ненадёжно. getpoint возвращает nil, список или строку.
-  (initget "Линия Л Сторона С Переворот П Текст Т Режим Р Выход В")
+  (initget "Линия Л Направление Н Переворот П Текст Т Режим Р Выход В")
   (setq p (getpoint (strcat "\nФактическая точка" prm)))
   (cond
     ;; Enter — запасное текстовое меню.
@@ -573,9 +599,9 @@
 ;; сменить проектную прямую для следующего участка, не выходя из команды.
 ;; Enter сразу ведёт к выборке — на участок это один лишний Enter.
 (defun gc-ol-batch-step ( / kw)
-  (initget "Линия Л Сторона С Переворот П Текст Т Режим Р Выход В")
+  (initget "Линия Л Направление Н Переворот П Текст Т Режим Р Выход В")
   (setq kw (getkword
-             (strcat "\nДальше [Линия/Сторона/Переворот/Текст/Режим/Выход]"
+             (strcat "\nДальше [Линия/Направление/Переворот/Текст/Режим/Выход]"
                      " <Enter — выбрать точки>: ")))
   (cond
     ((null kw)                          (gc-ol-batch-select))
@@ -587,7 +613,7 @@
   (gc-ol-intro)
   ;; Без прямой считать не от чего.
   (if (null *gc-ol-a*) (gc-ol-ask-line))
-  (setq prm  " [Линия/Сторона/Переворот/Текст/Режим/Выход]: "
+  (setq prm  " [Линия/Направление/Переворот/Текст/Режим/Выход]: "
         done nil)
   (while (not done)
     (cond
@@ -623,5 +649,5 @@
 (defun c:gc-line-deviation ( / )
   (c:ol))
 
-(princ "\n[gc] ol.lsp v5 загружен. Команда: OL")
+(princ "\n[gc] ol.lsp v6 загружен. Команда: OL")
 (princ)
