@@ -1,7 +1,11 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v22)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v23)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v23: komandy zaregistrirovany i v russkoy raskladke -- te zhe bukvy
+;;;      na teh zhe klavishah YCUKEN. Shamil chasto nabiraet komandu,
+;;;      zabyv pereklyuchit raskladku: vmesto OL poluchaetsya SHCHD.
 ;;;
 ;;; v22: vybor tekstovogo stilya -- tolko s PEREMENNOY vysotoy, inache
 ;;;      AutoCAD ignoriruet zadannuyu vysotu. Sm. ol.lsp v11.
@@ -1012,5 +1016,23 @@
         (gc-pile-run-svp-core pairs target-z project-centers "SVP")))))
   (princ))
 
-(princ "\n[gc] sv.lsp v22 загружен. Команды: SV, SVP")
+;;; ====================================================================
+;;; ИМЕНА КОМАНД В РУССКОЙ РАСКЛАДКЕ
+;;; ====================================================================
+
+;; Шамиль часто набирает команду, забыв переключить раскладку: вместо
+;; OL получается ЩД. Регистрируем те же команды под кириллическими
+;; именами — это буквы на ТЕХ ЖЕ клавишах в ЙЦУКЕН, поэтому руки
+;; набирают одно движение, а команда запускается при любой раскладке.
+;; ПОЧЕМУ и строчные, и прописные: AutoCAD приводит ввод к верхнему
+;; регистру не всегда предсказуемо для кириллицы — регистрируем оба.
+
+;; SV -> ЫМ
+(defun c:ым ( / ) (c:sv))
+(defun c:ЫМ ( / ) (c:sv))
+
+;; SVP -> ЫМЗ
+(defun c:ымз ( / ) (c:svp))
+(defun c:ЫМЗ ( / ) (c:svp))
+(princ "\n[gc] sv.lsp v23 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
 (princ)

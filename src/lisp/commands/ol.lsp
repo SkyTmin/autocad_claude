@@ -1,7 +1,11 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v11)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v12)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v12: komandy zaregistrirovany i v russkoy raskladke -- te zhe bukvy
+;;;      na teh zhe klavishah YCUKEN. Shamil chasto nabiraet komandu,
+;;;      zabyv pereklyuchit raskladku: vmesto OL poluchaetsya SHCHD.
 ;;;
 ;;; v11: 1) VYBOR TEKSTOVOGO STILYA. Stil s FIKSIROVANNOY vysotoy ne goditsya:
 ;;;         AutoCAD ignoriruet vysotu, zadannuyu komandoy, i grafika perestaet
@@ -1029,5 +1033,19 @@
 (defun c:gc-line-deviation ( / )
   (c:ol))
 
-(princ "\n[gc] ol.lsp v11 загружен. Команда: OL")
+;;; ====================================================================
+;;; ИМЕНА КОМАНД В РУССКОЙ РАСКЛАДКЕ
+;;; ====================================================================
+
+;; Шамиль часто набирает команду, забыв переключить раскладку: вместо
+;; OL получается ЩД. Регистрируем те же команды под кириллическими
+;; именами — это буквы на ТЕХ ЖЕ клавишах в ЙЦУКЕН, поэтому руки
+;; набирают одно движение, а команда запускается при любой раскладке.
+;; ПОЧЕМУ и строчные, и прописные: AutoCAD приводит ввод к верхнему
+;; регистру не всегда предсказуемо для кириллицы — регистрируем оба.
+
+;; OL -> ЩД
+(defun c:щд ( / ) (c:ol))
+(defun c:ЩД ( / ) (c:ol))
+(princ "\n[gc] ol.lsp v12 загружен. Команда: OL | рус. раскладка: ЩД")
 (princ)

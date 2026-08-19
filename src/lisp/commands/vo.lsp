@@ -1,10 +1,14 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v10)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v11)
 ;;; Komandy:
 ;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
 ;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
+;;;
+;;; v11: komandy zaregistrirovany i v russkoy raskladke -- te zhe bukvy
+;;;      na teh zhe klavishah YCUKEN. Shamil chasto nabiraet komandu,
+;;;      zabyv pereklyuchit raskladku: vmesto OL poluchaetsya SHCHD.
 ;;;
 ;;; v10: vybor tekstovogo stilya -- tolko s PEREMENNOY vysotoy, inache
 ;;;      AutoCAD ignoriruet zadannuyu vysotu. Sm. ol.lsp v11.
@@ -712,5 +716,19 @@
 (defun c:gc-height-deviation ( / )
   (c:vo))
 
-(princ "\n[gc] vo.lsp v10 загружен. Команда: VO")
+;;; ====================================================================
+;;; ИМЕНА КОМАНД В РУССКОЙ РАСКЛАДКЕ
+;;; ====================================================================
+
+;; Шамиль часто набирает команду, забыв переключить раскладку: вместо
+;; OL получается ЩД. Регистрируем те же команды под кириллическими
+;; именами — это буквы на ТЕХ ЖЕ клавишах в ЙЦУКЕН, поэтому руки
+;; набирают одно движение, а команда запускается при любой раскладке.
+;; ПОЧЕМУ и строчные, и прописные: AutoCAD приводит ввод к верхнему
+;; регистру не всегда предсказуемо для кириллицы — регистрируем оба.
+
+;; VO -> МЩ
+(defun c:мщ ( / ) (c:vo))
+(defun c:МЩ ( / ) (c:vo))
+(princ "\n[gc] vo.lsp v11 загружен. Команда: VO | рус. раскладка: МЩ")
 (princ)

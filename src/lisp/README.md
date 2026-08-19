@@ -16,6 +16,11 @@ tests/       # Тесты (по мере появления)
   допустимы по запросу пользователя (напр., `sv` для часто используемой
   команды). См. `docs/conventions.md`.
 - Имена внутренних функций — `kebab-case`.
+- **Каждая команда зарегистрирована дважды: латиницей и кириллицей.**
+  Кириллическое имя — те же буквы на тех же клавишах ЙЦУКЕН, поэтому команда
+  запускается при любой раскладке: `SV`→`ЫМ`, `SVP`→`ЫМЗ`, `VID`→`МШВ`,
+  `VO`→`МЩ`, `OL`→`ЩД`. Регистрируются и строчный, и прописной варианты —
+  AutoCAD приводит ввод к верхнему регистру не всегда предсказуемо для кириллицы.
 - **Кодировка `.lsp` — CP1251 (windows-1251), без BOM.** Не UTF-8!
   На компьютерах со старым AutoCAD файл в UTF-8 отображается кашей вида
   `РљРѕРѕРїРёРєСѓ`. Подробности и обоснование —
@@ -38,11 +43,11 @@ tests/       # Тесты (по мере появления)
 
 | Файл | Команда | Спека | Статус |
 |---|---|---|---|
-| `commands/sv.lsp` | `SV` (режимы 1/2/3) | [SPEC-001](../../specs/001-pile-deviation.md), [SPEC-002](../../specs/002-pile-multi-batch.md), [SPEC-004](../../specs/004-sv-combined.md) | v22, v18 подтверждено вручную (v22 — не проверено) |
-| `commands/sv.lsp` | `SVP` | [SPEC-003](../../specs/003-pile-extension.md) | v22, v18 подтверждено вручную (v22 — не проверено) |
-| `commands/vid.lsp` | `VID` / `GC-SELECT-BY-SIZE` | [SPEC-005](../../specs/005-vid-window-select.md) | v6, **не проверено** в Civil 3D |
-| `commands/vo.lsp` | `VO` / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v10, v6 подтверждено вручную (v10 — не проверено) |
-| `commands/ol.lsp` | `OL` / `GC-LINE-DEVIATION` | [SPEC-007](../../specs/007-line-deviation.md) | v11, **не проверено** в Civil 3D |
+| `commands/sv.lsp` | `SV` (`ЫМ`), режимы 1/2/3 | [SPEC-001](../../specs/001-pile-deviation.md), [SPEC-002](../../specs/002-pile-multi-batch.md), [SPEC-004](../../specs/004-sv-combined.md) | v23, v18 подтверждено вручную (v23 — не проверено) |
+| `commands/sv.lsp` | `SVP` (`ЫМЗ`) | [SPEC-003](../../specs/003-pile-extension.md) | v23, v18 подтверждено вручную (v23 — не проверено) |
+| `commands/vid.lsp` | `VID` (`МШВ`) / `GC-SELECT-BY-SIZE` | [SPEC-005](../../specs/005-vid-window-select.md) | v7, **не проверено** в Civil 3D |
+| `commands/vo.lsp` | `VO` (`МЩ`) / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v11, подтверждено вручную |
+| `commands/ol.lsp` | `OL` (`ЩД`) / `GC-LINE-DEVIATION` | [SPEC-007](../../specs/007-line-deviation.md) | v12, подтверждено вручную |
 
 > **Три правила, добытые на отладке `vo.lsp` (6 ревизий до рабочей версии):**
 >

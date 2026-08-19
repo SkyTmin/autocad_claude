@@ -1,9 +1,13 @@
-;;; vid.lsp -- vydelenie obyektov ramkoy zadannogo razmera (SPEC-005 v6)
+;;; vid.lsp -- vydelenie obyektov ramkoy zadannogo razmera (SPEC-005 v7)
 ;;; Komandy:
 ;;;   VID               -- korotkiy alias dlya ezhednevnoy raboty.
 ;;;   GC-SELECT-BY-SIZE -- polnoe imya toy zhe komandy.
 ;;;
 ;;; Tochka privyazki -- LEVYY VERHNIY ugol: ramka rastet vpravo i vniz.
+;;;
+;;; v7: komandy zaregistrirovany i v russkoy raskladke -- te zhe bukvy
+;;;      na teh zhe klavishah YCUKEN. Shamil chasto nabiraet komandu,
+;;;      zabyv pereklyuchit raskladku: vmesto OL poluchaetsya SHCHD.
 ;;;
 ;;; v6: KNOPKI VERNULIS. v5 ubrala initget sovsem -- eto byla oshibka:
 ;;;     tolko initget delaet opcii KLIKABELNYMI v komandnoy stroke.
@@ -287,5 +291,19 @@
 (defun c:gc-select-by-size ( / )
   (c:vid))
 
-(princ "\n[gc] vid.lsp v6 загружен. Команды: VID, GC-SELECT-BY-SIZE")
+;;; ====================================================================
+;;; ИМЕНА КОМАНД В РУССКОЙ РАСКЛАДКЕ
+;;; ====================================================================
+
+;; Шамиль часто набирает команду, забыв переключить раскладку: вместо
+;; OL получается ЩД. Регистрируем те же команды под кириллическими
+;; именами — это буквы на ТЕХ ЖЕ клавишах в ЙЦУКЕН, поэтому руки
+;; набирают одно движение, а команда запускается при любой раскладке.
+;; ПОЧЕМУ и строчные, и прописные: AutoCAD приводит ввод к верхнему
+;; регистру не всегда предсказуемо для кириллицы — регистрируем оба.
+
+;; VID -> МШВ
+(defun c:мшв ( / ) (c:vid))
+(defun c:МШВ ( / ) (c:vid))
+(princ "\n[gc] vid.lsp v7 загружен. Команды: VID, GC-SELECT-BY-SIZE | рус. раскладка: МШВ")
 (princ)
