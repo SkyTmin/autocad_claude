@@ -1,7 +1,10 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v21)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v22)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v22: vybor tekstovogo stilya -- tolko s PEREMENNOY vysotoy, inache
+;;;      AutoCAD ignoriruet zadannuyu vysotu. Sm. ol.lsp v11.
 ;;;
 ;;; v21: vysota teksta stala VEDUSHCHIM razmerom, kak v ol.lsp: dlina strelki
 ;;;      = 2 x vysota, nakonechnik = 0.4 x vysota, smeshchenie cifry = 1 x
@@ -356,12 +359,59 @@
                    (cons 62 color)
                    '(6 . "Continuous")))))
 
-(defun gc-pile-text-style ( / )
-  (cond
-    ((tblsearch "STYLE" "МГС")      "МГС")
-    ((tblsearch "STYLE" "GOSTB")    "GOSTB")
-    ((tblsearch "STYLE" "ISOCPEUR") "ISOCPEUR")
-    (T                              "Standard")))
+;; Стиль с ФИКСИРОВАННОЙ высотой (группа 40 не ноль) не годится: AutoCAD
+;; игнорирует высоту, заданную командой, и вся графика перестаёт
+;; масштабироваться. У Шамиля в одном чертеже так и вышло — ISOCPEUR
+;; с высотой 0.240.
+;; Поэтому берём первый стиль из цепочки, у которого высота ПЕРЕМЕННАЯ,
+;; а если все кандидаты фиксированные — заводим собственный "GC-Текст"
+;; с тем же шрифтом и нулевой высотой.
+(defun gc-pile-style-var-h-p (name / e h)
+  (setq e (tblsearch "STYLE" name))
+  (if e
+    (progn
+      (setq h (cdr (assoc 40 e)))
+      (if (or (null h) (< (abs h) 1.0e-9)) T nil))
+    nil))
+
+;; Имя файла шрифта у стиля — чтобы свой стиль выглядел как привычный.
+(defun gc-pile-style-font (name / e)
+  (setq e (tblsearch "STYLE" name))
+  (if e (cdr (assoc 3 e)) nil))
+
+(defun gc-pile-make-own-style ( / font cand)
+  (if (null (tblsearch "STYLE" "GC-Текст"))
+    (progn
+      ;; Шрифт берём у первого существующего кандидата, иначе стандартный.
+      (foreach c '("МГС" "GOSTB" "ISOCPEUR" "Standard")
+        (if (and (null font) (tblsearch "STYLE" c))
+          (setq font (gc-pile-style-font c))))
+      (if (or (null font) (= font "")) (setq font "isocp.shx"))
+      (entmake (list '(0 . "STYLE")
+                     '(100 . "AcDbSymbolTableRecord")
+                     '(100 . "AcDbTextStyleTableRecord")
+                     (cons 2 "GC-Текст")
+                     '(70 . 0)
+                     '(40 . 0.0)     ; переменная высота — то, что нам нужно
+                     '(41 . 1.0)
+                     '(50 . 0.0)
+                     '(71 . 0)
+                     '(42 . 2.5)
+                     (cons 3 font)
+                     '(4 . "")))
+      (princ (strcat "\n[i] Создан текстовый стиль " "GC-Текст"
+                     " (шрифт " font ", высота переменная):"))
+      (princ "\n    у всех подходящих стилей чертежа высота фиксирована,")
+      (princ "\n    а с ней графика не масштабируется.")))
+  "GC-Текст")
+
+;; Цепочка подбора. Берём первый стиль, который И существует, И имеет
+;; переменную высоту.
+(defun gc-pile-text-style ( / res)
+  (foreach c '("МГС" "GOSTB" "ISOCPEUR" "Standard")
+    (if (and (null res) (gc-pile-style-var-h-p c))
+      (setq res c)))
+  (if res res (gc-pile-make-own-style)))
 
 (defun gc-pile-draw-circle (cx cy z r layer)
   (entmake (list '(0 . "CIRCLE")
@@ -962,5 +1012,5 @@
         (gc-pile-run-svp-core pairs target-z project-centers "SVP")))))
   (princ))
 
-(princ "\n[gc] sv.lsp v21 загружен. Команды: SV, SVP")
+(princ "\n[gc] sv.lsp v22 загружен. Команды: SV, SVP")
 (princ)

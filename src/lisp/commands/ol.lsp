@@ -1,7 +1,18 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v10)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v11)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v11: 1) VYBOR TEKSTOVOGO STILYA. Stil s FIKSIROVANNOY vysotoy ne goditsya:
+;;;         AutoCAD ignoriruet vysotu, zadannuyu komandoy, i grafika perestaet
+;;;         masshtabirovatsya. U Shamilya tak i vyshlo -- ISOCPEUR s vysotoy
+;;;         0.240. Teper beretsya pervyy stil s PEREMENNOY vysotoy, a esli
+;;;         vseh kandidatov vysota fiksirovana -- sozdaetsya svoy "GC-Tekst".
+;;;      2) Vyklyuchatel predprosmotra. Predprosmotr delaet redraw na kazhdoe
+;;;         dvizhenie myshi; na tyazhelom chertezhe eto mozhet podveshivat
+;;;         komandu tak, chto vyglyadit kak "nichego ne proishodit".
+;;;         Snyali predprosmotr -- mesto ukazyvaetsya obychnym getpoint.
+;;;         Zaodno redraw teper tolko pri realnom smeshchenii kursora.
 ;;;
 ;;; v10: proverka chertezha pri zapuske. "V odnom chertezhe ne rabotaet,
 ;;;      v drugih rabotaet" -- pochti vsegda svoystvo samogo chertezha:
@@ -120,6 +131,7 @@
 ;;;   *gc-ol-flip*          — T = цифра с другой стороны стрелки
 ;;;   *gc-ol-mode*          — "ONE" по одной / "PLACE" с выбором места /
 ;;;                           "BATCH" пачкой рамкой
+;;;   *gc-ol-preview*       — T = живой предпросмотр места подписи
 ;;;   *gc-ol-text-h*        — высота текста, м
 ;;; Намеренно НЕ инициализируются при загрузке: AutoLISP возвращает nil для
 ;;; несвязанного символа, а сброс при каждом APPLOAD стирал бы настройки.
@@ -238,6 +250,21 @@
 
 (defun gc-ol-flip-name ( / )
   (if *gc-ol-flip* "снизу от стрелки" "сверху от стрелки"))
+
+(defun gc-ol-preview-name ( / )
+  (if *gc-ol-preview* "включён" "выключен"))
+
+;; ПОЧЕМУ выключатель нужен: предпросмотр перерисовывает экран на каждое
+;; движение мыши (redraw). На тяжёлом чертеже это может подвешивать команду
+;; настолько, что выглядит как «ничего не происходит». Сняли предпросмотр —
+;; место указывается обычным getpoint, мгновенно.
+(defun gc-ol-toggle-preview ( / )
+  (setq *gc-ol-preview* (not *gc-ol-preview*))
+  (princ (strcat "\n[i] Предпросмотр места подписи: " (gc-ol-preview-name)))
+  (if (null *gc-ol-preview*)
+    (princ "\n    Место указывается обычным кликом, экран не перерисовывается.")
+    (princ "\n    Если команда подвисает на тяжёлом чертеже — выключите."))
+  *gc-ol-preview*)
 
 (defun gc-ol-mode-name ( / )
   (cond
@@ -445,12 +472,59 @@
                    '(6 . "Continuous")))))
 
 ;; Fallback цепочка. МГС первым — этот стиль стоит в образце Шамиля.
-(defun gc-ol-text-style ( / )
-  (cond
-    ((tblsearch "STYLE" "МГС")      "МГС")
-    ((tblsearch "STYLE" "GOSTB")    "GOSTB")
-    ((tblsearch "STYLE" "ISOCPEUR") "ISOCPEUR")
-    (T                              "Standard")))
+;; Стиль с ФИКСИРОВАННОЙ высотой (группа 40 не ноль) не годится: AutoCAD
+;; игнорирует высоту, заданную командой, и вся графика перестаёт
+;; масштабироваться. У Шамиля в одном чертеже так и вышло — ISOCPEUR
+;; с высотой 0.240.
+;; Поэтому берём первый стиль из цепочки, у которого высота ПЕРЕМЕННАЯ,
+;; а если все кандидаты фиксированные — заводим собственный "GC-Текст"
+;; с тем же шрифтом и нулевой высотой.
+(defun gc-ol-style-var-h-p (name / e h)
+  (setq e (tblsearch "STYLE" name))
+  (if e
+    (progn
+      (setq h (cdr (assoc 40 e)))
+      (if (or (null h) (< (abs h) 1.0e-9)) T nil))
+    nil))
+
+;; Имя файла шрифта у стиля — чтобы свой стиль выглядел как привычный.
+(defun gc-ol-style-font (name / e)
+  (setq e (tblsearch "STYLE" name))
+  (if e (cdr (assoc 3 e)) nil))
+
+(defun gc-ol-make-own-style ( / font cand)
+  (if (null (tblsearch "STYLE" "GC-Текст"))
+    (progn
+      ;; Шрифт берём у первого существующего кандидата, иначе стандартный.
+      (foreach c '("МГС" "GOSTB" "ISOCPEUR" "Standard")
+        (if (and (null font) (tblsearch "STYLE" c))
+          (setq font (gc-ol-style-font c))))
+      (if (or (null font) (= font "")) (setq font "isocp.shx"))
+      (entmake (list '(0 . "STYLE")
+                     '(100 . "AcDbSymbolTableRecord")
+                     '(100 . "AcDbTextStyleTableRecord")
+                     (cons 2 "GC-Текст")
+                     '(70 . 0)
+                     '(40 . 0.0)     ; переменная высота — то, что нам нужно
+                     '(41 . 1.0)
+                     '(50 . 0.0)
+                     '(71 . 0)
+                     '(42 . 2.5)
+                     (cons 3 font)
+                     '(4 . "")))
+      (princ (strcat "\n[i] Создан текстовый стиль " "GC-Текст"
+                     " (шрифт " font ", высота переменная):"))
+      (princ "\n    у всех подходящих стилей чертежа высота фиксирована,")
+      (princ "\n    а с ней графика не масштабируется.")))
+  "GC-Текст")
+
+;; Цепочка подбора. Берём первый стиль, который И существует, И имеет
+;; переменную высоту.
+(defun gc-ol-text-style ( / res)
+  (foreach c '("МГС" "GOSTB" "ISOCPEUR" "Standard")
+    (if (and (null res) (gc-ol-style-var-h-p c))
+      (setq res c)))
+  (if res res (gc-ol-make-own-style)))
 
 ;; Стрелка = LWPOLYLINE из 3 вершин. Ширина задаётся ПОСЕГМЕНТНО:
 ;; группа 40 — начальная ширина сегмента, начинающегося в этой вершине,
@@ -627,7 +701,7 @@
 ;; графику под курсором. grread отдаёт координаты на каждом движении, grvecs
 ;; рисует временные векторы, а redraw их стирает перед следующим кадром.
 ;; Возвращает точку либо nil, если пользователь отказался.
-(defun gc-ol-pick-place (p txt / gr code res pt vecs)
+(defun gc-ol-pick-place (p txt / gr code res pt prev vecs)
   (princ (strcat "\nГде поставить подпись — отклонение " txt
                  " мм (место сносится на прямую): "))
   (setq res nil)
@@ -638,9 +712,15 @@
       ;; 5 — мышь движется: стираем прошлый кадр и рисуем новый.
       ((= code 5)
        (setq pt (cadr gr))
-       (redraw)
-       (setq vecs (gc-ol-preview-vecs p pt))
-       (if vecs (grvecs vecs)))
+       ;; Перерисовываем только если курсор реально сместился: redraw
+       ;; стоит дорого, а grread сыплет событиями и на месте.
+       (if (or (null prev)
+               (> (distance pt prev) (* 0.05 *gc-ol-text-h*)))
+         (progn
+           (setq prev pt)
+           (redraw)
+           (setq vecs (gc-ol-preview-vecs p pt))
+           (if vecs (grvecs vecs)))))
       ;; 3 — клик левой кнопкой, место выбрано.
       ((= code 3)
        (redraw)
@@ -676,6 +756,7 @@
     (princ "\n  3 или П — перевернуть цифру на другую сторону стрелки")
     (princ "\n  4 или Т — высота текста")
     (princ "\n  5 или Р — режим: одна / место сам / пачкой рамкой")
+    (princ (strcat "\n  7 или Э — предпросмотр места подписи: " (gc-ol-preview-name)))
     (princ "\n  0 или К — выйти из команды")
     (princ "\n  Enter   — вернуться к точкам")
     (setq s (gc-ol-trim (getstring T "\nВыбор: ")))
@@ -693,6 +774,8 @@
        (gc-ol-set-text-h))
       ((gc-ol-is-word s '("5" "р" "Р" "r" "R" "режим" "Режим"))
        (gc-ol-toggle-mode))
+      ((gc-ol-is-word s '("7" "э" "Э" "предпросмотр" "Предпросмотр" "эскиз"))
+       (gc-ol-toggle-preview))
       ((gc-ol-is-word s '("0" "к" "К" "k" "K" "q" "Q" "выход" "Выход"))
        (setq res nil done T))
       (T (princ (strcat "\n[!] Не понял \"" s
@@ -753,24 +836,17 @@
     (if (assoc -3 (entget o '("AcadAnnotative"))) T nil)
     nil))
 
-(defun gc-ol-check-style ( / name e fixh)
+(defun gc-ol-check-style ( / name)
+  ;; Высоту больше не проверяем: gc-ol-text-style сам берёт только стиль
+  ;; с переменной высотой, а если таких нет — заводит собственный.
   (setq name (gc-ol-text-style))
-  (setq e (tblsearch "STYLE" name))
-  (if e
+  (princ (strcat "\n[i] Текстовый стиль: " name))
+  (if (gc-ol-style-annotative-p name)
     (progn
-      (setq fixh (cdr (assoc 40 e)))
-      (if (and fixh (> fixh 1.0e-9))
-        (princ (strcat "\n[!] У стиля " name " ФИКСИРОВАННАЯ высота "
-                       (gc-ol-fmt fixh) " м."
-                       "\n    AutoCAD игнорирует высоту, заданную командой.")))
-      (if (gc-ol-style-annotative-p name)
-        (progn
-          (princ (strcat "\n[!] Стиль " name " АННОТАТИВНЫЙ."))
-          (princ "\n    Такой текст не отображается, пока в чертеже не выбран")
-          (princ "\n    масштаб аннотаций. Если подписей не видно — включите")
-          (princ "\n    масштаб аннотаций в строке состояния либо возьмите")
-          (princ "\n    неаннотативный стиль."))))
-    (princ (strcat "\n[!] Текстовый стиль " name " не найден.")))
+      (princ (strcat "\n[!] Стиль " name " АННОТАТИВНЫЙ."))
+      (princ "\n    Такой текст не отображается, пока в чертеже не выбран")
+      (princ "\n    масштаб аннотаций. Если подписей не видно — включите")
+      (princ "\n    масштаб аннотаций в строке состояния.")))
   name)
 
 (defun gc-ol-check-env ( / )
@@ -785,6 +861,10 @@
 (defun gc-ol-defaults ( / )
   (if (null *gc-ol-side*)   (setq *gc-ol-side*   "L"))
   (if (null *gc-ol-mode*)   (setq *gc-ol-mode*   "ONE"))
+  ;; Предпросмотр по умолчанию включён; на тяжёлом чертеже его можно снять.
+  (if (null *gc-ol-preview-set*)
+    (setq *gc-ol-preview-set* T
+          *gc-ol-preview*     T))
   (if (null *gc-ol-text-h*) (setq *gc-ol-text-h* *gc-ol-text-h-init*)))
 
 (defun gc-ol-intro ( / )
@@ -861,7 +941,11 @@
      (if (null g)
        (princ "\n[ОШИБКА] Проектная прямая не задана.")
        (progn
-         (setq at (gc-ol-pick-place p (nth 6 g)))
+         (setq at (if *gc-ol-preview*
+                    (gc-ol-pick-place p (nth 6 g))
+                    (getpoint p (strcat "\nГде поставить подпись — отклонение "
+                                        (nth 6 g)
+                                        " мм (место сносится на прямую): "))))
          (if (null at)
            (princ "\n[!] Место не указано, подпись не поставлена.")
            (gc-ol-label p at))))
@@ -945,5 +1029,5 @@
 (defun c:gc-line-deviation ( / )
   (c:ol))
 
-(princ "\n[gc] ol.lsp v10 загружен. Команда: OL")
+(princ "\n[gc] ol.lsp v11 загружен. Команда: OL")
 (princ)

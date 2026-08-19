@@ -1,10 +1,13 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v9)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v10)
 ;;; Komandy:
 ;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
 ;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
+;;;
+;;; v10: vybor tekstovogo stilya -- tolko s PEREMENNOY vysotoy, inache
+;;;      AutoCAD ignoriruet zadannuyu vysotu. Sm. ol.lsp v11.
 ;;;
 ;;; v9: proverka chertezha pri zapuske -- sloy i tekstovyy stil. Sm. ol.lsp v10.
 ;;;
@@ -415,12 +418,59 @@
                    '(6 . "Continuous")))))
 
 ;; Fallback цепочка: GOSTB (СПДС) -> ISOCPEUR -> Standard.
-(defun gc-vo-text-style ( / )
-  (cond
-    ((tblsearch "STYLE" "МГС")      "МГС")
-    ((tblsearch "STYLE" "GOSTB")    "GOSTB")
-    ((tblsearch "STYLE" "ISOCPEUR") "ISOCPEUR")
-    (T                              "Standard")))
+;; Стиль с ФИКСИРОВАННОЙ высотой (группа 40 не ноль) не годится: AutoCAD
+;; игнорирует высоту, заданную командой, и вся графика перестаёт
+;; масштабироваться. У Шамиля в одном чертеже так и вышло — ISOCPEUR
+;; с высотой 0.240.
+;; Поэтому берём первый стиль из цепочки, у которого высота ПЕРЕМЕННАЯ,
+;; а если все кандидаты фиксированные — заводим собственный "GC-Текст"
+;; с тем же шрифтом и нулевой высотой.
+(defun gc-vo-style-var-h-p (name / e h)
+  (setq e (tblsearch "STYLE" name))
+  (if e
+    (progn
+      (setq h (cdr (assoc 40 e)))
+      (if (or (null h) (< (abs h) 1.0e-9)) T nil))
+    nil))
+
+;; Имя файла шрифта у стиля — чтобы свой стиль выглядел как привычный.
+(defun gc-vo-style-font (name / e)
+  (setq e (tblsearch "STYLE" name))
+  (if e (cdr (assoc 3 e)) nil))
+
+(defun gc-vo-make-own-style ( / font cand)
+  (if (null (tblsearch "STYLE" "GC-Текст"))
+    (progn
+      ;; Шрифт берём у первого существующего кандидата, иначе стандартный.
+      (foreach c '("МГС" "GOSTB" "ISOCPEUR" "Standard")
+        (if (and (null font) (tblsearch "STYLE" c))
+          (setq font (gc-vo-style-font c))))
+      (if (or (null font) (= font "")) (setq font "isocp.shx"))
+      (entmake (list '(0 . "STYLE")
+                     '(100 . "AcDbSymbolTableRecord")
+                     '(100 . "AcDbTextStyleTableRecord")
+                     (cons 2 "GC-Текст")
+                     '(70 . 0)
+                     '(40 . 0.0)     ; переменная высота — то, что нам нужно
+                     '(41 . 1.0)
+                     '(50 . 0.0)
+                     '(71 . 0)
+                     '(42 . 2.5)
+                     (cons 3 font)
+                     '(4 . "")))
+      (princ (strcat "\n[i] Создан текстовый стиль " "GC-Текст"
+                     " (шрифт " font ", высота переменная):"))
+      (princ "\n    у всех подходящих стилей чертежа высота фиксирована,")
+      (princ "\n    а с ней графика не масштабируется.")))
+  "GC-Текст")
+
+;; Цепочка подбора. Берём первый стиль, который И существует, И имеет
+;; переменную высоту.
+(defun gc-vo-text-style ( / res)
+  (foreach c '("МГС" "GOSTB" "ISOCPEUR" "Standard")
+    (if (and (null res) (gc-vo-style-var-h-p c))
+      (setq res c)))
+  (if res res (gc-vo-make-own-style)))
 
 ;; 72=1 / 73=2 — выравнивание Middle Center: подпись встаёт по центру клика.
 (defun gc-vo-draw-text (pt txt / )
@@ -542,24 +592,17 @@
     (if (assoc -3 (entget o '("AcadAnnotative"))) T nil)
     nil))
 
-(defun gc-vo-check-style ( / name e fixh)
+(defun gc-vo-check-style ( / name)
+  ;; Высоту больше не проверяем: gc-vo-text-style сам берёт только стиль
+  ;; с переменной высотой, а если таких нет — заводит собственный.
   (setq name (gc-vo-text-style))
-  (setq e (tblsearch "STYLE" name))
-  (if e
+  (princ (strcat "\n[i] Текстовый стиль: " name))
+  (if (gc-vo-style-annotative-p name)
     (progn
-      (setq fixh (cdr (assoc 40 e)))
-      (if (and fixh (> fixh 1.0e-9))
-        (princ (strcat "\n[!] У стиля " name " ФИКСИРОВАННАЯ высота "
-                       (gc-vo-fmt fixh) " м."
-                       "\n    AutoCAD игнорирует высоту, заданную командой.")))
-      (if (gc-vo-style-annotative-p name)
-        (progn
-          (princ (strcat "\n[!] Стиль " name " АННОТАТИВНЫЙ."))
-          (princ "\n    Такой текст не отображается, пока в чертеже не выбран")
-          (princ "\n    масштаб аннотаций. Если подписей не видно — включите")
-          (princ "\n    масштаб аннотаций в строке состояния либо возьмите")
-          (princ "\n    неаннотативный стиль."))))
-    (princ (strcat "\n[!] Текстовый стиль " name " не найден.")))
+      (princ (strcat "\n[!] Стиль " name " АННОТАТИВНЫЙ."))
+      (princ "\n    Такой текст не отображается, пока в чертеже не выбран")
+      (princ "\n    масштаб аннотаций. Если подписей не видно — включите")
+      (princ "\n    масштаб аннотаций в строке состояния.")))
   name)
 
 (defun gc-vo-check-env ( / )
@@ -669,5 +712,5 @@
 (defun c:gc-height-deviation ( / )
   (c:vo))
 
-(princ "\n[gc] vo.lsp v9 загружен. Команда: VO")
+(princ "\n[gc] vo.lsp v10 загружен. Команда: VO")
 (princ)
