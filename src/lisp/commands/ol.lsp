@@ -1,7 +1,15 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v8)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v9)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v9: v rezhime "Mesto" poyavilsya ZHIVOY PREDPROSMOTR: poka dvigaesh mysh,
+;;;     pod kursorom vidno, gde vstanet strelka i ramka na meste cifry.
+;;;     Sdelano na grread + grvecs: getpoint ne umeet risovat proizvolnuyu
+;;;     grafiku pod kursorom. Kazhdyy kadr -- redraw (steret proshlyy)
+;;;     i grvecs (narisovat novyy).
+;;;     Vsya geometriya vynesena v gc-ol-geom, chtoby predprosmotr i realnaya
+;;;     otrisovka ne mogli razyehatsya.
 ;;;
 ;;; v8: RAZDELENY DVE RAZNYE VESHCHI, kotorye ranshe putalis.
 ;;;     1) STORONA -- GDE risuetsya strelka: sleva ili sprava ot pryamoy.
@@ -91,6 +99,11 @@
 
 ;; Фильтр для ssget в режиме «пачкой»: только точки и COGO Points.
 ;; Тот же, что в sv.lsp — защищает от захвата уже нарисованных стрелок и подписей.
+;; Цвета временной графики предпросмотра: контур стрелки и рамка цифры.
+;; Яркие и разные, чтобы не спутать с самим чертежом.
+(setq *gc-ol-preview-color*  1)   ; красный — стрелка
+(setq *gc-ol-preview-color2* 3)   ; зелёный — рамка на месте цифры
+
 (setq *gc-ol-ssget-filter* '((0 . "POINT,AECC*POINT,AEC*POINT")))
 
 ;;; НАСТРОЙКИ — живут до закрытия чертежа:
@@ -468,77 +481,168 @@
 ;;      поэтому стрелка в любом случае начинается на прямой.
 ;; ПОЧЕМУ так: на одной прямой точки могут стоять плотно, и подписи напротив
 ;; каждой налезают друг на друга. Разнеся их вдоль прямой, чертёж читается.
-(defun gc-ol-label (p at / u n f h len head v1 v2 v3 ux uy ang td nx ny tp
-                      off dev sside outward txt)
+;; Считает ВСЮ геометрию подписи одним местом, чтобы предпросмотр и реальная
+;; отрисовка не могли разъехаться.
+;; p  — фактическая точка, at — место подписи (nil = напротив точки).
+;; Возвращает (v1 v2 v3 tp ang head txt dev) либо nil, если прямая не задана.
+(defun gc-ol-geom (p at / u n f h len head v1 v2 v3 ux uy ang td nx ny tp
+                     off dev sside outward txt)
   (setq u (gc-ol-unit *gc-ol-a* *gc-ol-b*))
+  (if (null u)
+    nil
+    (progn
+      (setq h    *gc-ol-text-h*
+            len  (* *gc-ol-arrow-k* h)
+            head (* *gc-ol-head-k*  h))
+      ;; Знаковое отклонение: положительное — точка слева от направления
+      ;; прямой, отрицательное — справа.
+      (setq dev (gc-ol-signed-offset p))
+      ;; СТОРОНА, где лежит стрелка, — из настройки. Все подписи по одну
+      ;; сторону прямой, чтобы чертёж не рябил.
+      (setq n (list (- (cadr u)) (car u)))          ; левая нормаль
+      (if (= *gc-ol-side* "R")
+        (setq n (list (- (car n)) (- (cadr n)))))
+      ;; НАПРАВЛЕНИЕ остриё — из ЗНАКА отклонения, а не из настройки.
+      ;; В этом весь смысл: стрелка показывает, в какую сторону ушёл факт.
+      ;; Точка на выбранной стороне  -> остриё от прямой наружу.
+      ;; Точка с противоположной     -> остриё к прямой.
+      (setq sside (if (= *gc-ol-side* "R") -1.0 1.0))
+      (setq outward (>= (* dev sside) 0.0))
+      (if *gc-ol-rev* (setq outward (not outward)))
+      ;; Стрелка всегда занимает одну и ту же полосу от прямой на выбранную
+      ;; сторону; меняется только то, куда смотрит остриё.
+      (setq f (gc-ol-foot (if at at p)))
+      (setq v2 (list (+ (car  f) (* (car  n) (/ len 2.0)))
+                     (+ (cadr f) (* (cadr n) (/ len 2.0)))))
+      (if outward
+        (progn
+          (setq v1 (list (car f) (cadr f)))
+          (setq v3 (list (+ (car  f) (* (car  n) len))
+                         (+ (cadr f) (* (cadr n) len))))
+          (setq ux (car  n)
+                uy (cadr n)))
+        (progn
+          (setq v1 (list (+ (car  f) (* (car  n) len))
+                         (+ (cadr f) (* (cadr n) len))))
+          (setq v3 (list (car f) (cadr f)))
+          (setq ux (- (car  n))
+                uy (- (cadr n)))))
+      ;; Поворот текста вдоль стрелки. Нормализуем, чтобы цифра не вставала
+      ;; вверх ногами: угол приводим в (-90°; 90°].
+      (setq ang (atan uy ux))
+      (if (or (> ang (/ pi 2.0)) (<= ang (- (/ pi 2.0))))
+        (setq ang (+ ang pi)))
+      ;; Смещение считаем от НОРМАЛИЗОВАННОГО направления — тогда цифра всегда
+      ;; с одной и той же визуальной стороны, а Переворот её перекидывает.
+      (setq td (list (cos ang) (sin ang)))
+      (setq nx (- (cadr td))
+            ny (car td))
+      (if *gc-ol-flip*
+        (setq nx (- nx) ny (- ny)))
+      (setq off (* *gc-ol-text-k* h))
+      (setq tp (list (+ (car v2) (* nx off))
+                     (+ (cadr v2) (* ny off))
+                     0.0))
+      ;; Величина отклонения — модуль, без знака (решение Шамиля).
+      (setq txt (itoa (gc-ol-round (* 1000.0 (abs dev)))))
+      (list v1 v2 v3 tp ang head txt dev))))
+
+(defun gc-ol-label (p at / g dev txt)
+  (setq g (gc-ol-geom p at))
   (cond
-    ((null u)
+    ((null g)
      (princ "\n[ОШИБКА] Проектная прямая не задана.")
      nil)
     (T
-     (setq h    *gc-ol-text-h*
-           len  (* *gc-ol-arrow-k* h)
-           head (* *gc-ol-head-k*  h))
-     ;; Знаковое отклонение: положительное — точка слева от направления
-     ;; прямой, отрицательное — справа.
-     (setq dev (gc-ol-signed-offset p))
-     ;; СТОРОНА, где лежит стрелка, — из настройки. Все подписи по одну
-     ;; сторону прямой, чтобы чертёж не рябил.
-     (setq n (list (- (cadr u)) (car u)))          ; левая нормаль
-     (if (= *gc-ol-side* "R")
-       (setq n (list (- (car n)) (- (cadr n)))))
-     ;; НАПРАВЛЕНИЕ остриё — из ЗНАКА отклонения, а не из настройки.
-     ;; В этом весь смысл: стрелка показывает, в какую сторону ушёл факт.
-     ;; Точка на выбранной стороне  -> остриё от прямой наружу.
-     ;; Точка с противоположной     -> остриё к прямой.
-     ;; Так на плите видно: бетона меньше — стрелка в одну сторону,
-     ;; больше — в другую, и величина написана цифрой.
-     (setq sside (if (= *gc-ol-side* "R") -1.0 1.0))
-     (setq outward (>= (* dev sside) 0.0))
-     (if *gc-ol-rev* (setq outward (not outward)))
-     ;; Стрелка всегда занимает одну и ту же полосу от прямой на выбранную
-     ;; сторону; меняется только то, куда смотрит остриё.
-     (setq f (gc-ol-foot (if at at p)))
-     (setq v2 (list (+ (car  f) (* (car  n) (/ len 2.0)))
-                    (+ (cadr f) (* (cadr n) (/ len 2.0)))))
-     (if outward
-       (progn
-         (setq v1 (list (car f) (cadr f)))
-         (setq v3 (list (+ (car  f) (* (car  n) len))
-                        (+ (cadr f) (* (cadr n) len))))
-         (setq ux (car  n)
-               uy (cadr n)))
-       (progn
-         (setq v1 (list (+ (car  f) (* (car  n) len))
-                        (+ (cadr f) (* (cadr n) len))))
-         (setq v3 (list (car f) (cadr f)))
-         (setq ux (- (car  n))
-               uy (- (cadr n)))))
-     ;; Поворот текста вдоль стрелки. Нормализуем, чтобы цифра не вставала
-     ;; вверх ногами: угол приводим в (-90°; 90°].
-     (setq ang (atan uy ux))
-     (if (or (> ang (/ pi 2.0)) (<= ang (- (/ pi 2.0))))
-       (setq ang (+ ang pi)))
-     ;; Смещение считаем от НОРМАЛИЗОВАННОГО направления — тогда цифра всегда
-     ;; с одной и той же визуальной стороны, а кнопка Переворот её перекидывает.
-     (setq td (list (cos ang) (sin ang)))
-     (setq nx (- (cadr td))
-           ny (car td))
-     (if *gc-ol-flip*
-       (setq nx (- nx) ny (- ny)))
-     (setq off (* *gc-ol-text-k* h))
-     (setq tp (list (+ (car v2) (* nx off))
-                    (+ (cadr v2) (* ny off))
-                    0.0))
-     ;; Величина отклонения — модуль, без знака (решение Шамиля).
-     (setq txt (itoa (gc-ol-round (* 1000.0 (abs dev)))))
+     (setq txt (nth 6 g)
+           dev (nth 7 g))
      (gc-ol-ensure-layer *gc-ol-layer* *gc-ol-layer-color*)
-     (gc-ol-draw-arrow v1 v2 v3 head)
-     (gc-ol-draw-text tp txt ang)
+     (gc-ol-draw-arrow (nth 0 g) (nth 1 g) (nth 2 g) (nth 5 g))
+     (gc-ol-draw-text  (nth 3 g) txt (nth 4 g))
      (princ (strcat "\n[i] Отклонение от прямой: " txt " мм ("
                     (if (>= dev 0.0) "точка слева" "точка справа")
                     " от направления)"))
      txt)))
+
+;;; ====================================================================
+;;; ЖИВОЙ ПРЕДПРОСМОТР МЕСТА ПОДПИСИ
+;;; ====================================================================
+
+;; Список временных векторов для grvecs: контур стрелки и рамка на месте
+;; цифры. Формат grvecs — (цвет точка1 точка2 цвет точка3 точка4 ...).
+;; ПОЧЕМУ контур, а не заливка: grvecs рисует только отрезки, поэтому
+;; наконечник показываем двумя «крыльями» и основанием.
+(defun gc-ol-preview-vecs (p at / g v1 v2 v3 tp h w ux uy len px py a b
+                             c1 c2 t1 t2 t3 t4)
+  (setq g (gc-ol-geom p at))
+  (if (null g)
+    nil
+    (progn
+      (setq v1 (nth 0 g) v2 (nth 1 g) v3 (nth 2 g) tp (nth 3 g)
+            w  (nth 5 g)
+            h  *gc-ol-text-h*)
+      ;; Направление стрелки и перпендикуляр к ней.
+      (setq ux  (- (car  v3) (car  v1))
+            uy  (- (cadr v3) (cadr v1))
+            len (sqrt (+ (* ux ux) (* uy uy))))
+      (if (< len 1.0e-9)
+        nil
+        (progn
+          (setq ux (/ ux len) uy (/ uy len))
+          (setq px (- uy) py ux)
+          ;; «Крылья» наконечника на средней вершине.
+          (setq a (list (+ (car  v2) (* px (/ w 2.0)))
+                        (+ (cadr v2) (* py (/ w 2.0)))))
+          (setq b (list (- (car  v2) (* px (/ w 2.0)))
+                        (- (cadr v2) (* py (/ w 2.0)))))
+          ;; Рамка размером с цифру — видно, куда она встанет.
+          (setq t1 (list (+ (car tp) (* (+ ux px) (/ h 2.0)))
+                         (+ (cadr tp) (* (+ uy py) (/ h 2.0)))))
+          (setq t2 (list (+ (car tp) (* (- ux px) (/ h 2.0)))
+                         (+ (cadr tp) (* (- uy py) (/ h 2.0)))))
+          (setq t3 (list (- (car tp) (* (+ ux px) (/ h 2.0)))
+                         (- (cadr tp) (* (+ uy py) (/ h 2.0)))))
+          (setq t4 (list (- (car tp) (* (- ux px) (/ h 2.0)))
+                         (- (cadr tp) (* (- uy py) (/ h 2.0)))))
+          (setq c1 *gc-ol-preview-color*
+                c2 *gc-ol-preview-color2*)
+          (list c1 v1 v2          ; хвост
+                c1 a  v3          ; крыло наконечника
+                c1 b  v3          ; второе крыло
+                c1 a  b           ; основание наконечника
+                c2 t1 t2          ; рамка цифры
+                c2 t2 t3
+                c2 t3 t4
+                c2 t4 t1))))))
+
+;; Живой предпросмотр: пока двигаешь мышь, показывает, где встанет стрелка.
+;; ПОЧЕМУ grread, а не getpoint: getpoint не умеет показывать произвольную
+;; графику под курсором. grread отдаёт координаты на каждом движении, grvecs
+;; рисует временные векторы, а redraw их стирает перед следующим кадром.
+;; Возвращает точку либо nil, если пользователь отказался.
+(defun gc-ol-pick-place (p txt / gr code res pt vecs)
+  (princ (strcat "\nГде поставить подпись — отклонение " txt
+                 " мм (место сносится на прямую): "))
+  (setq res nil)
+  (while (null res)
+    (setq gr   (grread T 15 0)
+          code (car gr))
+    (cond
+      ;; 5 — мышь движется: стираем прошлый кадр и рисуем новый.
+      ((= code 5)
+       (setq pt (cadr gr))
+       (redraw)
+       (setq vecs (gc-ol-preview-vecs p pt))
+       (if vecs (grvecs vecs)))
+      ;; 3 — клик левой кнопкой, место выбрано.
+      ((= code 3)
+       (redraw)
+       (setq res (cadr gr)))
+      ;; всё остальное — клавиша или другая кнопка мыши: отказ.
+      (T
+       (redraw)
+       (setq res 'CANCEL))))
+  (if (equal res 'CANCEL) nil res))
 
 ;;; ====================================================================
 ;;; ЗАПАСНОЕ ТЕКСТОВОЕ МЕНЮ (по Enter)
@@ -656,19 +760,25 @@
 ;; ПОЧЕМУ здесь нет кнопок: ssget не поддерживает ключевые слова initget,
 ;; поэтому настройки открываются по Enter вместо выборки.
 ;; Возвращает T — продолжать, nil — выйти из команды.
-;; Режим «Место»: сначала фактическая точка, потом место подписи.
+;; Режим «Место»: сначала фактическая точка, потом место подписи —
+;; с живым предпросмотром под курсором.
 ;; Возвращает T — продолжать, nil — выйти из команды.
-(defun gc-ol-place-step (prm / p at)
+(defun gc-ol-place-step (prm / p g at)
   (initget "Линия Л Сторона С Направление Н Переворот П Текст Т Режим Р Выход В")
   (setq p (getpoint (strcat "\nФактическая точка" prm)))
   (cond
     ((null p) (gc-ol-menu))
     ((listp p)
-     ;; Резинка тянется от самой точки — видно, куда относится подпись.
-     (setq at (getpoint p "\nГде поставить подпись (место сносится на прямую): "))
-     (if (null at)
-       (princ "\n[!] Место не указано, подпись не поставлена.")
-       (gc-ol-label p at))
+     ;; Величина известна сразу — показываем её в подсказке, пока выбираешь
+     ;; место: от места она не зависит, только от самой точки.
+     (setq g (gc-ol-geom p nil))
+     (if (null g)
+       (princ "\n[ОШИБКА] Проектная прямая не задана.")
+       (progn
+         (setq at (gc-ol-pick-place p (nth 6 g)))
+         (if (null at)
+           (princ "\n[!] Место не указано, подпись не поставлена.")
+           (gc-ol-label p at))))
      T)
     ((gc-ol-is-word p '("Выход" "В")) nil)
     (T (gc-ol-do-option p))))
@@ -746,5 +856,5 @@
 (defun c:gc-line-deviation ( / )
   (c:ol))
 
-(princ "\n[gc] ol.lsp v8 загружен. Команда: OL")
+(princ "\n[gc] ol.lsp v9 загружен. Команда: OL")
 (princ)
