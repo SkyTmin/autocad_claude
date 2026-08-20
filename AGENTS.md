@@ -6,8 +6,10 @@
 
 Прочитай:
 1. [CLAUDE.md](./CLAUDE.md) — правила, Hard Rules, DoD, DoR, эскалация
-2. [status/HANDOFF.md](./status/HANDOFF.md) — последний контекст
-3. [status/ROADMAP.md](./status/ROADMAP.md) — план
+2. [docs/pitfalls.md](./docs/pitfalls.md) — **грабли: причины «не работает»,
+   найденные на живых чертежах.** Обязательно перед любым кодом (Hard Rule R7)
+3. [status/HANDOFF.md](./status/HANDOFF.md) — последний контекст
+4. [status/ROADMAP.md](./status/ROADMAP.md) — план
 
 Файлы синхронизированы вручную. При изменении `CLAUDE.md` правь и этот файл (либо
 оставь его как указатель — это допустимо).

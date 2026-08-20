@@ -7,14 +7,17 @@
 
 ## ⚡ РАБОЧАЯ ВЕТКА
 
-**Ветка: `claude/autocad-knowledge-hyVpn`** · Репо: `skytmin/autocad_claude`
+**Ветка: `claude/project-status-check-h0n2w`** · Репо: `skytmin/autocad_claude`
 
 Запущен на другой ветке? Немедленно:
 ```
-git fetch origin claude/autocad-knowledge-hyVpn
-git checkout claude/autocad-knowledge-hyVpn
+git fetch origin claude/project-status-check-h0n2w
+git checkout claude/project-status-check-h0n2w
 ```
-`main` — только для слияний.
+`main` — только для слияний, сейчас пустой.
+
+> История: до 2026-07-29 работа шла в `claude/autocad-knowledge-hyVpn`.
+> `h0n2w` ответвлена от неё, вся история сохранена. **Актуальный код — в `h0n2w`.**
 
 ---
 
@@ -29,10 +32,13 @@ AutoLISP + Python/.NET для автоматизации чертежей Civil 
 ## 2. Старт каждой сессии — читать в этом порядке
 
 1. `CLAUDE.md` (этот файл)
-2. `.claude/skills/skill-integrator/integration-map.md` — куда что класть
-3. `status/HANDOFF.md` — где остановились
-4. `status/ISSUES.md` — блокеры
-5. Если работаем над фичей → её `specs/<feature>.md`
+2. **`docs/pitfalls.md` — грабли: причины «не работает», найденные на живых
+   чертежах.** Обязательно перед любым кодом. Каждая запись стоила отдельной
+   сессии отладки — второй раз их проходить нельзя (см. R7).
+3. `.claude/skills/skill-integrator/integration-map.md` — куда что класть
+4. `status/HANDOFF.md` — где остановились
+5. `status/ISSUES.md` — блокеры
+6. Если работаем над фичей → её `specs/<feature>.md`
 
 ---
 
@@ -58,6 +64,12 @@ TODO без записи в `status/ISSUES.md` запрещено. Заглуш�
 **R6 · Нет "готово" без проверки.**
 Не проверено в Civil 3D → пиши явно: *"Код написан, не проверен — нужен ручной запуск."*
 
+**R7 · Нет повторению старых граблей.**
+Перед кодом — `docs/pitfalls.md`. Нашёл новую корневую причину → **запиши туда
+же**, в тот же коммит: симптом, корневая причина, правило, где исправлено.
+Файл только растёт, из него ничего не удаляется. `status/HANDOFF.md` для этого
+не годится — он переписывается каждую сессию.
+
 ---
 
 ## 4. Сценарии → что делать
@@ -65,7 +77,9 @@ TODO без записи в `status/ISSUES.md` запрещено. Заглуш�
 | Сценарий | Действие |
 |---|---|
 | Начинаю новую задачу | Проверь DoR → `docs/workflow.md` |
-| Пишу AutoLISP / код | Читай `docs/conventions.md` + `samples/` |
+| Пишу AutoLISP / код | Читай `docs/pitfalls.md` (R7) + `docs/conventions.md` + `samples/` |
+| «Команда отработала, а на чертеже пусто» | `docs/pitfalls.md` — там уже 5 разных причин этого симптома |
+| Нашёл корневую причину бага | Запиши в `docs/pitfalls.md` тем же коммитом (R7) |
 | Незнакомый геодезический термин | `docs/glossary.md` |
 | Завершаю задачу | Прогони DoD → `docs/workflow.md` |
 | Архитектурное решение | Создай ADR → `docs/decisions/README.md` |
@@ -94,9 +108,10 @@ TODO без записи в `status/ISSUES.md` запрещено. Заглуш�
 ## 6. Карта проекта
 
 ```
-CLAUDE.md   ← ты здесь         docs/workflow.md     ← процесс: DoD, DoR, SDD-цикл
-AGENTS.md   зеркало AI          docs/conventions.md  ← ГОСТ, стиль кода
-README.md   для людей           docs/glossary.md     ← геодезические термины
+CLAUDE.md   ← ты здесь         docs/pitfalls.md     ⭐ грабли: причины «не работает»
+AGENTS.md   зеркало AI          docs/workflow.md     ← процесс: DoD, DoR, SDD-цикл
+README.md   для людей           docs/conventions.md  ← ГОСТ, стиль кода
+                                docs/glossary.md     ← геодезические термины
                                 docs/decisions/      ← ADR (архитектурные решения)
 
 specs/      ⭐ спецификации фич  status/HANDOFF.md    ⭐ контекст сессии
@@ -116,4 +131,4 @@ samples/    реальные данные     status/ISSUES.md     ← баги 
 
 **Первая фраза** в начале любой новой сессии:
 
-> "Прочитал CLAUDE.md, понял правила. Иду в `status/HANDOFF.md`."
+> "Прочитал CLAUDE.md, понял правила. Иду в `docs/pitfalls.md` и `status/HANDOFF.md`."

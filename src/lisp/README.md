@@ -54,9 +54,12 @@ tests/       # Тесты (по мере появления)
 | `commands/sv.lsp` | `SV` (`ЫМ`), режимы 1/2/3 | [SPEC-001](../../specs/001-pile-deviation.md), [SPEC-002](../../specs/002-pile-multi-batch.md), [SPEC-004](../../specs/004-sv-combined.md) | v24, v18 подтверждено вручную (v19–v24 — не проверено) |
 | `commands/sv.lsp` | `SVP` (`ЫМЗ`) | [SPEC-003](../../specs/003-pile-extension.md) | v24, v18 подтверждено вручную (v19–v24 — не проверено) |
 | `commands/vid.lsp` | `VID` (`МШВ`) / `GC-SELECT-BY-SIZE` | [SPEC-005](../../specs/005-vid-window-select.md) | v7, **не проверено** в Civil 3D |
-| `commands/vo.lsp` | `VO` (`МЩ`) / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v12, v11 подтверждено вручную (правка ПСК — не проверено) |
-| `commands/ol.lsp` | `OL` (`ЩД`) / `GC-LINE-DEVIATION` | [SPEC-007](../../specs/007-line-deviation.md) | v13, v12 подтверждено вручную (правка ПСК — не проверено) |
+| `commands/vo.lsp` | `VO` (`МЩ`) / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v12, подтверждено вручную |
+| `commands/ol.lsp` | `OL` (`ЩД`) / `GC-LINE-DEVIATION` | [SPEC-007](../../specs/007-line-deviation.md) | v13, подтверждено вручную |
 
+> **Полный реестр граблей — [`docs/pitfalls.md`](../../docs/pitfalls.md).**
+> Читать перед тем, как писать код (Hard Rule R7). Ниже — выжимка.
+>
 > **Три правила, добытые на отладке `vo.lsp` (6 ревизий до рабочей версии):**
 >
 > 1. **Кириллическое ключевое слово `initget` дублировать одной буквой.**
