@@ -1,7 +1,24 @@
-;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v12)
+;;; ol.lsp -- otklonenie fakticheskih tochek ot proektnoy pryamoy (SPEC-007 v13)
 ;;; Komandy:
 ;;;   OL                -- osnovnaya komanda (Otklonenie ot Linii).
 ;;;   GC-LINE-DEVIATION -- polnoe imya toy zhe komandy.
+;;;
+;;; v13: GLAVNOE ISPRAVLENIE -- PSK (UCS).
+;;;      Simptom: "podpisi ne otobrazhayutsya" -- v odnom chertezhe rabotaet,
+;;;      v drugom net. Prichina NE v shriftah.
+;;;      getpoint/grread otdayut tochku v TEKUSHCHEY PSK, a entmake kladet
+;;;      obekt v MSK (WCS). Poka PSK sovpadaet s MSK, raznicy net. Kak tolko
+;;;      v chertezhe povernuta ili sdvinuta PSK -- strelka i cifra sozdayutsya
+;;;      po drugim koordinatam, chasto daleko za predelami ekrana. Snaruzhi
+;;;      eto vyglyadit rovno kak "nichego ne narisovalos".
+;;;      K tomu zhe koordinaty tochek chitalis iz DXF (MSK), a pryamaya
+;;;      zadavalas getpoint (PSK) -- dve raznye sistemy v odnoy formule.
+;;;      Teper vsya matematika vedetsya v MSK: kazhdaya tochka ot polzovatelya
+;;;      srazu perevoditsya (trans p 1 0), a predprosmotr -- obratno (trans p 0 1),
+;;;      potomu chto grvecs risuet v PSK.
+;;;      Poputno: 1) annotativnyy stil bolshe ne vybiraetsya (bez masshtaba
+;;;      annotaciy takoy tekst nevidim); 2) kazhdyy entmake proveryaetsya --
+;;;      esli obekt ne sozdalsya, komanda govorit ob etom vsluh, a ne molchit.
 ;;;
 ;;; v12: komandy zaregistrirovany i v russkoy raskladke -- te zhe bukvy
 ;;;      na teh zhe klavishah YCUKEN. Shamil chasto nabiraet komandu,
@@ -192,6 +209,44 @@
   (if (>= x 0.0)
     (fix (+ x 0.5))
     (- (fix (+ (- x) 0.5)))))
+
+;;; ====================================================================
+;;; ПСК И МСК
+;;; ====================================================================
+
+;; ПОЧЕМУ это самое важное место файла.
+;; getpoint и grread отдают точку в ТЕКУЩЕЙ ПСК (пользовательской системе
+;; координат). entmake кладёт объект в МСК (мировую). Пока ПСК совпадает
+;; с МСК, разницы нет и всё работает. Стоит в чертеже повернуть или сдвинуть
+;; ПСК — те же числа означают уже другое место, и стрелка с цифрой
+;; создаются далеко в стороне. Снаружи это выглядит как «ничего не
+;; нарисовалось»: объекты есть, но не там, куда смотрит экран.
+;; Плюс координаты точек мы читаем из DXF, а там всегда МСК. Смешивать
+;; две системы в одной формуле нельзя.
+;; Поэтому правило простое: ВСЯ математика ведётся в МСК. Точку от
+;; пользователя переводим в МСК сразу на входе, а для предпросмотра
+;; переводим обратно в ПСК — grvecs рисует в ПСК.
+
+;; Дополняем точку до трёхмерной: часть наших точек — плоские (x y),
+;; а trans ждёт полноценную точку.
+(defun gc-ol-3d (p)
+  (list (car p) (cadr p) (if (caddr p) (caddr p) 0.0)))
+
+;; ПСК -> МСК. 1 = ПСК, 0 = МСК.
+(defun gc-ol-w (p)
+  (if p (trans (gc-ol-3d p) 1 0) nil))
+
+;; МСК -> ПСК.
+(defun gc-ol-u (p)
+  (if p (trans (gc-ol-3d p) 0 1) nil))
+
+;; Совпадает ли ПСК с МСК. Нужно только для сообщения пользователю.
+(defun gc-ol-wcs-p ( / o x)
+  (setq o (getvar "UCSORG")
+        x (getvar "UCSXDIR"))
+  (and o x
+       (< (distance o '(0.0 0.0 0.0)) 1.0e-9)
+       (< (distance x '(1.0 0.0 0.0)) 1.0e-9)))
 
 ;;; ====================================================================
 ;;; ГЕОМЕТРИЯ ПРЯМОЙ
@@ -410,8 +465,10 @@
          ((null (gc-ol-unit a b))
           (princ "\n[!] Точки совпали — прямая не определена. Укажите заново."))
          (T
-          (setq *gc-ol-a* a
-                *gc-ol-b* b)
+          ;; Сразу в МСК: дальше вся математика и entmake работают только
+          ;; в мировых координатах, см. блок «ПСК И МСК».
+          (setq *gc-ol-a* (gc-ol-w a)
+                *gc-ol-b* (gc-ol-w b))
           (princ (strcat "\n[i] Прямая задана, длина отрезка "
                          (gc-ol-fmt (distance a b)) " м"))
           ;; Направление остриё спрашивается сразу после прямой.
@@ -516,26 +573,59 @@
                      '(42 . 2.5)
                      (cons 3 font)
                      '(4 . "")))
-      (princ (strcat "\n[i] Создан текстовый стиль " "GC-Текст"
-                     " (шрифт " font ", высота переменная):"))
-      (princ "\n    у всех подходящих стилей чертежа высота фиксирована,")
-      (princ "\n    а с ней графика не масштабируется.")))
-  "GC-Текст")
+      (if (tblsearch "STYLE" "GC-Текст")
+        (progn
+          (princ (strcat "\n[i] Создан текстовый стиль " "GC-Текст"
+                         " (шрифт " font ", высота переменная):"))
+          (princ "\n    у всех подходящих стилей чертежа высота фиксирована")
+          (princ "\n    или они аннотативные — с такими текст не виден.")))))
+  ;; ПОЧЕМУ проверяем ещё раз: если entmake стиля не прошёл, а мы всё равно
+  ;; вернём "GC-Текст", то КАЖДЫЙ entmake текста со ссылкой на несуществующий
+  ;; стиль молча провалится — и подписей не будет, без единого сообщения.
+  (if (tblsearch "STYLE" "GC-Текст")
+    "GC-Текст"
+    (progn
+      (princ "\n[!] Не удалось создать стиль GC-Текст. Беру Standard.")
+      (princ "\n    Если у Standard фиксированная высота или он аннотативный,")
+      (princ "\n    подписи могут выглядеть не так — задайте стиль вручную.")
+      "Standard")))
 
-;; Цепочка подбора. Берём первый стиль, который И существует, И имеет
-;; переменную высоту.
+;; Стиль годится, если он есть, высота у него переменная И он НЕ аннотативный.
+;; ПОЧЕМУ аннотативный не годится: такой текст показывается только при
+;; выбранном масштабе аннотаций. Если масштаб не задан или не совпадает,
+;; текст создаётся, но его не видно вообще — ровно тот симптом,
+;; с которым пришёл Шамиль. Раньше мы про это только предупреждали,
+;; а стиль всё равно брали. Теперь пропускаем.
+(defun gc-ol-style-ok-p (name / )
+  (if (gc-ol-style-var-h-p name)
+    (if (gc-ol-style-annotative-p name) nil T)
+    nil))
+
+;; Цепочка подбора. Берём первый стиль, который прошёл проверку.
 (defun gc-ol-text-style ( / res)
   (foreach c '("МГС" "GOSTB" "ISOCPEUR" "Standard")
-    (if (and (null res) (gc-ol-style-var-h-p c))
+    (if (and (null res) (gc-ol-style-ok-p c))
       (setq res c)))
   (if res res (gc-ol-make-own-style)))
+
+;; entmake молча возвращает nil, если чертёж отказал в создании объекта
+;; (нет слоя, нет стиля, слой заблокирован). Молчание — худшее, что может
+;; быть: команда «отработала», а на чертеже пусто. Говорим вслух.
+(defun gc-ol-emake (lst what / e)
+  (setq e (entmake lst))
+  (if (null e)
+    (progn
+      (princ (strcat "\n[ОШИБКА] Чертёж не принял " what "."))
+      (princ "\n    Смотрите сообщения о слое и текстовом стиле выше.")
+      nil)
+    e))
 
 ;; Стрелка = LWPOLYLINE из 3 вершин. Ширина задаётся ПОСЕГМЕНТНО:
 ;; группа 40 — начальная ширина сегмента, начинающегося в этой вершине,
 ;; группа 41 — конечная. Поэтому наконечник задаётся на средней вершине:
 ;; сегмент v1->v2 нулевой ширины (тонкий хвост), v2->v3 от head до 0 (остриё).
 (defun gc-ol-draw-arrow (v1 v2 v3 head / )
-  (entmake
+  (gc-ol-emake
     (list '(0 . "LWPOLYLINE")
           '(100 . "AcDbEntity")
           (cons 8 *gc-ol-layer*)
@@ -545,11 +635,12 @@
           (cons 38 0.0)
           (cons 10 (list (car v1) (cadr v1))) (cons 40 0.0)  (cons 41 0.0)
           (cons 10 (list (car v2) (cadr v2))) (cons 40 head) (cons 41 0.0)
-          (cons 10 (list (car v3) (cadr v3))) (cons 40 0.0)  (cons 41 0.0))))
+          (cons 10 (list (car v3) (cadr v3))) (cons 40 0.0)  (cons 41 0.0))
+    "стрелку"))
 
 ;; 72=1 / 73=2 — Middle Center: как в образце («Середина по центру»).
 (defun gc-ol-draw-text (pt txt rot / )
-  (entmake (list '(0 . "TEXT")
+  (gc-ol-emake (list '(0 . "TEXT")
                  (cons 8 *gc-ol-layer*)
                  (cons 7 (gc-ol-text-style))
                  (cons 10 pt)
@@ -558,7 +649,8 @@
                  (cons 50 rot)
                  (cons 72 1)
                  (cons 11 pt)
-                 (cons 73 2))))
+                 (cons 73 2))
+    "цифру"))
 
 ;; Строит стрелку с подписью для фактической точки p.
 ;; p  — фактическая точка, от неё считается отклонение и сторона стрелки.
@@ -691,20 +783,25 @@
                          (- (cadr tp) (* (- uy py) (/ h 2.0)))))
           (setq c1 *gc-ol-preview-color*
                 c2 *gc-ol-preview-color2*)
-          (list c1 v1 v2          ; хвост
-                c1 a  v3          ; крыло наконечника
-                c1 b  v3          ; второе крыло
-                c1 a  b           ; основание наконечника
-                c2 t1 t2          ; рамка цифры
-                c2 t2 t3
-                c2 t3 t4
-                c2 t4 t1))))))
+          ;; ВАЖНО: grvecs рисует в ПСК, а вся геометрия у нас в МСК.
+          ;; Переводим каждую точку обратно, иначе предпросмотр уедет
+          ;; в сторону от того места, где реально появится стрелка.
+          (list c1 (gc-ol-u v1) (gc-ol-u v2)   ; хвост
+                c1 (gc-ol-u a)  (gc-ol-u v3)   ; крыло наконечника
+                c1 (gc-ol-u b)  (gc-ol-u v3)   ; второе крыло
+                c1 (gc-ol-u a)  (gc-ol-u b)    ; основание наконечника
+                c2 (gc-ol-u t1) (gc-ol-u t2)   ; рамка цифры
+                c2 (gc-ol-u t2) (gc-ol-u t3)
+                c2 (gc-ol-u t3) (gc-ol-u t4)
+                c2 (gc-ol-u t4) (gc-ol-u t1)))))))
 
 ;; Живой предпросмотр: пока двигаешь мышь, показывает, где встанет стрелка.
 ;; ПОЧЕМУ grread, а не getpoint: getpoint не умеет показывать произвольную
 ;; графику под курсором. grread отдаёт координаты на каждом движении, grvecs
 ;; рисует временные векторы, а redraw их стирает перед следующим кадром.
 ;; Возвращает точку либо nil, если пользователь отказался.
+;; p приходит в МСК. Точка из grread — в ПСК, поэтому переводим её
+;; перед расчётом геометрии, а результат возвращаем тоже в МСК.
 (defun gc-ol-pick-place (p txt / gr code res pt prev vecs)
   (princ (strcat "\nГде поставить подпись — отклонение " txt
                  " мм (место сносится на прямую): "))
@@ -723,12 +820,12 @@
          (progn
            (setq prev pt)
            (redraw)
-           (setq vecs (gc-ol-preview-vecs p pt))
+           (setq vecs (gc-ol-preview-vecs p (gc-ol-w pt)))
            (if vecs (grvecs vecs)))))
       ;; 3 — клик левой кнопкой, место выбрано.
       ((= code 3)
        (redraw)
-       (setq res (cadr gr)))
+       (setq res (gc-ol-w (cadr gr))))
       ;; всё остальное — клавиша или другая кнопка мыши: отказ.
       (T
        (redraw)
@@ -853,9 +950,19 @@
       (princ "\n    масштаб аннотаций в строке состояния.")))
   name)
 
+;; ПСК больше не мешает работе (вся математика в МСК), но сказать о ней
+;; стоит: если Шамиль увидит подписи не там, где ждал, это первая подсказка.
+(defun gc-ol-check-ucs ( / )
+  (if (gc-ol-wcs-p)
+    (princ "\n[i] ПСК: мировая.")
+    (progn
+      (princ "\n[i] ПСК: пользовательская (повёрнута или сдвинута).")
+      (princ "\n    Учтено — подписи ставятся туда, куда вы указываете."))))
+
 (defun gc-ol-check-env ( / )
   (gc-ol-check-layer *gc-ol-layer*)
   (gc-ol-check-style)
+  (gc-ol-check-ucs)
   (princ))
 
 ;;; ====================================================================
@@ -922,7 +1029,7 @@
   (cond
     ;; Enter — запасное текстовое меню.
     ((null p)  (gc-ol-menu))
-    ((listp p) (gc-ol-label p nil) T)
+    ((listp p) (gc-ol-label (gc-ol-w p) nil) T)
     ((gc-ol-is-word p '("Выход" "В")) nil)
     (T         (gc-ol-do-option p))))
 
@@ -933,7 +1040,7 @@
 ;; Режим «Место»: сначала фактическая точка, потом место подписи —
 ;; с живым предпросмотром под курсором.
 ;; Возвращает T — продолжать, nil — выйти из команды.
-(defun gc-ol-place-step (prm / p g at)
+(defun gc-ol-place-step (prm / p wp g at)
   (initget "Линия Л Сторона С Направление Н Переворот П Текст Т Режим Р Выход В")
   (setq p (getpoint (strcat "\nФактическая точка" prm)))
   (cond
@@ -941,18 +1048,23 @@
     ((listp p)
      ;; Величина известна сразу — показываем её в подсказке, пока выбираешь
      ;; место: от места она не зависит, только от самой точки.
-     (setq g (gc-ol-geom p nil))
+     ;; wp — та же точка в МСК; p оставляем как есть, он нужен getpoint
+     ;; базовой точкой, а getpoint ждёт ПСК.
+     (setq wp (gc-ol-w p))
+     (setq g (gc-ol-geom wp nil))
      (if (null g)
        (princ "\n[ОШИБКА] Проектная прямая не задана.")
        (progn
+         ;; gc-ol-pick-place возвращает уже МСК, getpoint — ПСК.
          (setq at (if *gc-ol-preview*
-                    (gc-ol-pick-place p (nth 6 g))
-                    (getpoint p (strcat "\nГде поставить подпись — отклонение "
-                                        (nth 6 g)
-                                        " мм (место сносится на прямую): "))))
+                    (gc-ol-pick-place wp (nth 6 g))
+                    (gc-ol-w
+                      (getpoint p (strcat "\nГде поставить подпись — отклонение "
+                                          (nth 6 g)
+                                          " мм (место сносится на прямую): ")))))
          (if (null at)
            (princ "\n[!] Место не указано, подпись не поставлена.")
-           (gc-ol-label p at))))
+           (gc-ol-label wp at))))
      T)
     ((gc-ol-is-word p '("Выход" "В")) nil)
     (T (gc-ol-do-option p))))
@@ -1047,5 +1159,5 @@
 ;; OL -> ЩД
 (defun c:щд ( / ) (c:ol))
 (defun c:ЩД ( / ) (c:ol))
-(princ "\n[gc] ol.lsp v12 загружен. Команда: OL | рус. раскладка: ЩД")
+(princ "\n[gc] ol.lsp v13 загружен. Команда: OL | рус. раскладка: ЩД")
 (princ)

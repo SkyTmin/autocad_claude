@@ -1,7 +1,18 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v23)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v24)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v24: 1) ANNOTATIVNYY stil bolshe ne vybiraetsya. Takoy tekst viden tolko
+;;;         pri vybrannom masshtabe annotaciy -- inache sozdaetsya, no ne
+;;;         otobrazhaetsya. Ranshe pro eto tolko preduprezhdali.
+;;;      2) Sozdanie sobstvennogo stilya GC-Tekst teper proveryaetsya. Esli
+;;;         entmake stilya ne proshel, a imya vse ravno vozvrashchalos, to
+;;;         KAZHDYY entmake teksta so ssylkoy na nesushchestvuyushchiy stil
+;;;         molcha provalivalsya -- i podpisey ne bylo, bez soobshcheniy.
+;;;      3) Kazhdyy entmake proveryaetsya i govorit vsluh, esli chertezh
+;;;         otkazal v sozdanii obekta. SV rabotaet v MSK (koordinaty berutsya
+;;;         iz DXF), poetomu pravka PSK iz ol.lsp v13 emu ne nuzhna.
 ;;;
 ;;; v23: komandy zaregistrirovany i v russkoy raskladke -- te zhe bukvy
 ;;;      na teh zhe klavishah YCUKEN. Shamil chasto nabiraet komandu,
@@ -403,25 +414,62 @@
                      '(42 . 2.5)
                      (cons 3 font)
                      '(4 . "")))
-      (princ (strcat "\n[i] Создан текстовый стиль " "GC-Текст"
-                     " (шрифт " font ", высота переменная):"))
-      (princ "\n    у всех подходящих стилей чертежа высота фиксирована,")
-      (princ "\n    а с ней графика не масштабируется.")))
-  "GC-Текст")
+      (if (tblsearch "STYLE" "GC-Текст")
+        (progn
+          (princ (strcat "\n[i] Создан текстовый стиль " "GC-Текст"
+                         " (шрифт " font ", высота переменная):"))
+          (princ "\n    у всех подходящих стилей чертежа высота фиксирована")
+          (princ "\n    или они аннотативные — с такими текст не виден.")))))
+  ;; ПОЧЕМУ проверяем ещё раз: если entmake стиля не прошёл, а мы всё равно
+  ;; вернём "GC-Текст", то КАЖДЫЙ entmake текста со ссылкой на несуществующий
+  ;; стиль молча провалится — и подписей не будет, без единого сообщения.
+  (if (tblsearch "STYLE" "GC-Текст")
+    "GC-Текст"
+    (progn
+      (princ "\n[!] Не удалось создать стиль GC-Текст. Беру Standard.")
+      "Standard")))
 
-;; Цепочка подбора. Берём первый стиль, который И существует, И имеет
-;; переменную высоту.
+;; Аннотативный стиль хранит признак в XDATA приложения AcadAnnotative.
+(defun gc-pile-style-annotative-p (name / o)
+  (setq o (tblobjname "STYLE" name))
+  (if o
+    (if (assoc -3 (entget o '("AcadAnnotative"))) T nil)
+    nil))
+
+;; Стиль годится, если он есть, высота у него переменная И он НЕ аннотативный.
+;; ПОЧЕМУ аннотативный не годится: такой текст показывается только при
+;; выбранном масштабе аннотаций. Если масштаб не задан или не совпадает,
+;; текст создаётся, но его не видно вообще.
+(defun gc-pile-style-ok-p (name / )
+  (if (gc-pile-style-var-h-p name)
+    (if (gc-pile-style-annotative-p name) nil T)
+    nil))
+
+;; Цепочка подбора. Берём первый стиль, который прошёл проверку.
 (defun gc-pile-text-style ( / res)
   (foreach c '("МГС" "GOSTB" "ISOCPEUR" "Standard")
-    (if (and (null res) (gc-pile-style-var-h-p c))
+    (if (and (null res) (gc-pile-style-ok-p c))
       (setq res c)))
   (if res res (gc-pile-make-own-style)))
 
+;; entmake молча возвращает nil, если чертёж отказал в создании объекта
+;; (нет слоя, нет стиля, слой заблокирован). Молчание — худшее, что может
+;; быть: команда «отработала», а на чертеже пусто. Говорим вслух.
+(defun gc-pile-emake (lst what / e)
+  (setq e (entmake lst))
+  (if (null e)
+    (progn
+      (princ (strcat "\n[ОШИБКА] Чертёж не принял " what "."))
+      (princ "\n    Проверьте слой (не заблокирован ли) и текстовый стиль.")
+      nil)
+    e))
+
 (defun gc-pile-draw-circle (cx cy z r layer)
-  (entmake (list '(0 . "CIRCLE")
+  (gc-pile-emake (list '(0 . "CIRCLE")
                  (cons 8 layer)
                  (cons 10 (list cx cy z))
-                 (cons 40 r))))
+                 (cons 40 r))
+    "окружность"))
 
 ;; Стрелка = LWPOLYLINE из 3 вершин: тонкий хвост, затем плавно сужающийся
 ;; наконечник во второй половине. Раньше здесь была LINE плюс треугольник
@@ -447,7 +495,7 @@
                       (+ (cadr start) (* uy (/ len 2.0)))))
       (setq head (* *gc-pile-arrow-head-k* len))
       (setq z (if (caddr start) (caddr start) 0.0))
-      (entmake
+      (gc-pile-emake
         (list '(0 . "LWPOLYLINE")
               '(100 . "AcDbEntity")
               (cons 8 layer)
@@ -457,10 +505,11 @@
               (cons 38 z)
               (cons 10 (list (car start) (cadr start))) (cons 40 0.0)  (cons 41 0.0)
               (cons 10 (list (car mid)   (cadr mid)))   (cons 40 head) (cons 41 0.0)
-              (cons 10 (list (car end)   (cadr end)))   (cons 40 0.0)  (cons 41 0.0))))))
+              (cons 10 (list (car end)   (cadr end)))   (cons 40 0.0)  (cons 41 0.0))
+        "стрелку"))))
 
 (defun gc-pile-draw-text-rot (pt text style layer rotation)
-  (entmake (list '(0 . "TEXT")
+  (gc-pile-emake (list '(0 . "TEXT")
                  (cons 8 layer)
                  (cons 7 style)
                  (cons 10 pt)
@@ -469,7 +518,8 @@
                  (cons 50 rotation)
                  (cons 72 1)
                  (cons 11 pt)
-                 (cons 73 2))))
+                 (cons 73 2))
+    "надпись"))
 
 (defun gc-pile-mm-rounded (mm)
   (rtos (abs mm) 2 0))
@@ -1034,5 +1084,5 @@
 ;; SVP -> ЫМЗ
 (defun c:ымз ( / ) (c:svp))
 (defun c:ЫМЗ ( / ) (c:svp))
-(princ "\n[gc] sv.lsp v23 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
+(princ "\n[gc] sv.lsp v24 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
 (princ)

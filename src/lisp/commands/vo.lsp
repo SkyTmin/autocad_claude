@@ -1,10 +1,19 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v11)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v12)
 ;;; Komandy:
 ;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
 ;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
+;;;
+;;; v12: GLAVNOE ISPRAVLENIE -- PSK (UCS). Sm. podrobnyy razbor v ol.lsp v13.
+;;;      Korotko: getpoint otdaet tochku v TEKUSHCHEY PSK, a entmake kladet
+;;;      obekt v MSK. V chertezhe s povernutoy ili sdvinutoy PSK podpis
+;;;      sozdavalas ne tam, kuda tykali, chasto voobshche za predelami ekrana --
+;;;      i eto vyglyadelo kak "nichego ne narisovalos".
+;;;      Teper mesto podpisi i vysota Z perevodyatsya v MSK cherez (trans p 1 0).
+;;;      Poputno: annotativnyy stil bolshe ne vybiraetsya, a kazhdyy entmake
+;;;      proveryaetsya i govorit vsluh, esli obekt ne sozdalsya.
 ;;;
 ;;; v11: komandy zaregistrirovany i v russkoy raskladke -- te zhe bukvy
 ;;;      na teh zhe klavishah YCUKEN. Shamil chasto nabiraet komandu,
@@ -408,6 +417,35 @@
   res)
 
 ;;; ====================================================================
+;;; ПСК И МСК
+;;; ====================================================================
+
+;; ПОЧЕМУ это важно. getpoint отдаёт точку в ТЕКУЩЕЙ ПСК, а entmake кладёт
+;; объект в МСК. Пока ПСК совпадает с мировой, разницы нет. Стоит ПСК
+;; повернуть или сдвинуть — те же числа означают уже другое место,
+;; и подпись создаётся в стороне, часто далеко за экраном. Снаружи это
+;; выглядит как «команда отработала, а на чертеже ничего нет».
+;; Высота Z из getpoint — тоже в ПСК: при наклонённой или поднятой ПСК
+;; отметка получалась бы неверной.
+;; Поэтому точку от пользователя сразу переводим в МСК.
+
+;; Дополняем точку до трёхмерной: trans ждёт полноценную точку.
+(defun gc-vo-3d (p)
+  (list (car p) (cadr p) (if (caddr p) (caddr p) 0.0)))
+
+;; ПСК -> МСК. 1 = ПСК, 0 = МСК.
+(defun gc-vo-w (p)
+  (if p (trans (gc-vo-3d p) 1 0) nil))
+
+;; Совпадает ли ПСК с МСК. Нужно только для сообщения пользователю.
+(defun gc-vo-wcs-p ( / o x)
+  (setq o (getvar "UCSORG")
+        x (getvar "UCSXDIR"))
+  (and o x
+       (< (distance o '(0.0 0.0 0.0)) 1.0e-9)
+       (< (distance x '(1.0 0.0 0.0)) 1.0e-9)))
+
+;;; ====================================================================
 ;;; ОТРИСОВКА ПОДПИСИ
 ;;; ====================================================================
 
@@ -462,24 +500,56 @@
                      '(42 . 2.5)
                      (cons 3 font)
                      '(4 . "")))
-      (princ (strcat "\n[i] Создан текстовый стиль " "GC-Текст"
-                     " (шрифт " font ", высота переменная):"))
-      (princ "\n    у всех подходящих стилей чертежа высота фиксирована,")
-      (princ "\n    а с ней графика не масштабируется.")))
-  "GC-Текст")
+      (if (tblsearch "STYLE" "GC-Текст")
+        (progn
+          (princ (strcat "\n[i] Создан текстовый стиль " "GC-Текст"
+                         " (шрифт " font ", высота переменная):"))
+          (princ "\n    у всех подходящих стилей чертежа высота фиксирована")
+          (princ "\n    или они аннотативные — с такими текст не виден.")))))
+  ;; ПОЧЕМУ проверяем ещё раз: если entmake стиля не прошёл, а мы всё равно
+  ;; вернём "GC-Текст", то КАЖДЫЙ entmake текста со ссылкой на несуществующий
+  ;; стиль молча провалится — и подписей не будет, без единого сообщения.
+  (if (tblsearch "STYLE" "GC-Текст")
+    "GC-Текст"
+    (progn
+      (princ "\n[!] Не удалось создать стиль GC-Текст. Беру Standard.")
+      (princ "\n    Если у Standard фиксированная высота или он аннотативный,")
+      (princ "\n    подписи могут выглядеть не так — задайте стиль вручную.")
+      "Standard")))
 
-;; Цепочка подбора. Берём первый стиль, который И существует, И имеет
-;; переменную высоту.
+;; Стиль годится, если он есть, высота у него переменная И он НЕ аннотативный.
+;; ПОЧЕМУ аннотативный не годится: такой текст показывается только при
+;; выбранном масштабе аннотаций. Если масштаб не задан или не совпадает,
+;; текст создаётся, но его не видно вообще. Раньше мы про это только
+;; предупреждали, а стиль всё равно брали. Теперь пропускаем.
+(defun gc-vo-style-ok-p (name / )
+  (if (gc-vo-style-var-h-p name)
+    (if (gc-vo-style-annotative-p name) nil T)
+    nil))
+
+;; Цепочка подбора. Берём первый стиль, который прошёл проверку.
 (defun gc-vo-text-style ( / res)
   (foreach c '("МГС" "GOSTB" "ISOCPEUR" "Standard")
-    (if (and (null res) (gc-vo-style-var-h-p c))
+    (if (and (null res) (gc-vo-style-ok-p c))
       (setq res c)))
   (if res res (gc-vo-make-own-style)))
+
+;; entmake молча возвращает nil, если чертёж отказал в создании объекта
+;; (нет слоя, нет стиля, слой заблокирован). Молчание — худшее, что может
+;; быть: команда «отработала», а на чертеже пусто. Говорим вслух.
+(defun gc-vo-emake (lst what / e)
+  (setq e (entmake lst))
+  (if (null e)
+    (progn
+      (princ (strcat "\n[ОШИБКА] Чертёж не принял " what "."))
+      (princ "\n    Смотрите сообщения о слое и текстовом стиле выше.")
+      nil)
+    e))
 
 ;; 72=1 / 73=2 — выравнивание Middle Center: подпись встаёт по центру клика.
 (defun gc-vo-draw-text (pt txt / )
   (gc-vo-ensure-layer *gc-vo-layer* *gc-vo-layer-color*)
-  (entmake (list '(0 . "TEXT")
+  (gc-vo-emake (list '(0 . "TEXT")
                  (cons 8 *gc-vo-layer*)
                  (cons 7 (gc-vo-text-style))
                  (cons 10 pt)
@@ -488,7 +558,8 @@
                  (cons 50 0.0)
                  (cons 72 1)
                  (cons 11 pt)
-                 (cons 73 2))))
+                 (cons 73 2))
+    "цифру"))
 
 ;;; ====================================================================
 ;;; ЗАПРОС ТОЧКИ
@@ -515,7 +586,9 @@
        (setq sel (getpoint prompt))
        (cond
          ((null sel)  (setq res "MENU"))
-         ((listp sel) (setq res (caddr sel)))
+         ;; Z берём из МСК: в наклонённой или поднятой ПСК то же число
+         ;; означало бы другую высоту, и отклонение вышло бы неверным.
+         ((listp sel) (setq res (caddr (gc-vo-w sel))))
          (T           (setq res sel))))
       (T
        (setq sel (entsel prompt))
@@ -609,9 +682,19 @@
       (princ "\n    масштаб аннотаций в строке состояния.")))
   name)
 
+;; ПСК больше не мешает работе (место подписи переводится в МСК), но сказать
+;; о ней стоит: если подписи встанут не там, где ждали, это первая подсказка.
+(defun gc-vo-check-ucs ( / )
+  (if (gc-vo-wcs-p)
+    (princ "\n[i] ПСК: мировая.")
+    (progn
+      (princ "\n[i] ПСК: пользовательская (повёрнута или сдвинута).")
+      (princ "\n    Учтено — подписи ставятся туда, куда вы указываете."))))
+
 (defun gc-vo-check-env ( / )
   (gc-vo-check-layer *gc-vo-layer*)
   (gc-vo-check-style)
+  (gc-vo-check-ucs)
   (princ))
 
 ;;; ====================================================================
@@ -683,7 +766,9 @@
                           "  -  проект " (gc-vo-fmt z-proj)
                           "  =  " txt))
            ;; --- Шаг 3: место подписи
-           (setq pt (getpoint "\nКуда поставить подпись: "))
+           ;; Сразу в МСК: entmake кладёт объект в мировые координаты,
+           ;; см. блок «ПСК И МСК».
+           (setq pt (gc-vo-w (getpoint "\nКуда поставить подпись: ")))
            (if (null pt)
              ;; Не выходим из команды: вычисление сделано, Шамиль мог просто
              ;; промахнуться — возвращаемся к следующей точке.
@@ -730,5 +815,5 @@
 ;; VO -> МЩ
 (defun c:мщ ( / ) (c:vo))
 (defun c:МЩ ( / ) (c:vo))
-(princ "\n[gc] vo.lsp v11 загружен. Команда: VO | рус. раскладка: МЩ")
+(princ "\n[gc] vo.lsp v12 загружен. Команда: VO | рус. раскладка: МЩ")
 (princ)

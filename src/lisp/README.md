@@ -28,6 +28,14 @@ tests/       # Тесты (по мере появления)
   Символов вне CP1251 в коде быть не должно (`≥`, `×`, `⇄` и т.п.).
   Проверка: `file -b --mime-encoding src/lisp/commands/*.lsp` — не должно
   показывать `utf-8`. Документация `.md` при этом остаётся в UTF-8.
+- **Вся математика — в МСК (мировой системе), перевод на границе ввода.**
+  `getpoint`/`grread` отдают точку в **текущей ПСК**, `entmake` кладёт объект
+  в **МСК**, `grvecs` и точки `ssget` — снова **ПСК**. При повёрнутой ПСК
+  смешение систем создаёт объекты далеко в стороне, и это выглядит как
+  «команда отработала, а на чертеже пусто». Правило и таблица —
+  `docs/conventions.md` → «Системы координат: ПСК и МСК».
+- **Текстовый стиль не должен быть ни с фиксированной высотой, ни
+  аннотативным**, а результат `entmake` всегда проверяется. См. там же.
 - Стиль и подробности — `docs/conventions.md`.
 
 ## Загрузка в Civil 3D
@@ -43,11 +51,11 @@ tests/       # Тесты (по мере появления)
 
 | Файл | Команда | Спека | Статус |
 |---|---|---|---|
-| `commands/sv.lsp` | `SV` (`ЫМ`), режимы 1/2/3 | [SPEC-001](../../specs/001-pile-deviation.md), [SPEC-002](../../specs/002-pile-multi-batch.md), [SPEC-004](../../specs/004-sv-combined.md) | v23, v18 подтверждено вручную (v23 — не проверено) |
-| `commands/sv.lsp` | `SVP` (`ЫМЗ`) | [SPEC-003](../../specs/003-pile-extension.md) | v23, v18 подтверждено вручную (v23 — не проверено) |
+| `commands/sv.lsp` | `SV` (`ЫМ`), режимы 1/2/3 | [SPEC-001](../../specs/001-pile-deviation.md), [SPEC-002](../../specs/002-pile-multi-batch.md), [SPEC-004](../../specs/004-sv-combined.md) | v24, v18 подтверждено вручную (v19–v24 — не проверено) |
+| `commands/sv.lsp` | `SVP` (`ЫМЗ`) | [SPEC-003](../../specs/003-pile-extension.md) | v24, v18 подтверждено вручную (v19–v24 — не проверено) |
 | `commands/vid.lsp` | `VID` (`МШВ`) / `GC-SELECT-BY-SIZE` | [SPEC-005](../../specs/005-vid-window-select.md) | v7, **не проверено** в Civil 3D |
-| `commands/vo.lsp` | `VO` (`МЩ`) / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v11, подтверждено вручную |
-| `commands/ol.lsp` | `OL` (`ЩД`) / `GC-LINE-DEVIATION` | [SPEC-007](../../specs/007-line-deviation.md) | v12, подтверждено вручную |
+| `commands/vo.lsp` | `VO` (`МЩ`) / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v12, v11 подтверждено вручную (правка ПСК — не проверено) |
+| `commands/ol.lsp` | `OL` (`ЩД`) / `GC-LINE-DEVIATION` | [SPEC-007](../../specs/007-line-deviation.md) | v13, v12 подтверждено вручную (правка ПСК — не проверено) |
 
 > **Три правила, добытые на отладке `vo.lsp` (6 ревизий до рабочей версии):**
 >
