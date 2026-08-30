@@ -1,7 +1,19 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v24)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v25)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v25: VOZVRASHCHENO RASPOLOZHENIE CIFR, deystvovavshee do v20.
+;;;      v20 unificirovala podpisi SV s ol.lsp: cifra X vsegda sverhu,
+;;;      cifra Y vsegda sleva. Dlya OL eto verno -- tam strelka ODNA.
+;;;      V SV strelok DVE i oni shodyatsya v ugol "G". Postoyannaya storona
+;;;      zagonyaet odnu iz cifr VNUTR etogo ugla, gde ona nalezaet na vtoruyu
+;;;      strelku. Shamil prines foto: do i kak nado.
+;;;      Teper obe cifry snova uhodyat vo VNESHNIE chetverti:
+;;;      vdol svoey strelki -- na ee seredinu, poperek -- na vysotu teksta
+;;;      v storonu, PROTIVOPOLOZHNUYU vtoroy strelke.
+;;;      Masshtab sohranen ot v21: vse vyvoditsya iz vysoty teksta.
+;;;      Strelki, shrift i knopka Tekst ne menyayutsya.
 ;;;
 ;;; v24: 1) ANNOTATIVNYY stil bolshe ne vybiraetsya. Takoy tekst viden tolko
 ;;;         pri vybrannom masshtabe annotaciy -- inache sozdaetsya, no ne
@@ -528,47 +540,44 @@
   (strcat (if (>= mm 0) "+" "")
           (rtos mm 2 0) " мм"))
 
-;; Точка вставки и поворот подписи у стрелки — правило из ol.lsp:
-;; середина стрелки плюс смещение на высоту текста по перпендикуляру,
-;; поворот вдоль стрелки с нормализацией, чтобы цифра не встала вверх ногами.
-;;
-;; ПОЧЕМУ это лучше прежнего: раньше сторона подписи считалась от знаков
-;; отклонения (sx, sy) и потому зависела от квадранта — цифра прыгала то над
-;; стрелкой, то под ней. Теперь смещение берётся от НОРМАЛИЗОВАННОГО
-;; направления, и сторона получается постоянной: у горизонтальной стрелки
-;; цифра всегда сверху, у вертикальной — всегда слева, куда бы стрелка
-;; ни смотрела. Ровно как в OL.
-;;
-;; Возвращает (точка угол) либо nil, если стрелка нулевой длины.
 ;; Длина стрелки выводится из высоты текста — те же пропорции, что в ol.lsp.
 (defun gc-pile-arrow-len ( / )
   (* *gc-pile-arrow-k* *gc-pile-text-h*))
 
-(defun gc-pile-text-at-arrow (start end / dx dy len ux uy mid ang td nx ny)
-  (setq dx  (- (car  end) (car  start))
-        dy  (- (cadr end) (cadr start))
-        len (sqrt (+ (* dx dx) (* dy dy))))
-  (if (< len 1.0e-9)
-    nil
-    (progn
-      (setq ux (/ dx len)
-            uy (/ dy len))
-      (setq mid (list (+ (car  start) (* ux (/ len 2.0)))
-                      (+ (cadr start) (* uy (/ len 2.0)))))
-      (setq ang (atan uy ux))
-      (if (or (> ang (/ pi 2.0)) (<= ang (- (/ pi 2.0))))
-        (setq ang (+ ang pi)))
-      (setq td (list (cos ang) (sin ang)))
-      (setq nx (- (cadr td))
-            ny (car  td))
-      (list (list (+ (car  mid) (* nx *gc-pile-text-h*))
-                  (+ (cadr mid) (* ny *gc-pile-text-h*))
-                  (caddr start))
-            ang))))
+
+;;; --------------------------------------------------------------------
+;;; РАСПОЛОЖЕНИЕ ЦИФР У ПАРЫ СТРЕЛОК
+;;;
+;;; Стрелки X и Y растут из одной базовой точки и образуют угол «Г».
+;;; Вокруг этого угла четыре четверти: две заняты самими стрелками,
+;;; две свободны. Цифры ставятся в СВОБОДНЫЕ:
+;;;
+;;;   вдоль своей стрелки  — на её середину;
+;;;   поперёк              — на высоту текста в сторону, ПРОТИВОПОЛОЖНУЮ
+;;;                          второй стрелке.
+;;;
+;;; ПОЧЕМУ не «всегда сверху / всегда слева», как в ol.lsp.
+;;; В OL стрелка ОДНА, и постоянная сторона там правильна: подписи ложатся
+;;; единообразно и чертёж не рябит. В SV стрелок ДВЕ. Постоянная сторона
+;;; неизбежно загоняет одну из цифр внутрь угла, где она налезает на вторую
+;;; стрелку: при X вправо и Y вверх цифра X «всегда сверху» садится прямо
+;;; на вертикальную стрелку. Это и сломала v20, унифицировав SV с OL.
+;;;
+;;; Знаки sx и sy здесь — не «зависимость от квадранта», от которой мы уходили
+;;; в v20, а единственный способ узнать, где лежит соседняя стрелка.
+;;;
+;;; Правило действовало до v20 и возвращено в v25 по фото Шамиля «до и как
+;;; надо». Величины те же, что и раньше, но выражены через высоту текста,
+;;; чтобы кнопка «Текст» масштабировала всё разом (это осталось от v21):
+;;;   вдоль  = половина длины стрелки = *gc-pile-arrow-k* * h / 2
+;;;   поперёк = высота текста         = h
+;;; При h = 0.200 это даёт 0.200 и 0.200 — как в исходном чертеже.
+;;; --------------------------------------------------------------------
 
 (defun gc-pile-draw-xy-deviation (base-pt dir-dx-mm dir-dy-mm label-x-mm label-y-mm
                                   arrow-layer text-layer color /
-                                  tstyle sx sy p-end-x p-end-y tx ty)
+                                  tstyle sx sy p-end-x p-end-y
+                                  along lat pt-text-x pt-text-y)
   (gc-pile-ensure-layer arrow-layer color)
   (gc-pile-ensure-layer text-layer color)
   (setq tstyle (gc-pile-text-style))
@@ -582,13 +591,24 @@
                       (caddr base-pt)))
   (gc-pile-draw-arrow base-pt p-end-x arrow-layer)
   (gc-pile-draw-arrow base-pt p-end-y arrow-layer)
-  ;; Подписи размещаются по правилу ol.lsp (см. gc-pile-text-at-arrow).
-  (setq tx (gc-pile-text-at-arrow base-pt p-end-x))
-  (setq ty (gc-pile-text-at-arrow base-pt p-end-y))
-  (if tx (gc-pile-draw-text-rot (car tx) (gc-pile-mm-rounded label-x-mm)
-                                tstyle text-layer (cadr tx)))
-  (if ty (gc-pile-draw-text-rot (car ty) (gc-pile-mm-rounded label-y-mm)
-                                tstyle text-layer (cadr ty)))
+  ;; См. блок «РАСПОЛОЖЕНИЕ ЦИФР У ПАРЫ СТРЕЛОК» выше.
+  (setq along (/ (gc-pile-arrow-len) 2.0)
+        lat   *gc-pile-text-h*)
+  ;; Цифра X: вдоль стрелки X, поперёк — прочь от стрелки Y.
+  (setq pt-text-x (list (+ (car  base-pt) (* sx along))
+                        (- (cadr base-pt) (* sy lat))
+                        (caddr base-pt)))
+  ;; Цифра Y: вдоль стрелки Y, поперёк — прочь от стрелки X.
+  (setq pt-text-y (list (- (car  base-pt) (* sx lat))
+                        (+ (cadr base-pt) (* sy along))
+                        (caddr base-pt)))
+  ;; Повороты постоянные: цифра X читается по горизонтали, цифра Y — снизу
+  ;; вверх. Вверх ногами ни одна не встаёт, поэтому нормализация угла,
+  ;; нужная в OL для произвольного направления, здесь ни к чему.
+  (gc-pile-draw-text-rot pt-text-x (gc-pile-mm-rounded label-x-mm)
+                         tstyle text-layer 0.0)
+  (gc-pile-draw-text-rot pt-text-y (gc-pile-mm-rounded label-y-mm)
+                         tstyle text-layer (/ pi 2.0))
   T)
 
 (defun gc-pile-draw-project-deviation (project-pt target-pt / dx-mm dy-mm p-base)
@@ -1084,5 +1104,5 @@
 ;; SVP -> ЫМЗ
 (defun c:ымз ( / ) (c:svp))
 (defun c:ЫМЗ ( / ) (c:svp))
-(princ "\n[gc] sv.lsp v24 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
+(princ "\n[gc] sv.lsp v25 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
 (princ)
