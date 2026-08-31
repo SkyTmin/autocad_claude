@@ -1,10 +1,21 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v14)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v15)
 ;;; Komandy:
 ;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
 ;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
+;;;
+;;; v15: KNOPKA "NAYTI" -- otbor tochek po vysote. Vvodite otmetku, vybiraete
+;;;      Vyshe ili Nizhe, i tochki po etu storonu ot otmetki okazyvayutsya
+;;;      vydelennymi s ruchkami -- srazu mozhno Delete, Move, svoystva.
+;;;      Komanda pri etom ZAVERSHAETSYA: poka ona rabotaet, s vydeleniem
+;;;      nichego ne sdelaesh, tak chto derzhat polzovatelya vnutri bessmyslenno.
+;;;      Tochki rovno na otmetke (v predelah 0.5 mm) ne popadayut ni v "vyshe",
+;;;      ni v "nizhe" -- ih chislo soobshchaetsya otdelno, chtoby ne bylo
+;;;      voprosa "pochemu eta tochka ne vybralas".
+;;;      Otmetka otbora hranitsya OTDELNO ot proektnoy: knopka ne dolzhna
+;;;      molcha menyat chuzhuyu nastroyku (docs/pitfalls.md -> П23).
 ;;;
 ;;; v14: PERESOBRANO UPRAVLENIE. Do v14 nastroyki nakaplivalis po odnoy
 ;;;      i nachali konfliktovat: "Rezhim" (odna otmetka / sprashivat kazhdyy
@@ -119,12 +130,18 @@
 ;; в выборку не попадает — иначе подписи налипли бы на линии и тексты.
 (setq *gc-vo-ssget-filter* '((0 . "POINT,AECC*POINT,AEC*POINT")))
 
+;; Допуск «точка ровно на отметке», м. 0.0005 = полмиллиметра: ближе этого
+;; две отметки после округления до миллиметра неразличимы.
+(setq *gc-vo-find-eps*    0.0005)
+
 ;;; НАСТРОЙКИ — живут между запусками до закрытия чертежа:
 ;;;   *gc-vo-proj-z*     — проектная отметка, м
 ;;;   *gc-vo-mode*       — режим работы: "ONE" одной / "SS" рамкой / "PAIR" парами
 ;;;   *gc-vo-fact-src*   — "OBJ" выбор объекта / "PT" клик с привязкой
 ;;;   *gc-vo-text-h*     — высота текста, м
 ;;;   *gc-vo-gap*        — зазор от точки до подписи в пакетном режиме, м
+;;;   *gc-vo-find-z*     — отметка последнего отбора «Найти», м
+;;;   *gc-vo-find-side*  — сторона отбора: "UP" выше / "DOWN" ниже
 ;;; Намеренно НЕ инициализируются при загрузке: AutoLISP возвращает nil для
 ;;; несвязанного символа, а сброс на nil при каждом APPLOAD стирал бы настройки.
 
@@ -564,6 +581,7 @@
     (princ "\n  3 или С — как выбирать точки: объектом / кликом")
     (princ "\n  4 или Т — высота текста подписи")
     (princ "\n  5 или З — зазор от точки до подписи в режиме «рамкой»")
+    (princ "\n  6 или Н — найти точки выше / ниже заданной отметки")
     (princ "\n  0 или К — выйти из команды")
     (princ "\n  Enter   — вернуться к работе")
     (setq s (gc-vo-trim (getstring T "\nВыбор: ")))
@@ -579,10 +597,12 @@
        (gc-vo-set-text-h))
       ((gc-vo-is-word s '("5" "з" "З" "зазор" "Зазор" "отступ"))
        (gc-vo-set-gap))
+      ((gc-vo-is-word s '("6" "н" "Н" "n" "N" "найти" "Найти" "отбор"))
+       (if (null (gc-vo-find)) (setq res nil done T)))
       ((gc-vo-is-word s '("0" "к" "К" "k" "K" "q" "Q" "выход" "Выход"))
        (setq res nil done T))
       (T (princ (strcat "\n[!] Не понял \"" s
-                        "\". Введите 1-5, 0 или просто Enter.")))))
+                        "\". Введите 1-6, 0 или просто Enter.")))))
   res)
 
 ;;; ====================================================================
@@ -818,6 +838,155 @@
   T)
 
 ;;; ====================================================================
+;;; НАЙТИ — ОТБОР ТОЧЕК ПО ВЫСОТЕ
+;;; ====================================================================
+
+;; Задача Шамиля: «выбираю высоту, ввожу 4.900 и после выбрать ниже по этой
+;; отметке или выше. И точки, которые ниже или выше, выбираются».
+;;
+;; ПОЧЕМУ отдельная отметка, а не проектная: кнопка не должна молча менять
+;; чужую настройку — это ровно та ошибка, из-за которой пересобирали
+;; управление в v14 (docs/pitfalls.md -> П23). Проектная отметка лишь
+;; ПРЕДЛАГАЕТСЯ как умолчание при первом отборе: чаще всего искать надо
+;; именно относительно неё.
+
+(defun gc-vo-find-side-name ( / )
+  (if (= *gc-vo-find-side* "DOWN") "ниже" "выше"))
+
+;; Отметка отбора. Умолчание показываем только если есть что предложить,
+;; и всегда печатаем, что в итоге взято: молчаливая подстановка прошлого
+;; значения уже была дефектом (docs/pitfalls.md -> П8).
+;; Возвращает число либо nil при отказе.
+(defun gc-vo-ask-find-z ( / dflt res s val)
+  (setq dflt (cond (*gc-vo-find-z*) (*gc-vo-proj-z*) (T nil)))
+  (princ "\n\n--- НАЙТИ ТОЧКИ ПО ВЫСОТЕ ---")
+  (princ "\nВведите отметку, относительно которой отбирать, в метрах.")
+  (princ "\nНапример 4,900. Запятая и точка равнозначны.")
+  (if (and dflt (null *gc-vo-find-z*))
+    (princ "\nПредлагается текущая проектная отметка — можно ввести другую."))
+  (setq res nil)
+  (while (null res)
+    ;; getstring с флагом T — иначе ввод обрывается на пробеле (П13).
+    (setq s (gc-vo-trim
+              (getstring T (strcat "\nОтметка отбора, м"
+                                   (if dflt (strcat " <" (gc-vo-fmt dflt) ">") "")
+                                   ": "))))
+    (cond
+      ((= s "")
+       (if dflt
+         (setq res dflt)
+         (progn
+           (princ "\n[i] Отбор отменён: отметка не задана.")
+           (setq res 'CANCEL))))
+      (T
+       (setq val (gc-vo-parse-num s))
+       (if val
+         (setq res val)
+         (princ (strcat "\n[!] Не понял \"" s "\". Нужно число вида 4,900"))))))
+  (if (equal res 'CANCEL) nil res))
+
+;; Сторона отбора. Отдельными кнопками с названиями, а не переключателем.
+;; Возвращает "UP" / "DOWN" либо nil при отказе.
+(defun gc-vo-ask-find-side (z / kw)
+  (princ (strcat "\n\nОтносительно отметки " (gc-vo-fmt z) " м:"))
+  (princ "\n  Выше — точки, у которых Z больше этой отметки")
+  (princ "\n  Ниже — точки, у которых Z меньше этой отметки")
+  (princ (strcat "\nТочки ровно на отметке (в пределах "
+                 (rtos (* 1000.0 *gc-vo-find-eps*) 2 1)
+                 " мм) не попадут ни туда, ни туда."))
+  (initget "Выше В Ниже Н")
+  (setq kw (getkword (strcat "\nОтобрать [Выше/Ниже] <"
+                             (if (= *gc-vo-find-side* "DOWN") "Ниже" "Выше")
+                             ">: ")))
+  (cond
+    ((null kw)
+     ;; Enter — берём то, что показано в подсказке, и говорим об этом вслух.
+     (princ (strcat "\n[i] Взято: " (gc-vo-find-side-name)))
+     *gc-vo-find-side*)
+    ((gc-vo-is-word kw '("Ниже" "Н")) (setq *gc-vo-find-side* "DOWN"))
+    (T                                (setq *gc-vo-find-side* "UP"))))
+
+;; Откуда брать точки: выделенные рамкой либо весь чертёж.
+;; ПОЧЕМУ спрашиваем: на большом чертеже «все точки ниже 4,900» — это может
+;; быть половина съёмки с других участков. Enter оставляет прежнее поведение
+;; «искать везде», но выбор осознанный.
+(defun gc-vo-find-source ( / ss)
+  (princ "\n\nГде искать: выделите область рамкой")
+  (princ "\nили нажмите Enter, чтобы искать по всему чертежу.")
+  (princ "\nВыберите объекты: ")
+  (setq ss (ssget *gc-vo-ssget-filter*))
+  (if ss
+    (progn
+      (princ (strcat "\n[i] Ищем среди выделенных точек: " (itoa (sslength ss))))
+      ss)
+    (progn
+      (setq ss (ssget "_X" *gc-vo-ssget-filter*))
+      (if ss
+        (princ (strcat "\n[i] Ищем по всему чертежу, точек: "
+                       (itoa (sslength ss))))
+        (princ "\n[!] В чертеже нет точек."))
+      ss)))
+
+;; Отбор. Возвращает набор отобранных точек либо nil.
+;; Заодно считает, сколько точек оказалось ровно на отметке и сколько
+;; пришлось пропустить без высоты — молча терять объекты нельзя.
+(defun gc-vo-find-filter (ss z side / i n ent c out same skip dz)
+  (setq out (ssadd) same 0 skip 0 i 0 n (sslength ss))
+  (while (< i n)
+    (setq ent (ssname ss i))
+    (setq c   (gc-vo-entity-xyz ent))
+    (if (null c)
+      (setq skip (1+ skip))
+      (progn
+        (setq dz (- (caddr c) z))
+        (cond
+          ((< (abs dz) *gc-vo-find-eps*) (setq same (1+ same)))
+          ((if (= side "DOWN") (< dz 0.0) (> dz 0.0)) (ssadd ent out))
+          (T nil))))
+    (setq i (1+ i)))
+  (if (> same 0)
+    (princ (strcat "\n[i] Ровно на отметке: " (itoa same)
+                   " — они не отобраны ни как выше, ни как ниже.")))
+  (if (> skip 0)
+    (princ (strcat "\n[!] Пропущено объектов без высоты: " (itoa skip))))
+  (if (> (sslength out) 0) out nil))
+
+;; Кнопка «Найти». Возвращает T — продолжать работу, nil — выйти из команды.
+;;
+;; ПОЧЕМУ после удачного отбора команда ЗАВЕРШАЕТСЯ: пока VO работает,
+;; с выделением ничего не сделать — ни удалить, ни подвинуть, ни свойства
+;; задать. Держать пользователя внутри команды с готовым выделением
+;; бессмысленно. Отбор ничего не нашёл — остаёмся, чтобы можно было сразу
+;; повторить с другой отметкой.
+(defun gc-vo-find ( / z side ss out)
+  (setq z (gc-vo-ask-find-z))
+  (cond
+    ((null z) T)
+    (T
+     (setq *gc-vo-find-z* z)
+     (setq side (gc-vo-ask-find-side z))
+     (setq ss (gc-vo-find-source))
+     (cond
+       ((null ss) T)
+       (T
+        (princ (strcat "\n[i] Отбор: точки " (gc-vo-find-side-name)
+                       " отметки " (gc-vo-fmt z) " м"))
+        (setq out (gc-vo-find-filter ss z side))
+        (cond
+          ((null out)
+           (princ (strcat "\n[i] Подходящих точек не нашлось. Попробуйте"
+                          " другую отметку или сторону."))
+           T)
+          (T
+           ;; sssetfirst оставляет объекты выделенными с ручками после выхода
+           ;; из команды — сразу можно Delete / Move / задать свойства.
+           (sssetfirst nil out)
+           (princ (strcat "\n[i] Отобрано точек: " (itoa (sslength out))))
+           (princ "\n[i] Они выделены. VO завершена, чтобы с ними можно было")
+           (princ "\n    работать: удалить, подвинуть, задать свойства.")
+           nil)))))))
+
+;;; ====================================================================
 ;;; КНОПКИ — СВОЙ НАБОР НА КАЖДЫЙ РЕЖИМ
 ;;; ====================================================================
 
@@ -828,19 +997,25 @@
 ;; ПОЧЕМУ каждое слово продублировано одной буквой: для кириллицы AutoCAD
 ;; не распознаёт заглавную букву как сокращение и требует слово целиком
 ;; (docs/pitfalls.md -> П7). Первые буквы у всех кнопок разные:
-;; Р, О, С, Т, З, В.
+;; Р, О, С, Т, З, Н, В.
+;;
+;; «Найти» есть во всех режимах: отбор по высоте ни от одной настройки
+;; не зависит и ни одну не меняет.
 
 (defun gc-vo-keys ( / )
   (cond
-    ((= *gc-vo-mode* "SS")   "Режим Р Отметка О Текст Т Зазор З Выход В")
-    ((= *gc-vo-mode* "PAIR") "Режим Р Способ С Текст Т Выход В")
-    (T                       "Режим Р Отметка О Способ С Текст Т Выход В")))
+    ((= *gc-vo-mode* "SS")
+     "Режим Р Отметка О Текст Т Зазор З Найти Н Выход В")
+    ((= *gc-vo-mode* "PAIR")
+     "Режим Р Способ С Текст Т Найти Н Выход В")
+    (T
+     "Режим Р Отметка О Способ С Текст Т Найти Н Выход В")))
 
 (defun gc-vo-prm ( / )
   (cond
-    ((= *gc-vo-mode* "SS")   " [Режим/Отметка/Текст/Зазор/Выход]")
-    ((= *gc-vo-mode* "PAIR") " [Режим/Способ/Текст/Выход]")
-    (T                       " [Режим/Отметка/Способ/Текст/Выход]")))
+    ((= *gc-vo-mode* "SS")   " [Режим/Отметка/Текст/Зазор/Найти/Выход]")
+    ((= *gc-vo-mode* "PAIR") " [Режим/Способ/Текст/Найти/Выход]")
+    (T                       " [Режим/Отметка/Способ/Текст/Найти/Выход]")))
 
 ;;; ====================================================================
 ;;; ЗАПРОС ТОЧКИ
@@ -898,6 +1073,7 @@
     ((gc-vo-is-word kw '("Способ"  "С"))   (gc-vo-set-fact-src) T)
     ((gc-vo-is-word kw '("Текст"   "Т"))   (gc-vo-set-text-h) T)
     ((gc-vo-is-word kw '("Зазор"   "З"))   (gc-vo-set-gap) T)
+    ((gc-vo-is-word kw '("Найти"   "Н"))   (gc-vo-find))
     ((gc-vo-is-word kw '("Выход"   "В"))   nil)
     (T (princ (strcat "\n[!] Кнопка \"" kw "\" не распознана.")) T)))
 
@@ -991,7 +1167,8 @@
   (if (null *gc-vo-mode*)      (setq *gc-vo-mode*      "ONE"))
   (if (null *gc-vo-fact-src*)  (setq *gc-vo-fact-src*  "OBJ"))
   (if (null *gc-vo-text-h*)    (setq *gc-vo-text-h*    *gc-vo-text-h-init*))
-  (if (null *gc-vo-gap*)       (setq *gc-vo-gap*       *gc-vo-gap-init*)))
+  (if (null *gc-vo-gap*)       (setq *gc-vo-gap*       *gc-vo-gap-init*))
+  (if (null *gc-vo-find-side*) (setq *gc-vo-find-side* "UP")))
 
 (defun gc-vo-intro ( / )
   (princ "\n\n=== VO — отклонение фактической высоты от проектной ===")
@@ -1008,6 +1185,11 @@
   (princ "\n  Способ  — точки объектом или кликом (Одной, Парами)")
   (princ "\n  Зазор   — отступ подписи от точки   (Рамкой)")
   (princ "\n  Текст   — высота текста            (везде)")
+  (princ "\n")
+  (princ "\nОтдельно от режимов:")
+  (princ "\n  Найти   — отобрать точки выше или ниже заданной отметки.")
+  (princ "\n            Найденные остаются выделенными, команда завершается,")
+  (princ "\n            чтобы с ними сразу можно было работать.")
   (princ "\n")
   (princ "\nКаждая настройка открывает свои кнопки с названиями — вслепую")
   (princ "\nничего не переключается.")
@@ -1146,5 +1328,5 @@
 ;; VO -> МЩ
 (defun c:мщ ( / ) (c:vo))
 (defun c:МЩ ( / ) (c:vo))
-(princ "\n[gc] vo.lsp v14 загружен. Команда: VO | рус. раскладка: МЩ")
+(princ "\n[gc] vo.lsp v15 загружен. Команда: VO | рус. раскладка: МЩ")
 (princ)
