@@ -1,10 +1,33 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v13)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v14)
 ;;; Komandy:
 ;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
 ;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
+;;;
+;;; v14: PERESOBRANO UPRAVLENIE. Do v14 nastroyki nakaplivalis po odnoy
+;;;      i nachali konfliktovat: "Rezhim" (odna otmetka / sprashivat kazhdyy
+;;;      raz), "Sposob" (obektom / klikom) i knopka-deystvie "Pachkoy" byli
+;;;      nezavisimy, no na dele zaviseli drug ot druga. Pachkoy molcha
+;;;      perebivala dve drugie nastroyki, a Sposob v ney voobshche ne
+;;;      primenyalsya. Shamil: "kasha-malasha, polnostyu peresobrat".
+;;;
+;;;      DVA PRINCIPA NOVOGO UPRAVLENIYA.
+;;;
+;;;      1. ODIN REZHIM RABOTY, vse ostalnoe emu podchineno.
+;;;         Odnoy  -- tykayu tochku, sam ukazyvayu mesto podpisi.
+;;;         Ramkoy -- vydelyayu vse tochki, podpisi vstayut sami.
+;;;         Parami -- proektnaya tochka, potom fakticheskaya (uklon, lestnica).
+;;;         Knopki pokazyvayutsya TOLKO te, chto rabotayut v etom rezhime.
+;;;         Poetomu konfliktovat bolshe nechemu: v Ramkoy net "Sposoba"
+;;;         (tam ssget), v Parami net "Otmetki" (ona u kazhdoy pary svoya),
+;;;         v Odnoy i Parami net "Zazora" (mesto ukazyvaesh sam).
+;;;
+;;;      2. NIKAKIH SLEPYH PEREKLYUCHATELEY. Ranshe "Rezhim" i "Sposob"
+;;;         perekidyvalis po nazhatiyu, i bylo ne vidno, kuda popadesh.
+;;;         Teper kazhdaya takaya knopka otkryvaet SVOI knopki s nazvaniyami,
+;;;         kak eto uzhe sdelano u "Otmetki" s v5.
 ;;;
 ;;; v13: PAKETNYY REZHIM -- knopka "Pachkoy". Vydelil vse tochki ramkoy,
 ;;;      nazhal Enter -- podpisi vstali u kazhdoy srazu. Ranshe tochki
@@ -98,7 +121,7 @@
 
 ;;; НАСТРОЙКИ — живут между запусками до закрытия чертежа:
 ;;;   *gc-vo-proj-z*     — проектная отметка, м
-;;;   *gc-vo-proj-mode*  — "TPL" одна отметка на все точки / "ASK" спрашивать
+;;;   *gc-vo-mode*       — режим работы: "ONE" одной / "SS" рамкой / "PAIR" парами
 ;;;   *gc-vo-fact-src*   — "OBJ" выбор объекта / "PT" клик с привязкой
 ;;;   *gc-vo-text-h*     — высота текста, м
 ;;;   *gc-vo-gap*        — зазор от точки до подписи в пакетном режиме, м
@@ -288,17 +311,14 @@
 (defun gc-vo-apply-proj (z / )
   (setq *gc-vo-proj-z* z)
   (princ (strcat "\n[i] Проектная отметка теперь " (gc-vo-fmt z) " м"))
-  ;; ПОЧЕМУ здесь же переключаем режим: в режиме «спрашивать каждый раз»
-  ;; заданная отметка вообще не используется — команда берёт проектную высоту
-  ;; у отдельной точки перед каждой фактической. Пользователь, задавший
-  ;; отметку явно, хочет сравнивать именно с ней, иначе действие было бы
-  ;; бессмысленным, а команда продолжала бы требовать проектную точку.
-  (if (= *gc-vo-proj-mode* "ASK")
+  ;; Режим здесь НЕ трогаем. До v14 задание отметки молча переключало режим,
+  ;; и это была часть той самой каши. Теперь кнопка «Отметка» вообще не
+  ;; показывается в режиме «Парами», где отметка не используется, поэтому
+  ;; и переключать нечего.
+  (if (= *gc-vo-mode* "PAIR")
     (progn
-      (setq *gc-vo-proj-mode* "TPL")
-      (princ "\n[i] Режим переключён: одна отметка на все точки.")
-      (princ "\n    Дальше сразу выбирайте фактические точки.")
-      (princ "\n    Вернуть запрос проектной точки — кнопка Режим.")))
+      (princ "\n[!] Сейчас режим «Парами» — общая отметка в нём не участвует.")
+      (princ "\n    Чтобы считать от неё, смените режим кнопкой Режим.")))
   z)
 
 ;; Ввод отметки числом.
@@ -361,43 +381,103 @@
 ;;; ОСТАЛЬНЫЕ НАСТРОЙКИ
 ;;; ====================================================================
 
-(defun gc-vo-proj-mode-name ( / )
-  (if (= *gc-vo-proj-mode* "ASK")
-    "спрашивать проектную точку каждый раз"
-    "одна отметка на все точки"))
+;;; --------------------------------------------------------------------
+;;; РЕЖИМ РАБОТЫ — ГЛАВНАЯ НАСТРОЙКА, ЕЙ ПОДЧИНЕНО ВСЁ ОСТАЛЬНОЕ
+;;;
+;;; До v14 было три независимых настройки, которые на деле зависели друг
+;;; от друга, и они дрались между собой. Теперь развилка одна:
+;;;
+;;;   Одной  — тыкаю точку, сам указываю место подписи. Отметка общая.
+;;;   Рамкой — выделяю все точки рамкой, подписи встают сами. Отметка общая.
+;;;   Парами — проектная точка, затем фактическая. Общая отметка не нужна.
+;;;
+;;; Что применимо в каком режиме:
+;;;
+;;;   настройка          Одной   Рамкой   Парами
+;;;   Отметка (общая)      +       +        -      (в Парами своя у каждой пары)
+;;;   Способ выбора        +       -        +      (в Рамкой выбор рамкой)
+;;;   Зазор                -       +        -      (в остальных место указываю сам)
+;;;   Текст                +       +        +
+;;;
+;;; Кнопки показываются ТОЛЬКО применимые. Поэтому нажать неподходящую
+;;; настройку невозможно, и конфликтовать нечему.
+;;; --------------------------------------------------------------------
+
+(defun gc-vo-mode-name ( / )
+  (cond
+    ((= *gc-vo-mode* "SS")   "рамкой — все точки разом")
+    ((= *gc-vo-mode* "PAIR") "парами — проектная и фактическая точка")
+    (T                       "одной — точка, затем место подписи")))
+
+(defun gc-vo-mode-word ( / )
+  (cond ((= *gc-vo-mode* "SS") "Рамкой") ((= *gc-vo-mode* "PAIR") "Парами")
+        (T "Одной")))
+
+;; ПОЧЕМУ вложенный запрос, а не переключение по нажатию: у слепого
+;; переключателя не видно, куда попадёшь. Шамиль: «а то хрен знает, на что
+;; ты нажимаешь». Тот же приём уже работает у кнопки «Отметка» с v5.
+(defun gc-vo-set-mode ( / kw)
+  (princ (strcat "\n\n--- РЕЖИМ РАБОТЫ --- сейчас: " (gc-vo-mode-name)))
+  (princ "\n  Одной  — щёлкаете точку, потом указываете место подписи.")
+  (princ "\n           Сравнивается с общей проектной отметкой.")
+  (princ "\n  Рамкой — выделяете все точки рамкой, подписи встают сами")
+  (princ "\n           левее каждой точки. Тоже от общей отметки.")
+  (princ "\n  Парами — сначала проектная точка, потом фактическая, и так")
+  (princ "\n           каждый раз. Для уклона, лестницы, разных отметок.")
+  (initget "Одной О Рамкой Р Парами П")
+  (setq kw (getkword (strcat "\nРежим [Одной/Рамкой/Парами] <"
+                             (gc-vo-mode-word) ">: ")))
+  (cond
+    ;; Enter — оставить как было, но сказать об этом вслух: молчаливый
+    ;; возврат прежнего значения уже был дефектом (docs/pitfalls.md -> П8).
+    ((null kw)
+     (princ (strcat "\n[i] Отмена. Режим остался: " (gc-vo-mode-name))))
+    (T
+     (setq *gc-vo-mode*
+       (cond ((gc-vo-is-word kw '("Рамкой" "Р")) "SS")
+             ((gc-vo-is-word kw '("Парами" "П")) "PAIR")
+             (T                                  "ONE")))
+     (princ (strcat "\n[i] Режим: " (gc-vo-mode-name)))
+     (cond
+       ((= *gc-vo-mode* "SS")
+        (princ "\n    Кнопки показываются ПЕРЕД выборкой: ssget не умеет их")
+        (princ "\n    показывать сам. Enter в том запросе ведёт к выборке."))
+       ((= *gc-vo-mode* "PAIR")
+        (princ "\n    Общая отметка в этом режиме не используется."))
+       (T nil))
+     ;; Отметка нужна в Одной и Рамкой — спросим сразу, а не посреди работы.
+     (if (and (/= *gc-vo-mode* "PAIR") (null *gc-vo-proj-z*))
+       (gc-vo-set-proj))))
+  *gc-vo-mode*)
 
 (defun gc-vo-fact-src-name ( / )
   (if (= *gc-vo-fact-src* "PT")
     "кликом по месту (нужна объектная привязка)"
     "выбором объекта"))
 
-;; ПОЧЕМУ переключатель, а не вложенное меню: у опции всего два состояния,
-;; и любое вложенное меню — лишний шанс застрять.
-(defun gc-vo-toggle-proj-mode ( / )
-  (setq *gc-vo-proj-mode* (if (= *gc-vo-proj-mode* "ASK") "TPL" "ASK"))
-  (princ (strcat "\n[i] Режим отметки: " (gc-vo-proj-mode-name)))
-  (if (= *gc-vo-proj-mode* "ASK")
-    (princ (strcat "\n    Перед каждой фактической точкой команда спросит"
-                   " проектную.\n    Подходит для уклона, лестницы, разных"
-                   " отметок по осям."))
-    (princ (strcat "\n    Одна отметка сравнивается со всеми точками."
-                   "\n    Подходит для плиты, площадки, одного горизонта.")))
-  (if (and (= *gc-vo-proj-mode* "TPL") (null *gc-vo-proj-z*))
-    (gc-vo-set-proj))
-  *gc-vo-proj-mode*)
+(defun gc-vo-fact-src-word ( / )
+  (if (= *gc-vo-fact-src* "PT") "Кликом" "Объектом"))
 
-(defun gc-vo-toggle-fact-src ( / )
-  (setq *gc-vo-fact-src* (if (= *gc-vo-fact-src* "PT") "OBJ" "PT"))
-  (princ (strcat "\n[i] Способ выбора точек: " (gc-vo-fact-src-name)))
-  (if (= *gc-vo-fact-src* "PT")
-    (princ (strcat "\n    Щёлкаете место в модели, высота берётся из точки"
-                   " клика.\n    ВНИМАНИЕ: нужна включённая объектная привязка"
-                   " (Узел, Конточка).\n    Без неё вернётся высота плоскости"
-                   " построений — обычно 0 — и\n    отклонение будет неверным,"
-                   " а команда об этом не узнает."))
-    (princ (strcat "\n    Щёлкаете прямо по объекту точки съёмки, берётся его"
-                   " высота Z.\n    Промах мимо объекта команда заметит"
-                   " и переспросит.")))
+;; Тоже вложенный запрос, а не переключатель — по той же причине.
+(defun gc-vo-set-fact-src ( / kw)
+  (princ (strcat "\n\n--- КАК ВЫБИРАТЬ ТОЧКИ --- сейчас: "
+                 (gc-vo-fact-src-name)))
+  (princ "\n  Объектом — щёлкаете прямо по объекту точки съёмки, берётся")
+  (princ "\n             его высота Z. Промах команда заметит и переспросит.")
+  (princ "\n  Кликом   — щёлкаете место в модели, высота берётся из точки")
+  (princ "\n             клика. НУЖНА объектная привязка (Узел, Конточка):")
+  (princ "\n             без неё вернётся высота плоскости построений, обычно")
+  (princ "\n             0, и отклонение будет неверным — молча.")
+  (initget "Объектом О Кликом К")
+  (setq kw (getkword (strcat "\nКак выбирать [Объектом/Кликом] <"
+                             (gc-vo-fact-src-word) ">: ")))
+  (cond
+    ((null kw)
+     (princ (strcat "\n[i] Отмена. Осталось: " (gc-vo-fact-src-name))))
+    (T
+     (setq *gc-vo-fact-src*
+       (if (gc-vo-is-word kw '("Кликом" "К")) "PT" "OBJ"))
+     (princ (strcat "\n[i] Точки выбираются " (gc-vo-fact-src-name)))))
   *gc-vo-fact-src*)
 
 (defun gc-vo-set-gap ( / res s val)
@@ -466,41 +546,43 @@
   (setq res T done nil)
   (while (not done)
     (princ "\n\n--- МЕНЮ VO ---")
+    (princ (strcat "\n  режим   : " (gc-vo-mode-name)))
     (princ (strcat "\n  отметка : "
-                   (if (= *gc-vo-proj-mode* "ASK")
-                     "спрашивается у каждой точки"
+                   (if (= *gc-vo-mode* "PAIR")
+                     "не нужна — у каждой пары своя"
                      (gc-vo-proj-disp))))
-    (princ (strcat "\n  точки   : " (gc-vo-fact-src-name)))
+    (princ (strcat "\n  точки   : "
+                   (if (= *gc-vo-mode* "SS")
+                     "выбираются рамкой"
+                     (gc-vo-fact-src-name))))
     (princ (strcat "\n  текст   : " (gc-vo-fmt *gc-vo-text-h*) " м"))
-    (princ (strcat "\n  зазор   : " (gc-vo-fmt *gc-vo-gap*) " м"))
+    (princ (strcat "\n  зазор   : " (gc-vo-fmt *gc-vo-gap*) " м"
+                   (if (= *gc-vo-mode* "SS") "" "  (в этом режиме не нужен)")))
     (princ "\n")
-    (princ "\n  1 или О — проектная отметка")
-    (princ "\n  2 или Р — режим отметки: одна на все / спрашивать каждый раз")
-    (princ "\n  3 или С — способ выбора точек: объектом / кликом")
+    (princ "\n  1 или Р — режим работы: одной / рамкой / парами")
+    (princ "\n  2 или О — проектная отметка")
+    (princ "\n  3 или С — как выбирать точки: объектом / кликом")
     (princ "\n  4 или Т — высота текста подписи")
-    (princ "\n  5 или П — пачкой: выделить все точки рамкой и подписать разом")
-    (princ "\n  6 или З — зазор от точки до подписи в пакетном режиме")
+    (princ "\n  5 или З — зазор от точки до подписи в режиме «рамкой»")
     (princ "\n  0 или К — выйти из команды")
-    (princ "\n  Enter   — вернуться к точкам")
+    (princ "\n  Enter   — вернуться к работе")
     (setq s (gc-vo-trim (getstring T "\nВыбор: ")))
     (cond
       ((= s "") (setq done T))
-      ((gc-vo-is-word s '("1" "о" "О" "o" "O" "отметка" "Отметка"))
+      ((gc-vo-is-word s '("1" "р" "Р" "r" "R" "режим" "Режим"))
+       (gc-vo-set-mode))
+      ((gc-vo-is-word s '("2" "о" "О" "o" "O" "отметка" "Отметка"))
        (gc-vo-set-proj))
-      ((gc-vo-is-word s '("2" "р" "Р" "r" "R" "режим" "Режим"))
-       (gc-vo-toggle-proj-mode))
       ((gc-vo-is-word s '("3" "с" "С" "s" "S" "c" "C" "способ" "Способ"))
-       (gc-vo-toggle-fact-src))
+       (gc-vo-set-fact-src))
       ((gc-vo-is-word s '("4" "т" "Т" "t" "T" "текст" "Текст" "высота"))
        (gc-vo-set-text-h))
-      ((gc-vo-is-word s '("5" "п" "П" "p" "P" "пачкой" "Пачкой" "пачка"))
-       (gc-vo-batch))
-      ((gc-vo-is-word s '("6" "з" "З" "зазор" "Зазор" "отступ"))
+      ((gc-vo-is-word s '("5" "з" "З" "зазор" "Зазор" "отступ"))
        (gc-vo-set-gap))
       ((gc-vo-is-word s '("0" "к" "К" "k" "K" "q" "Q" "выход" "Выход"))
        (setq res nil done T))
       (T (princ (strcat "\n[!] Не понял \"" s
-                        "\". Введите 1-6, 0 или просто Enter.")))))
+                        "\". Введите 1-5, 0 или просто Enter.")))))
   res)
 
 ;;; ====================================================================
@@ -683,23 +765,12 @@
 ;;; ПАКЕТНЫЙ РЕЖИМ — ВСЕ ТОЧКИ РАЗОМ
 ;;; ====================================================================
 
-;; ПОЧЕМУ отдельной кнопкой, а не переключателем режима: у VO уже есть
-;; кнопка «Режим» — она про проектную отметку. Второй «режим» рядом путал бы.
-;; Кнопка «Пачкой» — одно действие: выделил рамкой, Enter, подписи встали.
-
-;; Пакет считает все точки от ОДНОЙ проектной отметки: спрашивать проектную
-;; точку к каждой фактической здесь бессмысленно. Если отметка не задана или
-;; включён режим «спрашивать каждый раз» — сначала получаем отметку.
-;; Возвращает отметку либо nil, если пользователь отказался.
+;; Режим «Рамкой» считает все точки от ОДНОЙ проектной отметки: спрашивать
+;; проектную точку к каждой фактической тут бессмысленно. Отметку требуем
+;; заранее — на входе в режим, а не посреди выборки.
+;; Возвращает отметку либо nil, если пользователь отказался её задать.
 (defun gc-vo-batch-proj ( / )
-  (if (= *gc-vo-proj-mode* "ASK")
-    (progn
-      (princ "\n[i] Пачкой считаем от ОДНОЙ проектной отметки на все точки.")
-      (princ "\n    Задайте её сейчас — режим переключится сам.")))
-  (if (or (null *gc-vo-proj-z*) (= *gc-vo-proj-mode* "ASK"))
-    (gc-vo-set-proj))
-  ;; gc-vo-apply-proj сам переводит режим из ASK в TPL, поэтому отдельной
-  ;; проверки режима тут уже не нужно — достаточно, что отметка появилась.
+  (if (null *gc-vo-proj-z*) (gc-vo-set-proj))
   *gc-vo-proj-z*)
 
 ;; Подписывает все точки набора. Возвращает (подписано пропущено).
@@ -721,10 +792,10 @@
 
 ;; Выбор рамкой и подпись всех точек. Возвращает T — продолжать работу.
 (defun gc-vo-batch ( / z-proj ss res)
-  (princ "\n\n--- ПАЧКОЙ: ВСЕ ТОЧКИ РАЗОМ ---")
+  (princ "\n\n--- РАМКОЙ: ВСЕ ТОЧКИ РАЗОМ ---")
   (setq z-proj (gc-vo-batch-proj))
   (if (null z-proj)
-    (princ "\n[!] Проектная отметка не задана — пачкой считать не от чего.")
+    (princ "\n[!] Проектная отметка не задана — рамкой считать не от чего.")
     (progn
       (princ (strcat "\nПроект: " (gc-vo-fmt z-proj) " м. Подпись встанет левее"
                      " точки на " (gc-vo-fmt *gc-vo-gap*) " м."))
@@ -747,6 +818,31 @@
   T)
 
 ;;; ====================================================================
+;;; КНОПКИ — СВОЙ НАБОР НА КАЖДЫЙ РЕЖИМ
+;;; ====================================================================
+
+;; ПОЧЕМУ набор кнопок зависит от режима: настройка, которая в этом режиме
+;; ни на что не влияет, не должна быть доступна. Именно её нажатие и создавало
+;; ощущение, что режимы конфликтуют между собой.
+;;
+;; ПОЧЕМУ каждое слово продублировано одной буквой: для кириллицы AutoCAD
+;; не распознаёт заглавную букву как сокращение и требует слово целиком
+;; (docs/pitfalls.md -> П7). Первые буквы у всех кнопок разные:
+;; Р, О, С, Т, З, В.
+
+(defun gc-vo-keys ( / )
+  (cond
+    ((= *gc-vo-mode* "SS")   "Режим Р Отметка О Текст Т Зазор З Выход В")
+    ((= *gc-vo-mode* "PAIR") "Режим Р Способ С Текст Т Выход В")
+    (T                       "Режим Р Отметка О Способ С Текст Т Выход В")))
+
+(defun gc-vo-prm ( / )
+  (cond
+    ((= *gc-vo-mode* "SS")   " [Режим/Отметка/Текст/Зазор/Выход]")
+    ((= *gc-vo-mode* "PAIR") " [Режим/Способ/Текст/Выход]")
+    (T                       " [Режим/Отметка/Способ/Текст/Выход]")))
+
+;;; ====================================================================
 ;;; ЗАПРОС ТОЧКИ
 ;;; ====================================================================
 
@@ -765,7 +861,7 @@
 (defun gc-vo-prompt-z (prompt / res sel z)
   (setq res nil)
   (while (null res)
-    (initget "Отметка О Режим Р Способ С Текст Т Пачкой П Зазор З")
+    (initget (gc-vo-keys))
     (cond
       ((= *gc-vo-fact-src* "PT")
        (setq sel (getpoint prompt))
@@ -791,15 +887,18 @@
   res)
 
 ;; Обработка нажатой кнопки. Возвращает T — продолжать, nil — выйти.
+;; Обработка нажатой кнопки. Возвращает T — продолжать, nil — выйти.
+;; Каждая кнопка-настройка открывает СВОИ кнопки, ни одна не переключается
+;; вслепую по нажатию.
 (defun gc-vo-do-option (kw / )
   (cond
     ((gc-vo-is-word kw '("MENU"))          (gc-vo-menu))
+    ((gc-vo-is-word kw '("Режим"   "Р"))   (gc-vo-set-mode) T)
     ((gc-vo-is-word kw '("Отметка" "О"))   (gc-vo-set-proj) T)
-    ((gc-vo-is-word kw '("Режим"  "Р"))    (gc-vo-toggle-proj-mode) T)
-    ((gc-vo-is-word kw '("Способ" "С"))    (gc-vo-toggle-fact-src) T)
-    ((gc-vo-is-word kw '("Текст"  "Т"))    (gc-vo-set-text-h) T)
-    ((gc-vo-is-word kw '("Пачкой" "П"))    (gc-vo-batch))
-    ((gc-vo-is-word kw '("Зазор"  "З"))    (gc-vo-set-gap) T)
+    ((gc-vo-is-word kw '("Способ"  "С"))   (gc-vo-set-fact-src) T)
+    ((gc-vo-is-word kw '("Текст"   "Т"))   (gc-vo-set-text-h) T)
+    ((gc-vo-is-word kw '("Зазор"   "З"))   (gc-vo-set-gap) T)
+    ((gc-vo-is-word kw '("Выход"   "В"))   nil)
     (T (princ (strcat "\n[!] Кнопка \"" kw "\" не распознана.")) T)))
 
 
@@ -889,7 +988,7 @@
 ;;; ====================================================================
 
 (defun gc-vo-defaults ( / )
-  (if (null *gc-vo-proj-mode*) (setq *gc-vo-proj-mode* "TPL"))
+  (if (null *gc-vo-mode*)      (setq *gc-vo-mode*      "ONE"))
   (if (null *gc-vo-fact-src*)  (setq *gc-vo-fact-src*  "OBJ"))
   (if (null *gc-vo-text-h*)    (setq *gc-vo-text-h*    *gc-vo-text-h-init*))
   (if (null *gc-vo-gap*)       (setq *gc-vo-gap*       *gc-vo-gap-init*)))
@@ -897,78 +996,119 @@
 (defun gc-vo-intro ( / )
   (princ "\n\n=== VO — отклонение фактической высоты от проектной ===")
   (princ "\nПодписывает, насколько точка выше (+) или ниже (-) проекта, в мм.")
-  (princ "\nКнопки в строке запроса:")
-  (princ "\n  Отметка — задать проектную отметку: вручную или с объекта")
-  (princ "\n  Режим   — одна отметка на все точки / спрашивать каждый раз")
-  (princ "\n  Способ  — выбирать точки объектом / кликом по месту")
-  (princ "\n  Текст   — высота текста подписи")
-  (princ "\n  Пачкой  — выделить все точки рамкой и подписать их разом")
-  (princ "\n  Зазор   — на сколько подпись отступает влево от точки")
+  (princ "\n")
+  (princ "\nГлавная развилка — РЕЖИМ РАБОТЫ, всё остальное подчинено ему:")
+  (princ "\n  Одной  — щёлкаете точку, потом указываете место подписи")
+  (princ "\n  Рамкой — выделяете все точки разом, подписи встают сами")
+  (princ "\n  Парами — проектная точка, затем фактическая (уклон, лестница)")
+  (princ "\n")
+  (princ "\nКнопки настроек показываются ТОЛЬКО те, что работают в текущем")
+  (princ "\nрежиме, поэтому мешать друг другу им нечем:")
+  (princ "\n  Отметка — общая проектная отметка   (Одной, Рамкой)")
+  (princ "\n  Способ  — точки объектом или кликом (Одной, Парами)")
+  (princ "\n  Зазор   — отступ подписи от точки   (Рамкой)")
+  (princ "\n  Текст   — высота текста            (везде)")
+  (princ "\n")
+  (princ "\nКаждая настройка открывает свои кнопки с названиями — вслепую")
+  (princ "\nничего не переключается.")
   (princ "\nКнопку можно щёлкнуть мышью или набрать её первую букву.")
-  (princ "\nEnter — запасное текстовое меню, Esc — выход."))
+  (princ "\nEnter — запасное текстовое меню, Выход или Esc — выход."))
 
+;; В строке состояния показываем ТОЛЬКО то, что в этом режиме работает.
+;; Иначе она сама вводила бы в заблуждение: зазор при указании места вручную
+;; ни на что не влияет, а общая отметка не участвует в режиме «Парами».
 (defun gc-vo-status ( / )
-  (princ (strcat "\n\n--- VO | отметка: "
-                 (if (= *gc-vo-proj-mode* "ASK")
-                   "спрашивается у каждой точки"
-                   (gc-vo-proj-disp))
-                 " | точки: "
-                 (if (= *gc-vo-fact-src* "PT") "кликом" "объектом")
-                 " | текст: " (gc-vo-fmt *gc-vo-text-h*) " м"
-                 " | зазор: " (gc-vo-fmt *gc-vo-gap*) " м ---")))
+  (princ (strcat "\n\n--- VO | режим: " (gc-vo-mode-word)
+                 (cond
+                   ((= *gc-vo-mode* "SS")
+                    (strcat " | отметка: " (gc-vo-proj-disp)
+                            " | зазор: " (gc-vo-fmt *gc-vo-gap*) " м"))
+                   ((= *gc-vo-mode* "PAIR")
+                    (strcat " | точки: " (gc-vo-fact-src-word)))
+                   (T
+                    (strcat " | отметка: " (gc-vo-proj-disp)
+                            " | точки: " (gc-vo-fact-src-word))))
+                 " | текст: " (gc-vo-fmt *gc-vo-text-h*) " м ---")))
 
-(defun gc-vo-run ( / done step-ok r z-proj z-fact dev-mm txt pt prm)
+;; Считает и ставит подпись в месте, указанном мышью.
+;; Общая часть режимов «Одной» и «Парами» — раньше этот кусок был вписан
+;; прямо в цикл дважды по-разному, и в этом была часть путаницы.
+(defun gc-vo-place (z-fact z-proj / dev-mm txt pt)
+  (setq dev-mm (gc-vo-round (* 1000.0 (- z-fact z-proj))))
+  (setq txt    (gc-vo-fmt-dev dev-mm))
+  (princ (strcat "\n[i] Факт " (gc-vo-fmt z-fact)
+                 "  -  проект " (gc-vo-fmt z-proj)
+                 "  =  " txt))
+  ;; Сразу в МСК: entmake кладёт объект в мировые координаты,
+  ;; см. блок «ПСК И МСК».
+  (setq pt (gc-vo-w (getpoint "\nКуда поставить подпись: ")))
+  (if (null pt)
+    ;; Не выходим из команды: вычисление сделано, Шамиль мог просто
+    ;; промахнуться — возвращаемся к следующей точке.
+    (princ "\n[!] Место не указано, подпись не поставлена.")
+    (progn
+      (gc-vo-draw-text pt txt)
+      (princ (strcat "\n[i] Поставлена подпись " txt))))
+  T)
+
+;; --- Режим «Одной»: точка -> место подписи. Отметка общая.
+;; Возвращает T — продолжать, nil — выйти.
+(defun gc-vo-step-one ( / r)
+  (setq r (gc-vo-prompt-z (strcat "\nФактическая точка" (gc-vo-prm) ": ")))
+  (cond
+    ((numberp r) (gc-vo-place r *gc-vo-proj-z*))
+    (T           (gc-vo-do-option r))))
+
+;; --- Режим «Парами»: проектная точка -> фактическая -> место подписи.
+;; Возвращает T — продолжать, nil — выйти.
+;; ПОЧЕМУ отдельной функцией: у пары два запроса, и на первом тоже могут
+;; нажать кнопку. Раньше это решалось флагом step-ok посреди общего цикла,
+;; и читать такой цикл было тяжело.
+(defun gc-vo-step-pair ( / r z-proj)
+  (setq r (gc-vo-prompt-z (strcat "\nПРОЕКТНАЯ точка" (gc-vo-prm) ": ")))
+  (cond
+    ((not (numberp r)) (gc-vo-do-option r))
+    (T
+     (setq z-proj r)
+     (princ (strcat "\n[i] Проект этой точки: " (gc-vo-fmt z-proj) " м"))
+     (setq r (gc-vo-prompt-z (strcat "\nФАКТИЧЕСКАЯ точка" (gc-vo-prm) ": ")))
+     (cond
+       ((numberp r) (gc-vo-place r z-proj))
+       (T           (gc-vo-do-option r))))))
+
+;; --- Режим «Рамкой»: кнопки, затем выборка рамкой и подпись всех точек.
+;; Возвращает T — продолжать, nil — выйти.
+;; ПОЧЕМУ кнопки в отдельном запросе ПЕРЕД выборкой: ssget не поддерживает
+;; ключевые слова initget, показать кнопки в самом запросе выборки нельзя
+;; (docs/pitfalls.md -> П18). Enter сразу ведёт к выборке — это один лишний
+;; Enter на участок.
+(defun gc-vo-step-ss ( / kw)
+  (initget (gc-vo-keys))
+  (setq kw (getkword (strcat "\nДальше" (gc-vo-prm)
+                             " <Enter — выделить точки>: ")))
+  (cond
+    ((null kw) (gc-vo-batch))
+    (T         (gc-vo-do-option kw))))
+
+(defun gc-vo-run ( / done)
   (gc-vo-defaults)
   (gc-vo-intro)
   ;; Проверяем чертёж до работы: слой и стиль могут молча съесть всю графику.
   (gc-vo-ensure-layer *gc-vo-layer* *gc-vo-layer-color*)
   (gc-vo-check-env)
-  ;; В режиме одной отметки она нужна до старта; в режиме ASK — не нужна.
-  (if (and (= *gc-vo-proj-mode* "TPL") (null *gc-vo-proj-z*))
+  ;; Общая отметка нужна в «Одной» и «Рамкой»; в «Парами» она не участвует.
+  (if (and (/= *gc-vo-mode* "PAIR") (null *gc-vo-proj-z*))
     (gc-vo-set-proj))
-  (setq prm  " [Отметка/Режим/Способ/Текст/Пачкой/Зазор]: "
-        done nil)
+  (setq done nil)
   (while (not done)
     (gc-vo-status)
-    (setq step-ok T
-          z-proj  nil)
-    ;; --- Шаг 1: проектная отметка (только в режиме «спрашивать каждый раз»)
-    (if (= *gc-vo-proj-mode* "ASK")
-      (progn
-        (setq r (gc-vo-prompt-z (strcat "\nПРОЕКТНАЯ точка" prm)))
-        (cond
-          ((numberp r)
-           (setq z-proj r)
-           (princ (strcat "\n[i] Проект этой точки: " (gc-vo-fmt z-proj) " м")))
-          (T
-           (if (null (gc-vo-do-option r)) (setq done T))
-           (setq step-ok nil))))
-      (setq z-proj *gc-vo-proj-z*))
-    ;; --- Шаг 2: фактическая точка
-    (if step-ok
-      (progn
-        (setq r (gc-vo-prompt-z (strcat "\nФАКТИЧЕСКАЯ точка" prm)))
-        (cond
-          ((numberp r)
-           (setq z-fact r)
-           (setq dev-mm (gc-vo-round (* 1000.0 (- z-fact z-proj))))
-           (setq txt    (gc-vo-fmt-dev dev-mm))
-           (princ (strcat "\n[i] Факт " (gc-vo-fmt z-fact)
-                          "  -  проект " (gc-vo-fmt z-proj)
-                          "  =  " txt))
-           ;; --- Шаг 3: место подписи
-           ;; Сразу в МСК: entmake кладёт объект в мировые координаты,
-           ;; см. блок «ПСК И МСК».
-           (setq pt (gc-vo-w (getpoint "\nКуда поставить подпись: ")))
-           (if (null pt)
-             ;; Не выходим из команды: вычисление сделано, Шамиль мог просто
-             ;; промахнуться — возвращаемся к следующей точке.
-             (princ "\n[!] Место не указано, подпись не поставлена.")
-             (progn
-               (gc-vo-draw-text pt txt)
-               (princ (strcat "\n[i] Поставлена подпись " txt)))))
-          (T
-           (if (null (gc-vo-do-option r)) (setq done T)))))))
+    ;; Один шаг режима. Каждый возвращает T — продолжать, nil — выйти.
+    (if (null
+          (cond
+            ((= *gc-vo-mode* "SS")   (gc-vo-step-ss))
+            ((= *gc-vo-mode* "PAIR") (gc-vo-step-pair))
+            (T                       (gc-vo-step-one))))
+      (setq done T)))
   (princ "\n[i] VO завершена.")
   (princ))
 
@@ -1006,5 +1146,5 @@
 ;; VO -> МЩ
 (defun c:мщ ( / ) (c:vo))
 (defun c:МЩ ( / ) (c:vo))
-(princ "\n[gc] vo.lsp v13 загружен. Команда: VO | рус. раскладка: МЩ")
+(princ "\n[gc] vo.lsp v14 загружен. Команда: VO | рус. раскладка: МЩ")
 (princ)
