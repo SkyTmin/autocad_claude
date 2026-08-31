@@ -1,10 +1,22 @@
-;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v12)
+;;; vo.lsp -- otklonenie fakticheskoy tochki ot proektnoy otmetki (SPEC-006 v13)
 ;;; Komandy:
 ;;;   VO                  -- edinstvennaya komanda, vse nastroyki vnutri.
 ;;;   GC-HEIGHT-DEVIATION -- polnoe imya toy zhe komandy.
 ;;;
 ;;; PRICHINA imeni VO, a ne H: "H" -- shtatnyy alias HATCH v AutoCAD, i
 ;;; opredelenie c:h perekrylo by shtrihovku.
+;;;
+;;; v13: PAKETNYY REZHIM -- knopka "Pachkoy". Vydelil vse tochki ramkoy,
+;;;      nazhal Enter -- podpisi vstali u kazhdoy srazu. Ranshe tochki
+;;;      vybiralis tolko po odnoy, i na bolshoy syomke eto dolgo.
+;;;      Podpis stavitsya LEVEE tochki na zazor (po umolchaniyu 20 mm),
+;;;      vyravnivanie Middle Right -- zazor ostaetsya odinakovym nezavisimo
+;;;      ot togo, dlinnaya cifra ili korotkaya. Zazor menyaetsya knopkoy "Zazor".
+;;;      Smeshchenie i povorot teksta schitayutsya OT TEKUSHCHEY PSK, poetomu
+;;;      "levee" -- eto levee NA EKRANE, a cifra chitaetsya gorizontalno
+;;;      pri lyuboy povernutoy PSK. Povorot teper takoy zhe i v rezhime
+;;;      po odnoy tochke: ranshe stoyal zhestkiy 0, i v povernutoy PSK
+;;;      podpis vyglyadela naklonennoy.
 ;;;
 ;;; v12: GLAVNOE ISPRAVLENIE -- PSK (UCS). Sm. podrobnyy razbor v ol.lsp v13.
 ;;;      Korotko: getpoint otdaet tochku v TEKUSHCHEY PSK, a entmake kladet
@@ -76,11 +88,20 @@
 (setq *gc-vo-layer-color* 7)
 (setq *gc-vo-text-h-init* 0.100) ; высота текста, предлагаемая в первый раз
 
+;; Зазор между точкой и подписью в пакетном режиме, м. 0.020 = 20 мм.
+(setq *gc-vo-gap-init*    0.020)
+
+;; Что считать фактической точкой при выборе рамкой. Тот же фильтр, что в
+;; ol.lsp: обычные точки AutoCAD и COGO Point Civil 3D. Всё остальное
+;; в выборку не попадает — иначе подписи налипли бы на линии и тексты.
+(setq *gc-vo-ssget-filter* '((0 . "POINT,AECC*POINT,AEC*POINT")))
+
 ;;; НАСТРОЙКИ — живут между запусками до закрытия чертежа:
 ;;;   *gc-vo-proj-z*     — проектная отметка, м
 ;;;   *gc-vo-proj-mode*  — "TPL" одна отметка на все точки / "ASK" спрашивать
 ;;;   *gc-vo-fact-src*   — "OBJ" выбор объекта / "PT" клик с привязкой
 ;;;   *gc-vo-text-h*     — высота текста, м
+;;;   *gc-vo-gap*        — зазор от точки до подписи в пакетном режиме, м
 ;;; Намеренно НЕ инициализируются при загрузке: AutoLISP возвращает nil для
 ;;; несвязанного символа, а сброс на nil при каждом APPLOAD стирал бы настройки.
 
@@ -209,6 +230,37 @@
   (if (and (null z) p10 (caddr p10))
     (setq z (caddr p10)))
   z)
+
+;; Координаты объекта целиком: (X Y Z) либо nil.
+;; Нужны в пакетном режиме — там подпись ставится у самой точки, а не
+;; в место, указанное мышью, поэтому кроме высоты нужен и план.
+;; ПОРЯДОК ТОТ ЖЕ, что в gc-vo-entity-z: сначала DXF, COM только если без
+;; него никак (docs/pitfalls.md -> П6).
+;; Координаты из DXF и из COM приходят в МСК, entmake тоже пишет в МСК,
+;; поэтому здесь перевод систем не нужен (docs/pitfalls.md -> П1).
+(defun gc-vo-entity-xyz (ent / obj ed typ p10 z xy)
+  (setq ed  (entget ent)
+        typ (cdr (assoc 0 ed))
+        p10 (cdr (assoc 10 ed))
+        xy  nil)
+  (cond
+    ;; COGO Point — план только через COM.
+    ((wcmatch typ "AECC*POINT,AEC*POINT")
+     (if (gc-vo-com-ok)
+       (progn
+         (setq obj (vlax-ename->vla-object ent))
+         (cond
+           ((vlax-property-available-p obj 'Easting)
+            (setq xy (list (vla-get-Easting obj) (vla-get-Northing obj))))
+           ((vlax-property-available-p obj 'InsertionPoint)
+            (setq p10 (vlax-safearray->list
+                        (vlax-variant-value (vla-get-InsertionPoint obj))))
+            (setq xy (list (car p10) (cadr p10))))))))
+    ;; Обычная точка — из DXF, без COM.
+    ((and p10 (cadr p10))
+     (setq xy (list (car p10) (cadr p10)))))
+  (setq z (gc-vo-entity-z ent))
+  (if (and xy z) (list (car xy) (cadr xy) z) nil))
 
 ;; Выбор объекта и чтение его высоты. Возвращает Z либо nil при отказе.
 ;; ПОЧЕМУ через ERRNO: entsel возвращает nil и при промахе, и при Enter.
@@ -348,6 +400,34 @@
                    " и переспросит.")))
   *gc-vo-fact-src*)
 
+(defun gc-vo-set-gap ( / res s val)
+  (princ "\n\n--- ЗАЗОР ОТ ТОЧКИ ДО ПОДПИСИ ---")
+  (princ "\nНа сколько подпись отступает влево от точки в пакетном режиме.")
+  (princ "\nВ метрах чертежа: 0,020 — это 20 мм.")
+  (princ "\nЗазор считается до КРАЯ цифры, поэтому длинные и короткие")
+  (princ "\nзначения отстоят от точки одинаково.")
+  (setq res nil)
+  (while (null res)
+    ;; getstring с флагом T — иначе ввод обрывается на пробеле
+    ;; (docs/pitfalls.md -> П13).
+    (setq s (gc-vo-trim
+              (getstring T (strcat "\nЗазор, м <"
+                                   (gc-vo-fmt *gc-vo-gap*) ">: "))))
+    (cond
+      ;; Умолчание уместно: значение всегда задано, Enter = «оставить».
+      ((= s "") (setq res *gc-vo-gap*))
+      (T
+       (setq val (gc-vo-parse-num s))
+       (cond
+         ((null val)
+          (princ (strcat "\n[!] Не понял \"" s "\". Нужно число вида 0,020")))
+         ((< val 0.0)
+          (princ "\n[!] Зазор не может быть отрицательным."))
+         (T (setq res val))))))
+  (setq *gc-vo-gap* res)
+  (princ (strcat "\n[i] Зазор теперь " (gc-vo-fmt *gc-vo-gap*) " м"))
+  *gc-vo-gap*)
+
 (defun gc-vo-set-text-h ( / res s val)
   (princ "\n\n--- ВЫСОТА ТЕКСТА ПОДПИСИ ---")
   (princ "\nВысота символов подписи в метрах чертежа.")
@@ -392,11 +472,14 @@
                      (gc-vo-proj-disp))))
     (princ (strcat "\n  точки   : " (gc-vo-fact-src-name)))
     (princ (strcat "\n  текст   : " (gc-vo-fmt *gc-vo-text-h*) " м"))
+    (princ (strcat "\n  зазор   : " (gc-vo-fmt *gc-vo-gap*) " м"))
     (princ "\n")
     (princ "\n  1 или О — проектная отметка")
     (princ "\n  2 или Р — режим отметки: одна на все / спрашивать каждый раз")
     (princ "\n  3 или С — способ выбора точек: объектом / кликом")
     (princ "\n  4 или Т — высота текста подписи")
+    (princ "\n  5 или П — пачкой: выделить все точки рамкой и подписать разом")
+    (princ "\n  6 или З — зазор от точки до подписи в пакетном режиме")
     (princ "\n  0 или К — выйти из команды")
     (princ "\n  Enter   — вернуться к точкам")
     (setq s (gc-vo-trim (getstring T "\nВыбор: ")))
@@ -410,10 +493,14 @@
        (gc-vo-toggle-fact-src))
       ((gc-vo-is-word s '("4" "т" "Т" "t" "T" "текст" "Текст" "высота"))
        (gc-vo-set-text-h))
+      ((gc-vo-is-word s '("5" "п" "П" "p" "P" "пачкой" "Пачкой" "пачка"))
+       (gc-vo-batch))
+      ((gc-vo-is-word s '("6" "з" "З" "зазор" "Зазор" "отступ"))
+       (gc-vo-set-gap))
       ((gc-vo-is-word s '("0" "к" "К" "k" "K" "q" "Q" "выход" "Выход"))
        (setq res nil done T))
       (T (princ (strcat "\n[!] Не понял \"" s
-                        "\". Введите 1, 2, 3, 4, 0 или просто Enter.")))))
+                        "\". Введите 1-6, 0 или просто Enter.")))))
   res)
 
 ;;; ====================================================================
@@ -432,6 +519,21 @@
 ;; Дополняем точку до трёхмерной: trans ждёт полноценную точку.
 (defun gc-vo-3d (p)
   (list (car p) (cadr p) (if (caddr p) (caddr p) 0.0)))
+
+;; Угол оси X текущей ПСК, выраженный в МСК.
+;; Текст, повёрнутый на этот угол, читается на экране горизонтально при
+;; любой повёрнутой ПСК. Раньше в подписи стоял жёсткий 0, и в повёрнутой
+;; ПСК цифра выглядела наклонённой.
+;; Флаг T у trans означает «это вектор направления, а не точка»: переносить
+;; начало координат не надо, поворачивать — надо.
+(defun gc-vo-ucs-ang ( / v)
+  (setq v (trans '(1.0 0.0 0.0) 1 0 T))
+  (atan (cadr v) (car v)))
+
+;; Вектор «влево на gap» в МСК. Влево — как видит пользователь, то есть
+;; против оси X текущей ПСК, а не мировой.
+(defun gc-vo-left-vec (gap / )
+  (trans (list (- gap) 0.0 0.0) 1 0 T))
 
 ;; ПСК -> МСК. 1 = ПСК, 0 = МСК.
 (defun gc-vo-w (p)
@@ -546,8 +648,12 @@
       nil)
     e))
 
-;; 72=1 / 73=2 — выравнивание Middle Center: подпись встаёт по центру клика.
-(defun gc-vo-draw-text (pt txt / )
+;; Общая отрисовка подписи с заданным выравниванием.
+;; hj — группа 72 (0 влево, 1 по центру, 2 вправо), vj — группа 73
+;; (2 = по середине). При ненулевом выравнивании AutoCAD берёт положение
+;; из группы 11, поэтому обе группы 10 и 11 задаём одной точкой.
+;; Поворот — угол ПСК: цифра читается горизонтально на экране.
+(defun gc-vo-draw-text-al (pt txt hj vj / )
   (gc-vo-ensure-layer *gc-vo-layer* *gc-vo-layer-color*)
   (gc-vo-emake (list '(0 . "TEXT")
                  (cons 8 *gc-vo-layer*)
@@ -555,11 +661,90 @@
                  (cons 10 pt)
                  (cons 40 *gc-vo-text-h*)
                  (cons 1 txt)
-                 (cons 50 0.0)
-                 (cons 72 1)
+                 (cons 50 (gc-vo-ucs-ang))
+                 (cons 72 hj)
                  (cons 11 pt)
-                 (cons 73 2))
+                 (cons 73 vj))
     "цифру"))
+
+;; Режим по одной точке: подпись встаёт по центру указанного места.
+(defun gc-vo-draw-text (pt txt / )
+  (gc-vo-draw-text-al pt txt 1 2))
+
+;; Пакетный режим: подпись слева от точки, её ПРАВЫЙ край — на зазоре
+;; от точки. Выравнивание Middle Right (72=2, 73=2).
+;; ПОЧЕМУ по правому краю, а не по центру: при центре зазор «съедала» бы
+;; сама цифра, и «-14» отстояло бы от точки не так, как «+2».
+(defun gc-vo-draw-text-left-of (pt txt / tp)
+  (setq tp (mapcar '+ pt (gc-vo-left-vec *gc-vo-gap*)))
+  (gc-vo-draw-text-al tp txt 2 2))
+
+;;; ====================================================================
+;;; ПАКЕТНЫЙ РЕЖИМ — ВСЕ ТОЧКИ РАЗОМ
+;;; ====================================================================
+
+;; ПОЧЕМУ отдельной кнопкой, а не переключателем режима: у VO уже есть
+;; кнопка «Режим» — она про проектную отметку. Второй «режим» рядом путал бы.
+;; Кнопка «Пачкой» — одно действие: выделил рамкой, Enter, подписи встали.
+
+;; Пакет считает все точки от ОДНОЙ проектной отметки: спрашивать проектную
+;; точку к каждой фактической здесь бессмысленно. Если отметка не задана или
+;; включён режим «спрашивать каждый раз» — сначала получаем отметку.
+;; Возвращает отметку либо nil, если пользователь отказался.
+(defun gc-vo-batch-proj ( / )
+  (if (= *gc-vo-proj-mode* "ASK")
+    (progn
+      (princ "\n[i] Пачкой считаем от ОДНОЙ проектной отметки на все точки.")
+      (princ "\n    Задайте её сейчас — режим переключится сам.")))
+  (if (or (null *gc-vo-proj-z*) (= *gc-vo-proj-mode* "ASK"))
+    (gc-vo-set-proj))
+  ;; gc-vo-apply-proj сам переводит режим из ASK в TPL, поэтому отдельной
+  ;; проверки режима тут уже не нужно — достаточно, что отметка появилась.
+  *gc-vo-proj-z*)
+
+;; Подписывает все точки набора. Возвращает (подписано пропущено).
+(defun gc-vo-batch-label (ss z-proj / i n ent c ok skip dev txt)
+  (setq ok 0 skip 0 i 0 n (sslength ss))
+  (while (< i n)
+    (setq ent (ssname ss i))
+    (setq c   (gc-vo-entity-xyz ent))
+    (if (null c)
+      (setq skip (1+ skip))
+      (progn
+        (setq dev (gc-vo-round (* 1000.0 (- (caddr c) z-proj))))
+        (setq txt (gc-vo-fmt-dev dev))
+        (if (gc-vo-draw-text-left-of c txt)
+          (setq ok (1+ ok))
+          (setq skip (1+ skip)))))
+    (setq i (1+ i)))
+  (list ok skip))
+
+;; Выбор рамкой и подпись всех точек. Возвращает T — продолжать работу.
+(defun gc-vo-batch ( / z-proj ss res)
+  (princ "\n\n--- ПАЧКОЙ: ВСЕ ТОЧКИ РАЗОМ ---")
+  (setq z-proj (gc-vo-batch-proj))
+  (if (null z-proj)
+    (princ "\n[!] Проектная отметка не задана — пачкой считать не от чего.")
+    (progn
+      (princ (strcat "\nПроект: " (gc-vo-fmt z-proj) " м. Подпись встанет левее"
+                     " точки на " (gc-vo-fmt *gc-vo-gap*) " м."))
+      (princ "\nВыделите фактические точки рамкой и нажмите Enter: ")
+      (setq ss (ssget *gc-vo-ssget-filter*))
+      (if (null ss)
+        (princ "\n[i] Ничего не выбрано.")
+        (progn
+          (setq res (gc-vo-batch-label ss z-proj))
+          (princ (strcat "\n[Итог] подписано точек: " (itoa (car res))))
+          (if (> (cadr res) 0)
+            (progn
+              (princ (strcat " | пропущено: " (itoa (cadr res))))
+              (princ "\n    Пропускаются объекты без координат или без высоты.")
+              (if (null (gc-vo-com-ok))
+                (progn
+                  (princ "\n[!] Visual LISP COM недоступен в этой версии CAD.")
+                  (princ "\n    COGO Point Civil 3D без него прочитать нельзя,")
+                  (princ "\n    обычные точки (POINT) читаются и без него.")))))))))
+  T)
 
 ;;; ====================================================================
 ;;; ЗАПРОС ТОЧКИ
@@ -580,7 +765,7 @@
 (defun gc-vo-prompt-z (prompt / res sel z)
   (setq res nil)
   (while (null res)
-    (initget "Отметка О Режим Р Способ С Текст Т")
+    (initget "Отметка О Режим Р Способ С Текст Т Пачкой П Зазор З")
     (cond
       ((= *gc-vo-fact-src* "PT")
        (setq sel (getpoint prompt))
@@ -613,6 +798,8 @@
     ((gc-vo-is-word kw '("Режим"  "Р"))    (gc-vo-toggle-proj-mode) T)
     ((gc-vo-is-word kw '("Способ" "С"))    (gc-vo-toggle-fact-src) T)
     ((gc-vo-is-word kw '("Текст"  "Т"))    (gc-vo-set-text-h) T)
+    ((gc-vo-is-word kw '("Пачкой" "П"))    (gc-vo-batch))
+    ((gc-vo-is-word kw '("Зазор"  "З"))    (gc-vo-set-gap) T)
     (T (princ (strcat "\n[!] Кнопка \"" kw "\" не распознана.")) T)))
 
 
@@ -704,7 +891,8 @@
 (defun gc-vo-defaults ( / )
   (if (null *gc-vo-proj-mode*) (setq *gc-vo-proj-mode* "TPL"))
   (if (null *gc-vo-fact-src*)  (setq *gc-vo-fact-src*  "OBJ"))
-  (if (null *gc-vo-text-h*)    (setq *gc-vo-text-h*    *gc-vo-text-h-init*)))
+  (if (null *gc-vo-text-h*)    (setq *gc-vo-text-h*    *gc-vo-text-h-init*))
+  (if (null *gc-vo-gap*)       (setq *gc-vo-gap*       *gc-vo-gap-init*)))
 
 (defun gc-vo-intro ( / )
   (princ "\n\n=== VO — отклонение фактической высоты от проектной ===")
@@ -714,6 +902,8 @@
   (princ "\n  Режим   — одна отметка на все точки / спрашивать каждый раз")
   (princ "\n  Способ  — выбирать точки объектом / кликом по месту")
   (princ "\n  Текст   — высота текста подписи")
+  (princ "\n  Пачкой  — выделить все точки рамкой и подписать их разом")
+  (princ "\n  Зазор   — на сколько подпись отступает влево от точки")
   (princ "\nКнопку можно щёлкнуть мышью или набрать её первую букву.")
   (princ "\nEnter — запасное текстовое меню, Esc — выход."))
 
@@ -724,7 +914,8 @@
                    (gc-vo-proj-disp))
                  " | точки: "
                  (if (= *gc-vo-fact-src* "PT") "кликом" "объектом")
-                 " | текст: " (gc-vo-fmt *gc-vo-text-h*) " м ---")))
+                 " | текст: " (gc-vo-fmt *gc-vo-text-h*) " м"
+                 " | зазор: " (gc-vo-fmt *gc-vo-gap*) " м ---")))
 
 (defun gc-vo-run ( / done step-ok r z-proj z-fact dev-mm txt pt prm)
   (gc-vo-defaults)
@@ -735,7 +926,7 @@
   ;; В режиме одной отметки она нужна до старта; в режиме ASK — не нужна.
   (if (and (= *gc-vo-proj-mode* "TPL") (null *gc-vo-proj-z*))
     (gc-vo-set-proj))
-  (setq prm  " [Отметка/Режим/Способ/Текст]: "
+  (setq prm  " [Отметка/Режим/Способ/Текст/Пачкой/Зазор]: "
         done nil)
   (while (not done)
     (gc-vo-status)
@@ -815,5 +1006,5 @@
 ;; VO -> МЩ
 (defun c:мщ ( / ) (c:vo))
 (defun c:МЩ ( / ) (c:vo))
-(princ "\n[gc] vo.lsp v12 загружен. Команда: VO | рус. раскладка: МЩ")
+(princ "\n[gc] vo.lsp v13 загружен. Команда: VO | рус. раскладка: МЩ")
 (princ)
