@@ -1,8 +1,18 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v1)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v2)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v2: PROVERKA OTMETOK. Posle OK komanda predlagaet potykat po chertezhu
+;;;     i pokazyvaet, kakuyu otmetku vernula kazhdaya poverhnost i kakaya
+;;;     poluchaetsya rabochaya.
+;;;
+;;;     POCHEMU ETO SDELANO RANSHE SETKI. Vsya kartogramma stoit na ODNOY
+;;;     vneshney operacii -- "day otmetku poverhnosti v tochke XY" (ADR-0005).
+;;;     Esli ona ne rabotaet, vse ostalnoe bessmyslenno. Proverit ee otdelno
+;;;     stoit minutu, a naytis oshibka posle napisannoy setki i obemov
+;;;     budet dolgo i neponyatno gde.
 ;;;
 ;;; ETAP 1 IZ 5: DIALOG NASTROEK.
 ;;; Sejchas komanda otkryvaet okno, sobiraet i zapominaet vse nastroyki
@@ -126,7 +136,7 @@
 ;; первый откликнувшийся. Не отозвался ни один — значит либо это обычный
 ;; AutoCAD, либо COM недоступен; тогда имя поверхности вводится вручную.
 (defun gc-kg-surfaces ( / app doc surfs n i out)
-  (setq out nil)
+  (setq out nil *gc-kg-surf-coll* nil)
   (if (gc-kg-com-ok)
     (foreach pid '("AeccXUiLand.AeccApplication.13.6"
                    "AeccXUiLand.AeccApplication.13.5"
@@ -156,8 +166,53 @@
                           (while (< i n)
                             (setq out (cons (vlax-get (vlax-invoke surfs 'Item i) 'Name) out))
                             (setq i (1+ i)))
-                          (setq out (reverse out))))))))))))))
+                          (setq out (reverse out))
+                          ;; Коллекцию запоминаем: по ней потом достаём
+                          ;; сам объект поверхности, чтобы спросить отметку.
+                          (setq *gc-kg-surf-coll* surfs)))))))))))))
   out)
+
+;; Объект поверхности по имени. nil, если не нашлась.
+(defun gc-kg-surf-obj (name / n i o res)
+  (setq res nil)
+  (if (and name *gc-kg-surf-coll*)
+    (progn
+      (setq n (vl-catch-all-apply 'vlax-get (list *gc-kg-surf-coll* "Count")))
+      (if (not (vl-catch-all-error-p n))
+        (progn
+          (setq i 0)
+          (while (and (null res) (< i n))
+            (setq o (vl-catch-all-apply 'vlax-invoke (list *gc-kg-surf-coll* 'Item i)))
+            (if (and (not (vl-catch-all-error-p o))
+                     (= name (vlax-get o 'Name)))
+              (setq res o))
+            (setq i (1+ i)))))))
+  res)
+
+;; Отметка поверхности в точке XY (координаты в МСК).
+;; Возвращает число либо nil, если точки на поверхности нет.
+;;
+;; ПОЧЕМУ через vl-catch-all-apply: за границей поверхности вызов не
+;; возвращает nil, а ВЫБРАСЫВАЕТ ошибку. Без перехвата команда падала бы
+;; на первом же узле сетки, вышедшем за край съёмки, — а таких узлов
+;; на любой площадке полно.
+(defun gc-kg-elev (obj x y / r)
+  (if (null obj)
+    nil
+    (progn
+      (setq r (vl-catch-all-apply 'vlax-invoke (list obj 'FindElevationAtXY x y)))
+      (if (vl-catch-all-error-p r) nil r))))
+
+;; Разовая диагностика: почему не удалось прочитать отметку.
+;; Печатается ОДИН раз за запуск, иначе завалит консоль на большой сетке.
+(defun gc-kg-elev-why (obj x y / r)
+  (if (null obj)
+    "поверхность не выбрана или не найдена в чертеже"
+    (progn
+      (setq r (vl-catch-all-apply 'vlax-invoke (list obj 'FindElevationAtXY x y)))
+      (if (vl-catch-all-error-p r)
+        (vl-catch-all-error-message r)
+        "ошибки нет"))))
 
 ;;; ====================================================================
 ;;; ТЕКСТ ДИАЛОГА
@@ -486,6 +541,63 @@
   (princ))
 
 ;;; ====================================================================
+;;; ПРОВЕРКА ОТМЕТОК
+;;;
+;;; Вся картограмма стоит на одной внешней операции — «дай отметку
+;;; поверхности в точке XY» (ADR-0005). Проверяем её отдельно и заранее.
+;;; ====================================================================
+
+;; Число с запятой, три знака — как Шамиль привык видеть отметки.
+(defun gc-kg-z (z)
+  (if z (strcat (gc-kg-fmt z) " м") "нет данных"))
+
+;; Одна точка: показать чёрную, красную и рабочую отметку.
+;; p — точка в МСК. Возвращает T, если обе отметки прочитались.
+;;
+;; ПОЧЕМУ переменные s-blk и s-red, а не короткие ob и or: «or» —
+;; встроенная функция AutoLISP, и локальная переменная с таким именем
+;; перекрыла бы её внутри всей функции (docs/pitfalls.md -> П19).
+(defun gc-kg-probe-one (p s-blk s-red / zb zr h)
+  (setq zb (gc-kg-elev s-blk (car p) (cadr p)))
+  (setq zr (gc-kg-elev s-red (car p) (cadr p)))
+  (princ (strcat "\n  чёрная  " (gc-kg-z zb)
+                 "   красная " (gc-kg-z zr)))
+  (cond
+    ((and zb zr)
+     (setq h (- zr zb))
+     (princ (strcat "   рабочая " (if (>= h 0.0) "+" "") (gc-kg-fmt h) " м"
+                    (if (>= h 0.0) "  (насыпь)" "  (выемка)")))
+     T)
+    (T
+     (princ "\n  [!] Точка вне одной из поверхностей — рабочая не считается.")
+     nil)))
+
+;; Цикл проверки. Возвращает T, если хоть одна точка прочиталась.
+(defun gc-kg-probe ( / s-blk s-red p ok any why)
+  (setq s-blk (gc-kg-surf-obj (gc-kg-get "s-black"))
+        s-red (gc-kg-surf-obj (gc-kg-get "s-red")))
+  (princ "\n\n--- ПРОВЕРКА ОТМЕТОК ---")
+  (princ "\nТыкайте по чертежу — покажу, что вернула каждая поверхность.")
+  (princ "\nЭто проверка фундамента: на этой операции держится весь расчёт.")
+  (princ "\nEnter или Esc — закончить.")
+  (setq any nil)
+  (while (setq p (getpoint "\nТочка для проверки: "))
+    ;; Сразу в МСК: поверхность живёт в мировых координатах
+    ;; (docs/pitfalls.md -> П1).
+    (setq p (trans p 1 0))
+    (setq ok (gc-kg-probe-one p s-blk s-red))
+    (if ok (setq any T))
+    ;; Причину печатаем один раз, иначе завалит консоль.
+    (if (and (not ok) (not any) (null why))
+      (progn
+        (setq why (gc-kg-elev-why s-blk (car p) (cadr p)))
+        (princ (strcat "\n  [i] Ответ CAD по чёрной поверхности: " why)))))
+  (if any
+    (princ "\n[i] Отметки читаются — фундамент держит, можно строить сетку.")
+    (princ "\n[!] Ни одной отметки прочитать не удалось. Причины выше."))
+  any)
+
+;;; ====================================================================
 ;;; ЯДРО КОМАНДЫ
 ;;; ====================================================================
 
@@ -497,10 +609,11 @@
   (princ "\nСетка квадратов, отметки в узлах, объёмы выемки и насыпи,")
   (princ "\nлиния нулевых работ и ведомость.")
   (princ "\n")
-  (princ "\n[i] ЭТАП 1 ИЗ 5: сейчас работает только окно настроек.")
-  (princ "\n    Оно собирает и запоминает все параметры и показывает,")
-  (princ "\n    что принято. Построение сетки, расчёт объёмов и ведомость")
-  (princ "\n    добавляются следующими этапами.")
+  (princ "\n[i] ЭТАП 1 ИЗ 5: окно настроек и проверка отметок.")
+  (princ "\n    Окно собирает и запоминает все параметры. После него можно")
+  (princ "\n    потыкать по чертежу и увидеть, какие отметки вернут выбранные")
+  (princ "\n    поверхности — на этой операции держится весь расчёт.")
+  (princ "\n    Сетка, объёмы и ведомость добавляются следующими этапами.")
   (princ "\n    Посмотрите окно и скажите, что переставить или переименовать —")
   (princ "\n    его правка стоит дёшево, а переделывать после расчётов дорого."))
 
@@ -511,7 +624,11 @@
     (progn
       (gc-kg-report)
       (princ "\n\n[i] Настройки сохранены до закрытия чертежа.")
-      (princ "\n[i] Расчёт на этом этапе не выполняется — см. сообщение выше.")))
+      ;; Проверку предлагаем, только если есть что проверять.
+      (if (and (gc-kg-get "s-black") (gc-kg-get "s-red"))
+        (gc-kg-probe)
+        (princ "\n[i] Поверхности не выбраны — проверка отметок пропущена."))
+      (princ "\n[i] Сетка и объёмы на этом этапе не строятся — см. выше.")))
   (princ "\n[i] KG завершена.")
   (princ))
 
@@ -542,6 +659,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v1 загружен. Команда: KG | рус. раскладка: ЛП")
-(princ "\n     Этап 1 из 5: окно настроек. Расчёт добавляется следующими этапами.")
+(princ "\n[gc] kg.lsp v2 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n     Этап 1 из 5: окно настроек и проверка отметок.")
 (princ)
