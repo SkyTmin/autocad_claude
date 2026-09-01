@@ -81,6 +81,8 @@ TODO без записи в `status/ISSUES.md` запрещено. Заглуш�
 | «Команда отработала, а на чертеже пусто» | `docs/pitfalls.md` — там уже 5 разных причин этого симптома |
 | Нашёл корневую причину бага | Запиши в `docs/pitfalls.md` тем же коммитом (R7) |
 | Незнакомый геодезический термин | `docs/glossary.md` |
+| Нужна расчётная методика (объёмы, отметки) | `docs/formulas.md` — формулы с контрольными примерами |
+| Вывел новую формулу / методику | Запиши в `docs/formulas.md` вместе с контрольным примером |
 | Завершаю задачу | Прогони DoD → `docs/workflow.md` |
 | Архитектурное решение | Создай ADR → `docs/decisions/README.md` |
 | Конец сессии | Обнови `status/HANDOFF.md` |
@@ -109,8 +111,9 @@ TODO без записи в `status/ISSUES.md` запрещено. Заглуш�
 
 ```
 CLAUDE.md   ← ты здесь         docs/pitfalls.md     ⭐ грабли: причины «не работает»
-AGENTS.md   зеркало AI          docs/workflow.md     ← процесс: DoD, DoR, SDD-цикл
-README.md   для людей           docs/conventions.md  ← ГОСТ, стиль кода
+AGENTS.md   зеркало AI          docs/formulas.md     ⭐ формулы и методики расчёта
+README.md   для людей           docs/workflow.md     ← процесс: DoD, DoR, SDD-цикл
+                                docs/conventions.md  ← ГОСТ, стиль кода
                                 docs/glossary.md     ← геодезические термины
                                 docs/decisions/      ← ADR (архитектурные решения)
 
