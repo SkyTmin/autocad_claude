@@ -1,0 +1,42 @@
+# --- AutoCAD ---
+*.bak
+*.dwl
+*.dwl2
+*.sv$
+*.err
+*.log
+*.ac$
+*.ds$
+
+# --- ОС ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Редакторы ---
+.vscode/
+.idea/
+*.swp
+*~
+
+# --- Python (на будущее) ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# --- .NET (на будущее) ---
+bin/
+obj/
+*.user
+
+# --- Личные/чувствительные данные ---
+# Если в samples/ окажутся приватные файлы — добавить сюда явные пути
+samples/private/
+
+# --- Claude Code ---
+# settings.local.json коммитим, settings.json и кэш — нет
+.claude/cache/
+.claude/logs/
