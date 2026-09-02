@@ -279,10 +279,15 @@
 ;; обработчик, даже если Шамиль нажал Esc посреди ввода.
 (defun c:vid ( / *error*)
   (defun *error* (msg)
-    (if (and msg
-             (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*QUIT*")))
-      (princ (strcat "\n[ОШИБКА] VID: " msg))
-      (princ "\n[ОТМЕНА] VID прерван."))
+    ;; Отмена это не ошибка. На локализованном AutoCAD выход по Esc приходит
+    ;; сообщением «Функция прервана.», поэтому кроме английских BREAK/CANCEL/
+    ;; QUIT проверяем русские слова — и БЕЗ strcase: полагаться на то, что он
+    ;; верно поднимет регистр кириллицы в любой сборке, не стоит.
+    (if (or (null msg)
+            (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*QUIT*")
+            (wcmatch msg "*прерван*,*Прерван*,*ПРЕРВАН*,*отмен*,*Отмен*,*ОТМЕН*"))
+      (princ "\n[ОТМЕНА] VID прерван.")
+      (princ (strcat "\n[ОШИБКА] VID: " msg)))
     (princ))
   (gc-vid-run)
   (princ))

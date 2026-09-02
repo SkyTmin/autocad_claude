@@ -1025,7 +1025,20 @@
                  " м, длина стрелки " (gc-pile-fmt (gc-pile-arrow-len)) " м"))
   *gc-pile-text-h*)
 
-(defun c:sv ( / mode-str pairs g idx total ok skipped p)
+(defun c:sv ( / *error* mode-str pairs g idx total ok skipped p)
+  ;; *error* объявлен локальным: на выходе AutoLISP сам вернёт прежний
+  ;; обработчик, даже если нажали Esc посреди ввода.
+  ;; Отмена это не ошибка. На локализованном AutoCAD выход по Esc приходит
+  ;; сообщением «Функция прервана.», поэтому кроме английских BREAK/CANCEL/
+  ;; QUIT проверяем русские слова — и БЕЗ strcase: полагаться на то, что он
+  ;; верно поднимет регистр кириллицы в любой сборке, не стоит.
+  (defun *error* (msg)
+    (if (or (null msg)
+            (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*QUIT*")
+            (wcmatch msg "*прерван*,*Прерван*,*ПРЕРВАН*,*отмен*,*Отмен*,*ОТМЕН*"))
+      (princ "\n[ОТМЕНА] SV прерван.")
+      (princ (strcat "\n[ОШИБКА] SV: " msg)))
+    (princ))
   (princ "\n  1 = все точки сразу (автоопределение свай)")
   (princ "\n  2 = по группам вручную (нижнее/верхнее сечение)")
   (princ "\n  3 = все сразу: SV 1 + SVP")
@@ -1070,7 +1083,20 @@
                        "  всего: " (itoa total)))))))
   (princ))
 
-(defun c:svp ( / pairs target-z project-centers)
+(defun c:svp ( / *error* pairs target-z project-centers)
+  ;; *error* объявлен локальным: на выходе AutoLISP сам вернёт прежний
+  ;; обработчик, даже если нажали Esc посреди ввода.
+  ;; Отмена это не ошибка. На локализованном AutoCAD выход по Esc приходит
+  ;; сообщением «Функция прервана.», поэтому кроме английских BREAK/CANCEL/
+  ;; QUIT проверяем русские слова — и БЕЗ strcase: полагаться на то, что он
+  ;; верно поднимет регистр кириллицы в любой сборке, не стоит.
+  (defun *error* (msg)
+    (if (or (null msg)
+            (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*QUIT*")
+            (wcmatch msg "*прерван*,*Прерван*,*ПРЕРВАН*,*отмен*,*Отмен*,*ОТМЕН*"))
+      (princ "\n[ОТМЕНА] SVP прерван.")
+      (princ (strcat "\n[ОШИБКА] SVP: " msg)))
+    (princ))
   (princ "\nSVP: сечение сваи на заданной отметке + проектное отклонение.")
   (setq pairs (gc-pile-mode1))
   (cond

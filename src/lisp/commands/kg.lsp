@@ -1,8 +1,23 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v5)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v6)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v6: DVE OSHIBKI, NAYDENNYE NA PERVOM ZHE ZHIVOM PROGONE.
+;;;
+;;;     1. NOL PRI RABOCHEY OTMETKE. Odno i to zhe znachenie pokazyvalos
+;;;        po-raznomu: "+0,000 (nasyp)" i "0,000 (vyemka)". Prichina --
+;;;        sravnenie (>= h 0.0) bez dopuska: znak zavisel ot nevidimogo shuma
+;;;        v poslednem razryade. Dlya kartogrammy eto ne kosmetika: uzel,
+;;;        popavshiy na liniyu nulevyh rabot, otnesetsya to k vyemke,
+;;;        to k nasypi, i ves kvadrat poschitaetsya po-raznomu.
+;;;        Teper tri klassa s dopuskom, kak v docs/formulas.md.
+;;;
+;;;     2. ESC PRINIMALSYA ZA OSHIBKU. Na russkom AutoCAD otmena prihodit
+;;;        soobshcheniem "Funkciya prervana.", a my sravnivali tolko
+;;;        s angliyskimi BREAK/CANCEL/QUIT. Normalnyy vyhod po Esc vyglyadel
+;;;        kak sboy komandy.
 ;;;
 ;;; v5: ISPRAVLEN PEREBOR POVERHNOSTEY. Podklyuchenie k Civil 3D zarabotalo
 ;;;     (v4), chertezh i chislo poverhnostey chitalis, no na pervoy zhe
@@ -94,6 +109,17 @@
 
 ;; Точность в выпадающем списке. Индекс списка = число знаков.
 (setq *gc-kg-prec* '("0" "0,0" "0,00" "0,000"))
+
+;; Допуск «рабочая отметка равна нулю», м. 0.0005 = полмиллиметра: ближе
+;; этого две отметки после округления до миллиметра неразличимы.
+;; То же значение и по той же причине, что в docs/formulas.md.
+;;
+;; ПОЧЕМУ БЕЗ ДОПУСКА НЕЛЬЗЯ: сравнение (>= h 0.0) относит к насыпи всё,
+;; включая ноль, а знак у настоящего нуля зависит от шума в последнем
+;; разряде — одно и то же место оказывалось то выемкой, то насыпью.
+;; Для картограммы это не косметика: узел на линии нулевых работ попадёт
+;; не в свой класс, и весь квадрат посчитается иначе.
+(setq *gc-kg-zero-eps* 0.0005)
 
 ;;; ====================================================================
 ;;; МЕЛОЧИ
@@ -744,6 +770,23 @@
 (defun gc-kg-z (z)
   (if z (strcat (gc-kg-fmt z) " м") "нет данных"))
 
+;; Класс рабочей отметки: выемка, насыпь или ноль.
+;; Возвращает "CUT" / "FILL" / "ZERO".
+(defun gc-kg-work-class (h)
+  (cond
+    ((< (abs h) *gc-kg-zero-eps*) "ZERO")
+    ((< h 0.0)                    "CUT")
+    (T                            "FILL")))
+
+;; Рабочая отметка строкой: знак, число, класс.
+;; У нуля знака НЕТ — плюс перед нулём это ошибка, а не оформление.
+(defun gc-kg-work-str (h / cls)
+  (setq cls (gc-kg-work-class h))
+  (cond
+    ((= cls "ZERO") (strcat (gc-kg-fmt 0.0) " м  (на нулевой линии)"))
+    ((= cls "CUT")  (strcat (gc-kg-fmt h)   " м  (выемка)"))
+    (T              (strcat "+" (gc-kg-fmt h) " м  (насыпь)"))))
+
 ;; Одна точка: показать чёрную, красную и рабочую отметку.
 ;; p — точка в МСК. Возвращает T, если обе отметки прочитались.
 ;;
@@ -758,8 +801,7 @@
   (cond
     ((and zb zr)
      (setq h (- zr zb))
-     (princ (strcat "   рабочая " (if (>= h 0.0) "+" "") (gc-kg-fmt h) " м"
-                    (if (>= h 0.0) "  (насыпь)" "  (выемка)")))
+     (princ (strcat "   рабочая " (gc-kg-work-str h)))
      T)
     (T
      (princ "\n  [!] Точка вне одной из поверхностей — рабочая не считается.")
@@ -831,12 +873,23 @@
 
 ;; *error* объявлен локальным: на выходе AutoLISP сам вернёт прежний
 ;; обработчик, даже если нажали Esc посреди ввода.
+;; Отмена это не ошибка.
+;; ПОЧЕМУ проверяем и русские слова: на локализованном AutoCAD выход по Esc
+;; приходит сообщением «Функция прервана.», и сравнение только с английскими
+;; BREAK/CANCEL/QUIT принимало нормальный выход за сбой команды.
+;; Русские варианты проверяем БЕЗ strcase: полагаться на то, что он верно
+;; поднимет регистр кириллицы в любой сборке, не стоит.
+(defun gc-kg-cancel-p (msg)
+  (if (null msg)
+    T
+    (or (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*QUIT*")
+        (wcmatch msg "*прерван*,*Прерван*,*ПРЕРВАН*,*отмен*,*Отмен*,*ОТМЕН*"))))
+
 (defun c:kg ( / *error*)
   (defun *error* (msg)
-    (if (and msg
-             (not (wcmatch (strcase msg) "*BREAK*,*CANCEL*,*QUIT*")))
-      (princ (strcat "\n[ОШИБКА] KG: " msg))
-      (princ "\n[ОТМЕНА] KG прерван."))
+    (if (gc-kg-cancel-p msg)
+      (princ "\n[ОТМЕНА] KG прерван.")
+      (princ (strcat "\n[ОШИБКА] KG: " msg)))
     (princ))
   (gc-kg-run)
   (princ))
@@ -852,6 +905,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v5 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v6 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 1 из 5: окно настроек и проверка отметок.")
 (princ)
