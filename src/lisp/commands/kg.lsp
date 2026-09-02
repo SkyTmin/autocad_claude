@@ -1,8 +1,19 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v4)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v5)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v5: ISPRAVLEN PEREBOR POVERHNOSTEY. Podklyuchenie k Civil 3D zarabotalo
+;;;     (v4), chertezh i chislo poverhnostey chitalis, no na pervoy zhe
+;;;     poverhnosti: "poverhnost #0: Chlen gruppy ne nayden".
+;;;     Prichina: bralis cherez (vlax-invoke kollekciya 'Item i). U kollekciy
+;;;     Civil 3D "Item" ne metod, a svoystvo s argumentom, libo ego net vovse.
+;;;     Teper snachala idet shtatnyy perebor vlax-for cherez perechislitel
+;;;     kollekcii -- on Item ne trebuet. Item ostavlen zapasnym putem,
+;;;     v dvuh vidah: kak metod i kak svoystvo.
+;;;     Zaodno imena i obekty poverhnostey teper hranyatsya paroy, poetomu
+;;;     iskat obekt po imeni cherez Item bolshe ne nuzhno voobshche.
 ;;;
 ;;; v4: ISPRAVLENO PODKLYUCHENIE K CIVIL 3D. v3 pisala "eto obychnyy AutoCAD"
 ;;;     na mashine, gde Civil 3D yavno zapushchen.
@@ -169,12 +180,6 @@
     (cons nil (vl-catch-all-error-message r))
     (cons T r)))
 
-(defun gc-kg-com-inv (obj m a / r)
-  (setq r (vl-catch-all-apply 'vlax-invoke (list obj m a)))
-  (if (vl-catch-all-error-p r)
-    (cons nil (vl-catch-all-error-message r))
-    (cons T r)))
-
 ;; Известные имена подключения к Civil 3D. У каждой версии своё, поэтому
 ;; перебираем: жёстко зашитое сломалось бы при первом обновлении.
 (setq *gc-kg-progids*
@@ -275,13 +280,61 @@
       (foreach s (reverse *gc-kg-try-log*) (princ (strcat "\n" s)))))
   (princ))
 
+;; Перебор коллекции штатным перечислителем.
+;; ПОЧЕМУ ТАК, А НЕ ЧЕРЕЗ Item: у коллекций Civil 3D "Item" — не метод,
+;; а свойство с аргументом, и вызов его как метода даёт «Член группы
+;; не найден». Перечислитель есть у всех коллекций и работает всегда.
+;; Возвращает список пар (имя . объект).
+(defun gc-kg-collect-for (coll / out)
+  (setq out nil)
+  (vlax-for o coll
+    (setq out (cons (cons (vlax-get o 'Name) o) out)))
+  (reverse out))
+
+;; Запасной путь: Item как метод.
+(defun gc-kg-collect-m (coll / n i o out)
+  (setq out nil n (vlax-get coll "Count") i 0)
+  (while (< i n)
+    (setq o (vlax-invoke coll 'Item i))
+    (setq out (cons (cons (vlax-get o 'Name) o) out))
+    (setq i (1+ i)))
+  (reverse out))
+
+;; Запасной путь: Item как свойство с аргументом.
+(defun gc-kg-collect-p (coll / n i o out)
+  (setq out nil n (vlax-get coll "Count") i 0)
+  (while (< i n)
+    (setq o (vlax-get-property coll 'Item i))
+    (setq out (cons (cons (vlax-get o 'Name) o) out))
+    (setq i (1+ i)))
+  (reverse out))
+
+;; Перебрать коллекцию любым способом, который сработает.
+;; Возвращает список пар (имя . объект) либо nil; причина — в *gc-kg-surf-why*.
+(defun gc-kg-collect (coll / r)
+  (setq r nil)
+  (foreach way (list (cons "перечислитель" 'gc-kg-collect-for)
+                     (cons "Item-метод"    'gc-kg-collect-m)
+                     (cons "Item-свойство" 'gc-kg-collect-p))
+    (if (null r)
+      (progn
+        (setq r (vl-catch-all-apply (cdr way) (list coll)))
+        (if (vl-catch-all-error-p r)
+          (progn
+            (gc-kg-log "коллекция" (car way) (vl-catch-all-error-message r))
+            (setq r nil))
+          (if r (gc-kg-log "коллекция" (car way) "ok"))))))
+  r)
+
 ;; Список имён поверхностей Civil 3D.
 ;; Никогда не падает. При отказе возвращает nil, а причину кладёт
 ;; в *gc-kg-surf-why* — её показываем в окне и печатаем в консоль.
-(defun gc-kg-surfaces ( / app r doc surfs n i o names)
-  (setq *gc-kg-surf-coll* nil
-        *gc-kg-surf-why*  nil
-        names             nil)
+;;
+;; Имена и объекты храним ПАРОЙ: тогда достать поверхность по имени —
+;; это простой поиск в списке, и лезть в коллекцию второй раз не нужно.
+(defun gc-kg-surfaces ( / app r doc surfs pairs)
+  (setq *gc-kg-surf-map* nil
+        *gc-kg-surf-why* nil)
   (cond
     ((not (gc-kg-com-ok))
      (setq *gc-kg-surf-why* "Visual LISP COM недоступен в этой сборке CAD"))
@@ -301,53 +354,21 @@
            (setq *gc-kg-surf-why* (strcat "коллекция поверхностей: " (cdr r))))
           (T
            (setq surfs (cdr r))
-           (setq r (gc-kg-com-get surfs "Count"))
+           (setq pairs (gc-kg-collect surfs))
            (cond
-             ((null (car r))
-              (setq *gc-kg-surf-why* (strcat "число поверхностей: " (cdr r))))
+             (pairs (setq *gc-kg-surf-map* pairs))
              (T
-              (setq n (cdr r) i 0)
-              (while (< i n)
-                (setq o (gc-kg-com-inv surfs 'Item i))
-                (if (car o)
-                  (progn
-                    (setq r (gc-kg-com-get (cdr o) "Name"))
-                    (if (car r)
-                      (setq names (cons (cdr r) names))
-                      (if (null *gc-kg-surf-why*)
-                        (setq *gc-kg-surf-why*
-                          (strcat "имя поверхности: " (cdr r))))))
-                  (if (null *gc-kg-surf-why*)
-                    (setq *gc-kg-surf-why*
-                      (strcat "поверхность #" (itoa i) ": " (cdr o)))))
-                (setq i (1+ i)))
-              (setq names (reverse names))
-              ;; Коллекцию запоминаем: по ней потом достаём сам объект
-              ;; поверхности, чтобы спросить отметку.
-              (if names (setq *gc-kg-surf-coll* surfs))
-              (if (and (= n 0) (null *gc-kg-surf-why*))
-                (setq *gc-kg-surf-why*
-                  "в чертеже нет ни одной поверхности")))))))))) 
-  names)
+              (setq r (gc-kg-com-get surfs "Count"))
+              (setq *gc-kg-surf-why*
+                (if (and (car r) (= (cdr r) 0))
+                  "в чертеже нет ни одной поверхности"
+                  "перебрать поверхности не удалось ни одним способом"))))))))))
+  (mapcar 'car *gc-kg-surf-map*))
 
-;; Объект поверхности по имени. nil, если не нашлась.
-(defun gc-kg-surf-obj (name / r n i o nm res)
-  (setq res nil)
-  (if (and name *gc-kg-surf-coll*)
-    (progn
-      (setq r (gc-kg-com-get *gc-kg-surf-coll* "Count"))
-      (if (car r)
-        (progn
-          (setq n (cdr r) i 0)
-          (while (and (null res) (< i n))
-            (setq o (gc-kg-com-inv *gc-kg-surf-coll* 'Item i))
-            (if (car o)
-              (progn
-                (setq nm (gc-kg-com-get (cdr o) "Name"))
-                (if (and (car nm) (= name (cdr nm)))
-                  (setq res (cdr o)))))
-            (setq i (1+ i)))))))
-  res)
+;; Объект поверхности по имени — просто поиск в списке пар.
+(defun gc-kg-surf-obj (name / r)
+  (setq r (assoc name *gc-kg-surf-map*))
+  (if r (cdr r) nil))
 
 ;; Отметка поверхности в точке XY (координаты в МСК).
 ;; Возвращает число либо nil, если точки на поверхности нет.
@@ -580,11 +601,14 @@
   (setq *gc-kg-surf-list* (gc-kg-surfaces))
   ;; Причину печатаем и в консоль: в окне строка короткая, а тут влезает
   ;; целиком вместе с сообщением самого CAD.
-  (if (and (null *gc-kg-surf-list*) *gc-kg-surf-why*)
-    (progn
-      (princ (strcat "\n[!] Поверхности прочитать не удалось: " *gc-kg-surf-why*))
-      (gc-kg-connect-report)
-      (princ "\n    Окно откроется, остальные настройки доступны.")))
+  (cond
+    ((and (null *gc-kg-surf-list*) *gc-kg-surf-why*)
+     (princ (strcat "\n[!] Поверхности прочитать не удалось: " *gc-kg-surf-why*))
+     (gc-kg-connect-report)
+     (princ "\n    Окно откроется, остальные настройки доступны."))
+    (*gc-kg-surf-list*
+     (princ (strcat "\n[i] Поверхностей найдено: "
+                    (itoa (length *gc-kg-surf-list*))))))
   (setq path (gc-kg-dcl-file))
   (if (null path)
     nil
@@ -828,6 +852,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v4 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v5 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 1 из 5: окно настроек и проверка отметок.")
 (princ)
