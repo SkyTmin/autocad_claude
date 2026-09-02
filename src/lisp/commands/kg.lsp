@@ -1,8 +1,24 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v7)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v8)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v8: OBLAST KARTOGRAMMY BERETSYA U SAMIH POVERHNOSTEY.
+;;;     Vybirat granicu rukami bolshe ne nuzhno. Rabochaya otmetka
+;;;     sushchestvuet tolko tam, gde OBE poverhnosti dayut otmetku, znachit
+;;;     oblast -- ih peresechenie, i ono uzhe zadano poverhnostyami.
+;;;     Tak zhe sami soboy rabotayut granicy, dobavlennye v poverhnost:
+;;;     za granicey otmetki net, tuda setka i ne poydet.
+;;;     Eto sovpadaet s tem, chto zapisano v specs/009 §5B.5: beretsya
+;;;     OBSHCHAYA OBLAST poverhnostey i granic.
+;;;
+;;;     Kray ishchetsya opросом uzlov i deleniem popolam. Ploshchad kraevogo
+;;;     kvadrata utochnyaetsya drobleniem 4 x 4 -- bez etogo ugol granicy,
+;;;     popavshiy vnutr kvadrata, srezalsya by pryamoy (docs/pitfalls.md P29).
+;;;
+;;;     Setka stroitsya srazu posle OK, bez lishnego voprosa.
+;;;     Cvet setki -- po sloyu (belyy).
 ;;;
 ;;; v7: ETAP 2 IZ 5 -- SETKA.
 ;;;     Po granice ploshchadki stroitsya setka kvadratov s zadannym shagom,
@@ -1038,36 +1054,18 @@
      (setq out (gc-kg-dedup (reverse out)))))
   out)
 
-;; Контур площадки. Граница не выбрана в окне -- просим прямоугольник,
-;; чтобы команда работала и без подготовленной полилинии.
-(defun gc-kg-outer-pts ( / ss e pts p1 p2)
+;; Контур площадки, если он выбран в окне вручную. nil, если не выбран —
+;; тогда область берётся по поверхностям, спрашивать нечего.
+(defun gc-kg-outer-pts ( / ss pts)
   (setq ss (gc-kg-get "outer"))
-  (cond
-    ((and ss (> (sslength ss) 0))
-     (setq e (ssname ss 0))
-     (setq pts (gc-kg-ent-pts e))
-     (cond
-       ((or (null pts) (< (length pts) 3))
-        (princ "\n[!] Граница не читается как замкнутый контур.")
-        nil)
-       (T pts)))
-    (T
-     (princ "\n[i] Наружная граница в окне не выбрана - задайте прямоугольник.")
-     (setq p1 (getpoint "\nПервый угол площадки: "))
-     (if (null p1)
-       nil
-       (progn
-         (setq p2 (getcorner p1 "\nПротивоположный угол: "))
-         (if (null p2)
-           nil
-           ;; углы строим в ПСК и только потом переводим каждый в МСК:
-           ;; если ПСК повёрнута, смешивать координаты до перевода нельзя
-           ;; (docs/pitfalls.md -> П1).
-           (mapcar '(lambda (q) (gc-kg-2d (trans q 1 0)))
-                   (list p1
-                         (list (car p2) (cadr p1))
-                         p2
-                         (list (car p1) (cadr p2))))))))))
+  (if (and ss (> (sslength ss) 0))
+    (progn
+      (setq pts (gc-kg-ent-pts (ssname ss 0)))
+      (if (or (null pts) (< (length pts) 3))
+        (progn (princ "\n[!] Выбранная граница не читается как замкнутый контур.")
+               nil)
+        pts))
+    nil))
 
 ;; Внутренние границы-исключения списком контуров.
 (defun gc-kg-holes-pts ( / ss i out pts)
@@ -1115,6 +1113,158 @@
       (entmake d))))
 
 ;;; --------------------------------------------------------------------
+;;; Область картограммы
+;;;
+;;; ГЛАВНОЕ РЕШЕНИЕ ЭТАПА 2: границу выбирать руками не нужно.
+;;;
+;;; Рабочая отметка существует только там, где ОБЕ поверхности дают отметку.
+;;; Значит область картограммы — это их пересечение, и оно уже задано самими
+;;; поверхностями. Спрашивать про неё нечего.
+;;;
+;;; Отсюда же само собой работают границы, добавленные в поверхность: за
+;;; границей поверхность отметку не даёт, туда сетка и не пойдёт. Отдельного
+;;; выбора границ для этого не требуется.
+;;;
+;;; КАК ИЩЕТСЯ КРАЙ. Узлы сетки опрашиваются: есть отметка или нет. На
+;;; стороне квадрата, где ответ меняется, край ищется делением пополам
+;;; с допуском 5 см. Площадь краевого квадрата дополнительно уточняется
+;;; дроблением на 4 x 4 — без этого угол границы, попавший внутрь квадрата,
+;;; срезался бы прямой (до 3 % площадки на крупном шаге).
+;;;
+;;; Если наружная граница ВСЁ ЖЕ выбрана в окне, работает второй путь:
+;;; обрезка по выбранной полилинии. Пути не смешиваются, и команда вслух
+;;; говорит, каким пошла.
+;;; --------------------------------------------------------------------
+
+;; Точка из варианта COM. Отдельно, чтобы не городить перехват в перехвате.
+(defun gc-kg-pt-of-var (v / r)
+  (setq r (vl-catch-all-apply
+            '(lambda (x) (vlax-safearray->list (vlax-variant-value x)))
+            (list v)))
+  (if (vl-catch-all-error-p r) nil r))
+
+;; Габариты COM-объекта: (x0 y0 x1 y1) в МСК либо nil.
+(defun gc-kg-bb-of-vla (o / r p1 p2 a b)
+  (setq p1 nil p2 nil)
+  (setq r (vl-catch-all-apply 'vla-getboundingbox (list o 'p1 'p2)))
+  (if (vl-catch-all-error-p r)
+    nil
+    (progn
+      (setq a (gc-kg-pt-of-var p1) b (gc-kg-pt-of-var p2))
+      (if (and a b (cadr a) (cadr b))
+        (list (min (car a) (car b)) (min (cadr a) (cadr b))
+              (max (car a) (car b)) (max (cadr a) (cadr b)))
+        nil))))
+
+;; Габариты поверхности по её объекту на чертеже. Запасной путь: не всякая
+;; версия Civil 3D отдаёт габариты у объекта из коллекции поверхностей.
+(defun gc-kg-bb-of-ent (name / ss i e o nm res)
+  (setq res nil)
+  (setq ss (ssget "_X" '((0 . "AECC*SURFACE*"))))
+  (if ss
+    (progn
+      (setq i 0)
+      (while (and (null res) (< i (sslength ss)))
+        (setq o (vl-catch-all-apply 'vlax-ename->vla-object (list (ssname ss i))))
+        (if (not (vl-catch-all-error-p o))
+          (progn
+            (setq nm (gc-kg-com-get o "Name"))
+            (if (and (car nm) (= (cdr nm) name))
+              (setq res (gc-kg-bb-of-vla o)))))
+        (setq i (1+ i)))))
+  res)
+
+(defun gc-kg-surf-bb (name obj / bb)
+  (setq bb (if obj (gc-kg-bb-of-vla obj) nil))
+  (if (null bb) (setq bb (gc-kg-bb-of-ent name)))
+  bb)
+
+;; Пересечение габаритов. nil, если поверхности вообще не пересекаются.
+(defun gc-kg-bb-and (a b / x0 y0 x1 y1)
+  (cond
+    ((null a) b)
+    ((null b) a)
+    (T
+     (setq x0 (max (car a)   (car b))   y0 (max (cadr a)   (cadr b))
+           x1 (min (caddr a) (caddr b)) y1 (min (cadddr a) (cadddr b)))
+     (if (and (> x1 x0) (> y1 y0)) (list x0 y0 x1 y1) nil))))
+
+;; Углы габаритов списком точек.
+(defun gc-kg-bb-pts (bb)
+  (list (list (car bb)   (cadr bb))   (list (caddr bb) (cadr bb))
+        (list (caddr bb) (cadddr bb)) (list (car bb)   (cadddr bb))))
+
+;;; --------------------------------------------------------------------
+;;; Опрос поверхностей
+;;; --------------------------------------------------------------------
+
+;; Есть ли отметка у ОБЕИХ поверхностей в точке системы сетки.
+(defun gc-kg-node-ok (p / w)
+  (setq w (gc-kg-to-wcs p))
+  (if (and (gc-kg-elev *gc-kg-sb* (car w) (cadr w))
+           (gc-kg-elev *gc-kg-sr* (car w) (cadr w)))
+    T
+    nil))
+
+;; Допуск на поиск края, м. Мельче не нужно: сама съёмка грубее.
+(setq *gc-kg-edge-tol* 0.05)
+
+;; На сколько частей дробится сторона КРАЕВОГО квадрата при счёте площади.
+;;
+;; ЗАЧЕМ ЭТО ВООБЩЕ НУЖНО. Прямая, проведённая между двумя точками края на
+;; сторонах квадрата, СРЕЗАЕТ угол границы, если он попал внутрь квадрата.
+;; Численная проверка: на шаге 20 м это давало до 3 % по всей площадке —
+;; для ведомости объёмов недопустимо. Дробление 4 x 4 убирает ошибку
+;; до сотых долей процента.
+;;
+;; Цена — опрос поверхностей в узлах дробления, но только у краевых
+;; квадратов, а их порядка периметра, а не площади.
+(setq *gc-kg-sub* 4)
+
+;; Сколько делений пополам нужно, чтобы уложиться в допуск.
+(defun gc-kg-cross-n (l / n)
+  (setq n 1)
+  (while (and (> (/ l (expt 2.0 n)) *gc-kg-edge-tol*) (< n 12))
+    (setq n (1+ n)))
+  n)
+
+;; Край области на отрезке: pin — где данные есть, pout — где их нет.
+(defun gc-kg-cross (pin pout / a b m i n)
+  (setq a pin b pout n (gc-kg-cross-n (distance pin pout)) i 0)
+  (while (< i n)
+    (setq m (list (/ (+ (car a) (car b)) 2.0) (/ (+ (cadr a) (cadr b)) 2.0)))
+    (if (gc-kg-node-ok m) (setq a m) (setq b m))
+    (setq i (1+ i)))
+  ;; Середина последней вилки, а не её внутренний конец: иначе край
+  ;; систематически уезжает внутрь и вся площадка выходит меньше.
+  (list (/ (+ (car a) (car b)) 2.0) (/ (+ (cadr a) (cadr b)) 2.0)))
+
+;; Часть фигуры, где есть данные. cs — вершины, vs — признаки.
+;; Обход тот же, что в отсечении: вершина берётся, если данные есть, и на
+;; каждой смене признака добавляется найденная точка края.
+(defun gc-kg-part (cs vs / n k out a b ia ib)
+  (setq n (length cs) out nil k 0)
+  (while (< k n)
+    (setq a  (nth k cs)                 ia (nth k vs)
+          b  (nth (rem (1+ k) n) cs)    ib (nth (rem (1+ k) n) vs))
+    (if ia (setq out (cons a out)))
+    (cond
+      ((and ia (not ib)) (setq out (cons (gc-kg-cross a b) out)))
+      ((and (not ia) ib) (setq out (cons (gc-kg-cross b a) out))))
+    (setq k (1+ k)))
+  (reverse out))
+
+;; Строка признаков по узлам от i0 до i1 включительно.
+;; Строки считаются по одной и переиспользуются соседними рядами квадратов:
+;; каждый узел опрашивается ОДИН раз, а не четыре.
+(defun gc-kg-row (j i0 i1 sx sy / k out)
+  (setq out nil k i0)
+  (while (<= k i1)
+    (setq out (cons (gc-kg-node-ok (list (* k sx) (* j sy))) out))
+    (setq k (1+ k)))
+  (reverse out))
+
+;;; --------------------------------------------------------------------
 ;;; Построение
 ;;; --------------------------------------------------------------------
 
@@ -1122,113 +1272,245 @@
 ;; (0,2 вместо 20), счёт уходит на сотни тысяч объектов и CAD встаёт.
 (setq *gc-kg-max-cells* 20000)
 
-(defun gc-kg-build ( / outer holes ang sx sy base trim bb gp gh
-                       i0 j0 i1 j1 nc i j cx cy cx1 cy1
-                       poly ar hr hps cells total lay eps aout ce)
-  (setq outer (gc-kg-outer-pts))
-  (if (null outer)
-    (progn (princ "\n[!] Площадка не задана - сетка не построена.") nil)
-    (progn
-      (setq holes (gc-kg-holes-pts))
-      (setq ang (gc-kg-num (gc-kg-get "angle")))
-      (if (null ang) (setq ang 0.0))
-      (setq ang (/ (* pi ang) 180.0))
-      (setq sx (gc-kg-num (gc-kg-get "step-x"))
-            sy (gc-kg-num (gc-kg-get "step-y")))
-      (setq trim (= "1" (gc-kg-get "trim")))
-      ;; Базовая точка не указана - берём левый нижний угол габаритов
-      ;; в системе сетки. Тогда нумерация квадратов начинается с нуля
-      ;; и не зависит от того, где в чертеже лежит площадка.
-      (setq base (gc-kg-get "base"))
-      (if (null base)
+;; Части четырёхугольника, где есть данные. Список многоугольников.
+(defun gc-kg-quad (cs vs / nv v0 v1 v2 v3)
+  (setq v0 (nth 0 vs) v1 (nth 1 vs) v2 (nth 2 vs) v3 (nth 3 vs))
+  (setq nv (+ (if v0 1 0) (if v1 1 0) (if v2 1 0) (if v3 1 0)))
+  (cond
+    ((= nv 0) nil)
+    ((= nv 4) (list cs))
+    ;; Край прошёл по диагонали: данные в двух противоположных углах.
+    ;; Обычный обход дал бы самопересекающийся контур и неверную площадь,
+    ;; поэтому квадрат делится диагональю на два треугольника.
+    ((or (and v0 v2 (not v1) (not v3))
+         (and v1 v3 (not v0) (not v2)))
+     (list (gc-kg-part (list (nth 0 cs) (nth 1 cs) (nth 2 cs)) (list v0 v1 v2))
+           (gc-kg-part (list (nth 2 cs) (nth 3 cs) (nth 0 cs)) (list v2 v3 v0))))
+    (T (list (gc-kg-part cs vs)))))
+
+;; Уточнённая площадь краевого квадрата: дробим на K x K и складываем части.
+;; Углы берутся из уже опрошенных узлов сетки, заново не спрашиваются.
+(defun gc-kg-cell-area (x0 y0 sx sy vs / k hx hy a b g row ar cs sv)
+  (setq k *gc-kg-sub* hx (/ sx k) hy (/ sy k))
+  (setq g nil b 0)
+  (while (<= b k)
+    (setq row nil a 0)
+    (while (<= a k)
+      (setq row
+        (cons
+          (cond
+            ((and (= a 0) (= b 0)) (nth 0 vs))
+            ((and (= a k) (= b 0)) (nth 1 vs))
+            ((and (= a k) (= b k)) (nth 2 vs))
+            ((and (= a 0) (= b k)) (nth 3 vs))
+            (T (gc-kg-node-ok (list (+ x0 (* a hx)) (+ y0 (* b hy))))))
+          row))
+      (setq a (1+ a)))
+    (setq g (cons (reverse row) g))
+    (setq b (1+ b)))
+  (setq g (reverse g))
+  (setq ar 0.0 b 0)
+  (while (< b k)
+    (setq a 0)
+    (while (< a k)
+      (setq cs (list (list (+ x0 (* a hx))      (+ y0 (* b hy)))
+                     (list (+ x0 (* (1+ a) hx)) (+ y0 (* b hy)))
+                     (list (+ x0 (* (1+ a) hx)) (+ y0 (* (1+ b) hy)))
+                     (list (+ x0 (* a hx))      (+ y0 (* (1+ b) hy)))))
+      (setq sv (list (nth a      (nth b      g))
+                     (nth (1+ a) (nth b      g))
+                     (nth (1+ a) (nth (1+ b) g))
+                     (nth a      (nth (1+ b) g))))
+      (foreach pp (gc-kg-quad cs sv) (setq ar (+ ar (gc-kg-area pp))))
+      (setq a (1+ a)))
+    (setq b (1+ b)))
+  ar)
+
+;; Квадраты по поверхностям.
+;;
+;; ПЛОЩАДЬ и ЛИНИЯ считаются по-разному, и это осознанно:
+;;   площадь — дроблением 4 x 4, потому что она идёт в объёмы;
+;;   линия   — одним контуром по узлам сетки, потому что на чертеже нужен
+;;             один чистый квадрат, а не сетка из шестнадцати кусочков.
+;; Расхождение между ними — сотые доли процента площади квадрата.
+(defun gc-kg-cells-auto (i0 j0 i1 j1 sx sy / j i r0 r1 v0 v1 v2 v3
+                           c0 c1 c2 c3 cs vs parts ar cells nv eps)
+  (setq cells nil eps (* 1.0e-6 sx sy))
+  (setq r0 (gc-kg-row j0 i0 i1 sx sy))
+  (setq j j0)
+  (while (< j j1)
+    (setq r1 (gc-kg-row (1+ j) i0 i1 sx sy))
+    (setq i i0)
+    (while (< i i1)
+      (setq v0 (nth (- i i0) r0)
+            v1 (nth (- (1+ i) i0) r0)
+            v2 (nth (- (1+ i) i0) r1)
+            v3 (nth (- i i0) r1))
+      (setq nv (+ (if v0 1 0) (if v1 1 0) (if v2 1 0) (if v3 1 0)))
+      (if (> nv 0)
         (progn
-          (gc-kg-set-frame '(0.0 0.0) ang)
-          (setq bb (gc-kg-bbox (mapcar 'gc-kg-to-grid outer)))
-          (setq base (gc-kg-to-wcs (list (car bb) (cadr bb))))))
-      (gc-kg-set-frame base ang)
-      (setq gp (mapcar 'gc-kg-to-grid outer))
-      (setq gh (mapcar '(lambda (h) (mapcar 'gc-kg-to-grid h)) holes))
-      (setq bb (gc-kg-bbox gp))
-      (setq i0 (gc-kg-floor (/ (car   bb) sx))
-            j0 (gc-kg-floor (/ (cadr  bb) sy))
-            i1 (gc-kg-ceil  (/ (caddr bb) sx))
-            j1 (gc-kg-ceil  (/ (cadddr bb) sy)))
-      (setq nc (* (- i1 i0) (- j1 j0)))
-      (if (> nc *gc-kg-max-cells*)
-        (progn
-          (princ (strcat "\n[!] При шаге " (gc-kg-get "step-x") " x "
-                         (gc-kg-get "step-y") " м на эту площадку ложится "
-                         (itoa nc) " квадратов."))
-          (princ (strcat "\n    Предел " (itoa *gc-kg-max-cells*)
-                         ". Увеличьте шаг или уменьшите площадку."))
-          nil)
-        (progn
-          (setq cells nil total 0.0 eps (* 1.0e-6 sx sy))
-          (setq j j0)
-          (while (< j j1)
-            (setq i i0)
-            (while (< i i1)
-              (setq cx (* i sx) cy (* j sy) cx1 (+ cx sx) cy1 (+ cy sy))
-              (setq poly (gc-kg-clip-rect gp cx cy cx1 cy1))
-              (setq ar (gc-kg-area poly))
-              (setq hr 0.0 hps nil)
-              (foreach h gh
-                (setq ce (gc-kg-clip-rect h cx cy cx1 cy1))
-                (if (> (gc-kg-area ce) eps)
-                  (progn (setq hr (+ hr (gc-kg-area ce)))
-                         (setq hps (cons ce hps)))))
-              (setq ar (- ar hr))
-              (if (> ar eps)
-                (progn
-                  (setq cells
-                    (cons (list i j ar
+          (setq c0 (list (* i sx)      (* j sy))
+                c1 (list (* (1+ i) sx) (* j sy))
+                c2 (list (* (1+ i) sx) (* (1+ j) sy))
+                c3 (list (* i sx)      (* (1+ j) sy)))
+          (setq cs (list c0 c1 c2 c3) vs (list v0 v1 v2 v3))
+          (if (= nv 4)
+            (setq parts (list cs) ar (* sx sy))
+            (setq parts (gc-kg-quad cs vs)
+                  ar    (gc-kg-cell-area (* i sx) (* j sy) sx sy vs)))
+          (if (> ar eps)
+            (setq cells (cons (list i j ar cs (car parts) (cdr parts)) cells)))))
+      (setq i (1+ i)))
+    (setq r0 r1)
+    (setq j (1+ j))
+    (princ "."))
+  (reverse cells))
+
+;; Квадраты по выбранной полилинии.
+(defun gc-kg-cells-poly (gp gh i0 j0 i1 j1 sx sy
+                         / i j cx cy cx1 cy1 poly ar hr hps ce cells eps)
+  (setq cells nil eps (* 1.0e-6 sx sy))
+  (setq j j0)
+  (while (< j j1)
+    (setq i i0)
+    (while (< i i1)
+      (setq cx (* i sx) cy (* j sy) cx1 (+ cx sx) cy1 (+ cy sy))
+      (setq poly (gc-kg-clip-rect gp cx cy cx1 cy1))
+      (setq ar (gc-kg-area poly) hr 0.0 hps nil)
+      (foreach h gh
+        (setq ce (gc-kg-clip-rect h cx cy cx1 cy1))
+        (if (> (gc-kg-area ce) eps)
+          (progn (setq hr (+ hr (gc-kg-area ce)))
+                 (setq hps (cons ce hps)))))
+      (setq ar (- ar hr))
+      (if (> ar eps)
+        (setq cells (cons (list i j ar
                                 (list (list cx cy) (list cx1 cy)
                                       (list cx1 cy1) (list cx cy1))
                                 poly hps)
-                          cells))
-                  (setq total (+ total ar))))
-              (setq i (1+ i)))
-            (setq j (1+ j)))
-          (setq cells (reverse cells))
-          (if (null cells)
-            (progn
-              (princ "\n[!] Ни один квадрат не попал внутрь границы.")
-              (princ "\n    Проверьте, замкнута ли граница и тот ли объект выбран.")
-              nil)
-            (progn
-              ;; --- рисуем
-              (setq lay (gc-kg-layer "GC-Картограмма-Сетка" 8))
-              (setvar "CMDECHO" 0)
-              (command "_.UNDO" "_BEGIN")
-              (foreach c cells
-                (if (and trim (< (nth 2 c) (- (* sx sy) eps)))
+                          cells)))
+      (setq i (1+ i)))
+    (setq j (1+ j)))
+  (reverse cells))
+
+;; Отрисовка построенных квадратов.
+(defun gc-kg-draw-cells (cells trim sx sy / lay eps)
+  (setq lay (gc-kg-layer "GC-Картограмма-Сетка" 7))
+  (setq eps (* 1.0e-6 sx sy))
+  (setvar "CMDECHO" 0)
+  (command "_.UNDO" "_BEGIN")
+  (foreach c cells
+    (if (and trim (< (nth 2 c) (- (* sx sy) eps)))
+      (progn
+        (gc-kg-draw-poly (nth 4 c) lay)
+        (foreach h (nth 5 c) (gc-kg-draw-poly h lay)))
+      (gc-kg-draw-poly (nth 3 c) lay)))
+  (command "_.UNDO" "_END")
+  lay)
+
+(defun gc-kg-build ( / sbn srn ang sx sy base trim outer holes auto
+                       bb ext gbb gp gh i0 j0 i1 j1 nc cells total lay aout)
+  (setq sbn (gc-kg-get "s-black") srn (gc-kg-get "s-red"))
+  (setq *gc-kg-sb* (gc-kg-surf-obj sbn)
+        *gc-kg-sr* (gc-kg-surf-obj srn))
+  (setq ang (gc-kg-num (gc-kg-get "angle")))
+  (if (null ang) (setq ang 0.0))
+  (setq ang (/ (* pi ang) 180.0))
+  (setq sx (gc-kg-num (gc-kg-get "step-x"))
+        sy (gc-kg-num (gc-kg-get "step-y")))
+  (setq trim (= "1" (gc-kg-get "trim")))
+  (setq outer (gc-kg-outer-pts))
+  (setq auto (null outer))
+  (cond
+    ;; --- нечем работать
+    ((and auto (or (null *gc-kg-sb*) (null *gc-kg-sr*)))
+     (princ "\n[!] Обе поверхности не выбраны, а наружная граница не указана.")
+     (princ "\n    Выберите поверхности в окне — область определится сама.")
+     nil)
+    (T
+     (setq holes (gc-kg-holes-pts))
+     ;; --- габариты области
+     (if auto
+       (setq bb (gc-kg-bb-and (gc-kg-surf-bb sbn *gc-kg-sb*)
+                              (gc-kg-surf-bb srn *gc-kg-sr*))))
+     (cond
+       ((and auto (null bb))
+        (princ "\n[!] Габариты поверхностей не читаются либо они не пересекаются.")
+        (princ "\n    Выберите наружную границу в окне — построю по ней.")
+        nil)
+       (T
+        (setq ext (if auto (gc-kg-bb-pts bb) outer))
+        ;; --- система координат сетки
+        (setq base (gc-kg-get "base"))
+        (if (null base)
+          (progn
+            (gc-kg-set-frame '(0.0 0.0) ang)
+            (setq gbb (gc-kg-bbox (mapcar 'gc-kg-to-grid ext)))
+            (setq base (gc-kg-to-wcs (list (car gbb) (cadr gbb))))))
+        (gc-kg-set-frame base ang)
+        (setq gbb (gc-kg-bbox (mapcar 'gc-kg-to-grid ext)))
+        (setq i0 (gc-kg-floor (/ (car    gbb) sx))
+              j0 (gc-kg-floor (/ (cadr   gbb) sy))
+              i1 (gc-kg-ceil  (/ (caddr  gbb) sx))
+              j1 (gc-kg-ceil  (/ (cadddr gbb) sy)))
+        (setq nc (* (- i1 i0) (- j1 j0)))
+        (if (> nc *gc-kg-max-cells*)
+          (progn
+            (princ (strcat "\n[!] При шаге " (gc-kg-get "step-x") " x "
+                           (gc-kg-get "step-y") " м на эту площадку ложится "
+                           (itoa nc) " квадратов."))
+            (princ (strcat "\n    Предел " (itoa *gc-kg-max-cells*)
+                           ". Увеличьте шаг."))
+            nil)
+          (progn
+            (princ (strcat "\n[i] Область: "
+                           (if auto
+                             "по поверхностям (там, где есть отметки у обеих)"
+                             "по выбранной наружной границе")))
+            (if auto
+              (progn
+                (princ (strcat "\n[i] Опрашиваю поверхности: "
+                               (itoa (* (1+ (- i1 i0)) (1+ (- j1 j0))))
+                               " узлов. "))
+                (setq cells (gc-kg-cells-auto i0 j0 i1 j1 sx sy)))
+              (progn
+                (setq gp (mapcar 'gc-kg-to-grid outer))
+                (setq gh (mapcar '(lambda (h) (mapcar 'gc-kg-to-grid h)) holes))
+                (setq cells (gc-kg-cells-poly gp gh i0 j0 i1 j1 sx sy))))
+            (if (null cells)
+              (progn
+                (princ "\n[!] Ни один квадрат не попал в область.")
+                (princ "\n    Проверьте, что поверхности пересекаются по площади.")
+                nil)
+              (progn
+                (setq total 0.0)
+                (foreach c cells (setq total (+ total (nth 2 c))))
+                (setq lay (gc-kg-draw-cells cells trim sx sy))
+                (setq *gc-kg-cells* cells
+                      *gc-kg-grid-par* (list (gc-kg-2d base) ang sx sy))
+                (princ "\n\n--- СЕТКА ПОСТРОЕНА ---")
+                (princ (strcat "\n  квадратов        : " (itoa (length cells))
+                               (if trim "  (краевые обрезаны)"
+                                        "  (краевые целые)")))
+                (princ (strcat "\n  слой             : " lay
+                               "  (цвет по слою, белый)"))
+                (princ (strcat "\n  шаг              : " (gc-kg-fmt sx)
+                               " x " (gc-kg-fmt sy) " м"))
+                (princ (strcat "\n  площадь по сетке : " (gc-kg-fmt total) " м2"))
+                (if (not auto)
                   (progn
-                    (gc-kg-draw-poly (nth 4 c) lay)
-                    (foreach h (nth 5 c) (gc-kg-draw-poly h lay)))
-                  (gc-kg-draw-poly (nth 3 c) lay)))
-              (command "_.UNDO" "_END")
-              ;; --- запоминаем для следующих этапов
-              (setq *gc-kg-cells* cells
-                    *gc-kg-grid-par* (list (gc-kg-2d base) ang sx sy))
-              ;; --- контроль: площадь по сетке против площади границы
-              (setq aout (gc-kg-area outer))
-              (foreach h holes (setq aout (- aout (gc-kg-area h))))
-              (princ (strcat "\n\n--- СЕТКА ПОСТРОЕНА ---"))
-              (princ (strcat "\n  квадратов        : " (itoa (length cells))
-                             (if trim "  (краевые обрезаны границей)"
-                                      "  (краевые целые)")))
-              (princ (strcat "\n  слой             : " lay))
-              (princ (strcat "\n  площадь по сетке : " (gc-kg-fmt total) " м2"))
-              (princ (strcat "\n  площадь границы  : " (gc-kg-fmt aout) " м2"))
-              (if (> aout 1.0e-9)
-                (princ (strcat "\n  расхождение      : "
-                               (gc-kg-fmt (* 100.0 (/ (abs (- total aout)) aout)))
-                               " %"
-                               (if trim
-                                 "  (при обрезке должно быть около нуля)"
-                                 "  (при целых квадратах сетка больше площадки - так и надо)"))))
-              (princ "\n[i] Один Ctrl+Z убирает всю сетку целиком.")
-              T)))))))
+                    (setq aout (gc-kg-area outer))
+                    (foreach h holes (setq aout (- aout (gc-kg-area h))))
+                    (princ (strcat "\n  площадь границы  : " (gc-kg-fmt aout) " м2"))
+                    (if (> aout 1.0e-9)
+                      (princ (strcat "\n  расхождение      : "
+                                     (gc-kg-fmt (* 100.0 (/ (abs (- total aout)) aout)))
+                                     " %"
+                                     (if trim
+                                       "  (при обрезке должно быть около нуля)"
+                                       "  (целые квадраты больше площадки — так и надо)"))))))
+                (princ "\n[i] Один Ctrl+Z убирает всю сетку целиком.")
+                T)))))))))
 
 ;;; --------------------------------------------------------------------
 ;;; Меню действий
@@ -1238,7 +1520,7 @@
 ;;; --------------------------------------------------------------------
 
 (defun gc-kg-menu ( / k dflt done)
-  (setq done nil dflt "Сетка")
+  (setq done nil dflt "Выход")
   (while (not done)
     (initget "Сетка Проверка Выход")
     (setq k (getkword (strcat "\nЧто делаем? [Сетка/Проверка/Выход] <" dflt ">: ")))
@@ -1261,12 +1543,12 @@
   (princ "\nСетка квадратов, отметки в узлах, объёмы выемки и насыпи,")
   (princ "\nлиния нулевых работ и ведомость.")
   (princ "\n")
-  (princ "\n[i] ЭТАП 2 ИЗ 5: настройки, сетка квадратов, проверка отметок.")
-  (princ "\n    Окно собирает и запоминает все параметры. После него — выбор:")
-  (princ "\n      Сетка    — построить квадраты по границе площадки;")
-  (princ "\n      Проверка — потыкать по чертежу и увидеть отметки поверхностей.")
-  (princ "\n    Отметки в узлах, объёмы и ведомость добавляются этапами 3–5.")
-  (princ "\n    Сетка НЕ проверена в Civil 3D — это первый её запуск."))
+  (princ "\n[i] ЭТАП 2 ИЗ 5: настройки и сетка квадратов.")
+  (princ "\n    Выберите в окне две поверхности и нажмите ОК — сетка ляжет")
+  (princ "\n    на их общую область сама. Границу выбирать не нужно: рабочая")
+  (princ "\n    отметка есть только там, где отметку дают обе поверхности.")
+  (princ "\n    Границы, добавленные в саму поверхность, тоже учтутся.")
+  (princ "\n    Отметки в узлах, объёмы и ведомость — этапы 3–5."))
 
 (defun gc-kg-run ( / )
   (gc-kg-defaults)
@@ -1275,9 +1557,9 @@
     (progn
       (gc-kg-report)
       (princ "\n\n[i] Настройки сохранены до закрытия чертежа.")
-      (if (and (gc-kg-get "s-black") (gc-kg-get "s-red"))
-        (princ "\n[i] Поверхности выбраны — доступны и сетка, и проверка отметок.")
-        (princ "\n[!] Поверхности не выбраны — проверка отметок работать не будет."))
+      ;; Сетка строится сразу: окно и есть подтверждение. Лишний вопрос
+      ;; между «ОК» и результатом ничего не добавляет.
+      (gc-kg-build)
       (gc-kg-menu)))
   (princ "\n[i] KG завершена.")
   (princ))
@@ -1320,6 +1602,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v7 загружен. Команда: KG | рус. раскладка: ЛП")
-(princ "\n     Этап 2 из 5: окно настроек, сетка квадратов, проверка отметок.")
+(princ "\n[gc] kg.lsp v8 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
