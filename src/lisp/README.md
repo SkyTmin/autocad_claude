@@ -57,7 +57,7 @@ tests/       # Тесты (по мере появления)
 | `commands/vo.lsp` | `VO` (`МЩ`) / `GC-HEIGHT-DEVIATION` | [SPEC-006](../../specs/006-height-deviation.md) | v15, v14 подтверждено вручную («Найти» — не проверено) |
 | `commands/ol.lsp` | `OL` (`ЩД`) / `GC-LINE-DEVIATION` | [SPEC-007](../../specs/007-line-deviation.md) | v13, подтверждено вручную |
 | `commands/rs.lsp` | `RS` (`КЫ`) / `GC-REVERSE-ARROW` | [SPEC-008](../../specs/008-reverse-arrow.md) | v1, **не проверено** в Civil 3D |
-| `commands/kg.lsp` | `KG` (`ЛП`) / `GC-CARTOGRAM` | [SPEC-009](../../specs/009-cartogram.md) | v2 — этап 1 из 5: окно настроек и проверка отметок, **не проверено** |
+| `commands/kg.lsp` | `KG` (`ЛП`) / `GC-CARTOGRAM` | [SPEC-009](../../specs/009-cartogram.md) | v3 — этап 1 из 5: окно настроек и проверка отметок, **не проверено** |
 
 > **Полный реестр граблей — [`docs/pitfalls.md`](../../docs/pitfalls.md).**
 > Читать перед тем, как писать код (Hard Rule R7). Ниже — выжимка.

@@ -1,8 +1,20 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v2)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v3)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v3: ISPRAVLENA OSHIBKA "Chlen gruppy ne nayden" -- komanda padala
+;;;     do otkrytiya okna. Prichina: chast COM-vyzovov pri chtenii spiska
+;;;     poverhnostey byla BEZ perehvata oshibok, i lyuboy otkaz Civil 3D
+;;;     ronyal vsyu komandu.
+;;;     Teper KAZHDYY COM-vyzov obernut, i pri otkaze komanda ne padaet,
+;;;     a otkryvaet okno i pishet, NA KAKOM SHAGE i s kakim soobshcheniem
+;;;     sorvalos. Spisok poverhnostey ne prochitalsya -- pole gasnet,
+;;;     no vse ostalnye nastroyki dostupny.
+;;;     Zaodno vlax-get-object vmesto vlax-get-or-create-object: vtoroy mog
+;;;     ZAPUSTIT eshche odin ekzemplyar Civil 3D vmesto podklyucheniya
+;;;     k rabotayushchemu.
 ;;;
 ;;; v2: PROVERKA OTMETOK. Posle OK komanda predlagaet potykat po chertezhu
 ;;;     i pokazyvaet, kakuyu otmetku vernula kazhdaya poverhnost i kakaya
@@ -135,57 +147,121 @@
 ;; номер сломался бы при первом же обновлении. Перебираем известные, берём
 ;; первый откликнувшийся. Не отозвался ни один — значит либо это обычный
 ;; AutoCAD, либо COM недоступен; тогда имя поверхности вводится вручную.
-(defun gc-kg-surfaces ( / app doc surfs n i out)
-  (setq out nil *gc-kg-surf-coll* nil)
-  (if (gc-kg-com-ok)
-    (foreach pid '("AeccXUiLand.AeccApplication.13.6"
-                   "AeccXUiLand.AeccApplication.13.5"
-                   "AeccXUiLand.AeccApplication.13.4"
-                   "AeccXUiLand.AeccApplication.13.3"
-                   "AeccXUiLand.AeccApplication.13.2"
-                   "AeccXUiLand.AeccApplication.13.1"
-                   "AeccXUiLand.AeccApplication.13.0"
-                   "AeccXUiLand.AeccApplication.12.0"
-                   "AeccXUiLand.AeccApplication.11.0"
-                   "AeccXUiLand.AeccApplication.10.5")
-      (if (null out)
-        (progn
-          (setq app (vl-catch-all-apply 'vlax-get-or-create-object (list pid)))
-          (if (not (vl-catch-all-error-p app))
-            (progn
-              (setq doc (vl-catch-all-apply 'vlax-get (list app "ActiveDocument")))
-              (if (not (vl-catch-all-error-p doc))
-                (progn
-                  (setq surfs (vl-catch-all-apply 'vlax-get (list doc "Surfaces")))
-                  (if (not (vl-catch-all-error-p surfs))
-                    (progn
-                      (setq n (vl-catch-all-apply 'vlax-get (list surfs "Count")))
-                      (if (not (vl-catch-all-error-p n))
-                        (progn
-                          (setq out '() i 0)
-                          (while (< i n)
-                            (setq out (cons (vlax-get (vlax-invoke surfs 'Item i) 'Name) out))
-                            (setq i (1+ i)))
-                          (setq out (reverse out))
-                          ;; Коллекцию запоминаем: по ней потом достаём
-                          ;; сам объект поверхности, чтобы спросить отметку.
-                          (setq *gc-kg-surf-coll* surfs)))))))))))))
-  out)
+;; Безопасное чтение свойства COM.
+;; Возвращает (T . значение) при успехе либо (nil . текст-ошибки).
+;;
+;; ПОЧЕМУ обёрнуто ВСЁ. В v2 часть вызовов была без перехвата, и первый же
+;; отказ Civil 3D ронял команду целиком — окно даже не открывалось.
+;; COM отказывает по десятку причин, и почти все не наши: не та версия,
+;; чертёж не Civil 3D, поверхность занята. Падать из-за этого нельзя.
+(defun gc-kg-com-get (obj prop / r)
+  (setq r (vl-catch-all-apply 'vlax-get (list obj prop)))
+  (if (vl-catch-all-error-p r)
+    (cons nil (vl-catch-all-error-message r))
+    (cons T r)))
+
+(defun gc-kg-com-inv (obj m a / r)
+  (setq r (vl-catch-all-apply 'vlax-invoke (list obj m a)))
+  (if (vl-catch-all-error-p r)
+    (cons nil (vl-catch-all-error-message r))
+    (cons T r)))
+
+;; Известные имена подключения к Civil 3D. У каждой версии своё, поэтому
+;; перебираем: жёстко зашитое сломалось бы при первом обновлении.
+(setq *gc-kg-progids*
+  '("AeccXUiLand.AeccApplication.13.6" "AeccXUiLand.AeccApplication.13.5"
+    "AeccXUiLand.AeccApplication.13.4" "AeccXUiLand.AeccApplication.13.3"
+    "AeccXUiLand.AeccApplication.13.2" "AeccXUiLand.AeccApplication.13.1"
+    "AeccXUiLand.AeccApplication.13.0" "AeccXUiLand.AeccApplication.12.0"
+    "AeccXUiLand.AeccApplication.11.0" "AeccXUiLand.AeccApplication.10.5"))
+
+;; Подключение к УЖЕ ЗАПУЩЕННОМУ Civil 3D.
+;;
+;; ПОЧЕМУ vlax-get-object, а не vlax-get-or-create-object: второй при неудаче
+;; ЗАПУСКАЕТ новый экземпляр Civil 3D в фоне вместо подключения к текущему.
+;; Пользователь этого не видит, а чертёж читается не тот. Создавать ничего
+;; не надо — Civil 3D уже перед глазами.
+(defun gc-kg-app ( / res r)
+  (setq res nil)
+  (foreach pid *gc-kg-progids*
+    (if (null res)
+      (progn
+        (setq r (vl-catch-all-apply 'vlax-get-object (list pid)))
+        (if (and (not (vl-catch-all-error-p r)) r)
+          (setq res r)))))
+  res)
+
+;; Список имён поверхностей Civil 3D.
+;; Никогда не падает. При отказе возвращает nil, а причину кладёт
+;; в *gc-kg-surf-why* — её показываем в окне и печатаем в консоль.
+(defun gc-kg-surfaces ( / app r doc surfs n i o names)
+  (setq *gc-kg-surf-coll* nil
+        *gc-kg-surf-why*  nil
+        names             nil)
+  (cond
+    ((not (gc-kg-com-ok))
+     (setq *gc-kg-surf-why* "Visual LISP COM недоступен в этой сборке CAD"))
+    ((null (setq app (gc-kg-app)))
+     (setq *gc-kg-surf-why*
+       "не удалось подключиться к Civil 3D — возможно, это обычный AutoCAD"))
+    (T
+     (setq r (gc-kg-com-get app "ActiveDocument"))
+     (cond
+       ((null (car r))
+        (setq *gc-kg-surf-why* (strcat "чертёж (ActiveDocument): " (cdr r))))
+       (T
+        (setq doc (cdr r))
+        (setq r (gc-kg-com-get doc "Surfaces"))
+        (cond
+          ((null (car r))
+           (setq *gc-kg-surf-why* (strcat "коллекция поверхностей: " (cdr r))))
+          (T
+           (setq surfs (cdr r))
+           (setq r (gc-kg-com-get surfs "Count"))
+           (cond
+             ((null (car r))
+              (setq *gc-kg-surf-why* (strcat "число поверхностей: " (cdr r))))
+             (T
+              (setq n (cdr r) i 0)
+              (while (< i n)
+                (setq o (gc-kg-com-inv surfs 'Item i))
+                (if (car o)
+                  (progn
+                    (setq r (gc-kg-com-get (cdr o) "Name"))
+                    (if (car r)
+                      (setq names (cons (cdr r) names))
+                      (if (null *gc-kg-surf-why*)
+                        (setq *gc-kg-surf-why*
+                          (strcat "имя поверхности: " (cdr r))))))
+                  (if (null *gc-kg-surf-why*)
+                    (setq *gc-kg-surf-why*
+                      (strcat "поверхность #" (itoa i) ": " (cdr o)))))
+                (setq i (1+ i)))
+              (setq names (reverse names))
+              ;; Коллекцию запоминаем: по ней потом достаём сам объект
+              ;; поверхности, чтобы спросить отметку.
+              (if names (setq *gc-kg-surf-coll* surfs))
+              (if (and (= n 0) (null *gc-kg-surf-why*))
+                (setq *gc-kg-surf-why*
+                  "в чертеже нет ни одной поверхности")))))))))) 
+  names)
 
 ;; Объект поверхности по имени. nil, если не нашлась.
-(defun gc-kg-surf-obj (name / n i o res)
+(defun gc-kg-surf-obj (name / r n i o nm res)
   (setq res nil)
   (if (and name *gc-kg-surf-coll*)
     (progn
-      (setq n (vl-catch-all-apply 'vlax-get (list *gc-kg-surf-coll* "Count")))
-      (if (not (vl-catch-all-error-p n))
+      (setq r (gc-kg-com-get *gc-kg-surf-coll* "Count"))
+      (if (car r)
         (progn
-          (setq i 0)
+          (setq n (cdr r) i 0)
           (while (and (null res) (< i n))
-            (setq o (vl-catch-all-apply 'vlax-invoke (list *gc-kg-surf-coll* 'Item i)))
-            (if (and (not (vl-catch-all-error-p o))
-                     (= name (vlax-get o 'Name)))
-              (setq res o))
+            (setq o (gc-kg-com-inv *gc-kg-surf-coll* 'Item i))
+            (if (car o)
+              (progn
+                (setq nm (gc-kg-com-get (cdr o) "Name"))
+                (if (and (car nm) (= name (cdr nm)))
+                  (setq res (cdr o)))))
             (setq i (1+ i)))))))
   res)
 
@@ -418,6 +494,12 @@
 (defun gc-kg-dialog ( / path id res)
   (setq *gc-kg-styles*    (gc-kg-styles))
   (setq *gc-kg-surf-list* (gc-kg-surfaces))
+  ;; Причину печатаем и в консоль: в окне строка короткая, а тут влезает
+  ;; целиком вместе с сообщением самого CAD.
+  (if (and (null *gc-kg-surf-list*) *gc-kg-surf-why*)
+    (progn
+      (princ (strcat "\n[!] Поверхности прочитать не удалось: " *gc-kg-surf-why*))
+      (princ "\n    Окно откроется, остальные настройки доступны.")))
   (setq path (gc-kg-dcl-file))
   (if (null path)
     nil
@@ -447,7 +529,9 @@
              (mode_tile "s_black" 1)
              (mode_tile "s_red" 1)
              (set_tile "s_note"
-               "  [!] Поверхности Civil 3D не найдены — расчёт будет недоступен")))
+               (if *gc-kg-surf-why*
+                 (strcat "  [!] " *gc-kg-surf-why*)
+                 "  [!] Поверхности не найдены — расчёт будет недоступен"))))
          ;; --- сетка и подписи
          (foreach k '("step_x" "step_y" "angle" "h_mark" "h_vol" "min_vol")
            (set_tile k (gc-kg-get (gc-kg-key k))))
@@ -659,6 +743,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v2 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v3 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 1 из 5: окно настроек и проверка отметок.")
 (princ)
