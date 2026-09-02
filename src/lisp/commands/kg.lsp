@@ -1,8 +1,17 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v3)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v4)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v4: ISPRAVLENO PODKLYUCHENIE K CIVIL 3D. v3 pisala "eto obychnyy AutoCAD"
+;;;     na mashine, gde Civil 3D yavno zapushchen.
+;;;     Prichina: ispolzovalsya tolko vlax-get-object, a obekt prilozheniya
+;;;     Civil 3D ne obyazan byt v tablice zapushchennyh obektov Windows.
+;;;     Shtatnyy sposob -- sprosit ego u samogo AutoCAD cherez
+;;;     GetInterfaceObject. Teper probuyutsya TRI sposoba na kazhdyy ProgID,
+;;;     spisok versiy rasshiren, i komanda pechataet otchet: versiyu CAD,
+;;;     kakie ProgID probovalis i chto otvetil kazhdyy.
 ;;;
 ;;; v3: ISPRAVLENA OSHIBKA "Chlen gruppy ne nayden" -- komanda padala
 ;;;     do otkrytiya okna. Prichina: chast COM-vyzovov pri chtenii spiska
@@ -169,27 +178,102 @@
 ;; Известные имена подключения к Civil 3D. У каждой версии своё, поэтому
 ;; перебираем: жёстко зашитое сломалось бы при первом обновлении.
 (setq *gc-kg-progids*
-  '("AeccXUiLand.AeccApplication.13.6" "AeccXUiLand.AeccApplication.13.5"
-    "AeccXUiLand.AeccApplication.13.4" "AeccXUiLand.AeccApplication.13.3"
-    "AeccXUiLand.AeccApplication.13.2" "AeccXUiLand.AeccApplication.13.1"
-    "AeccXUiLand.AeccApplication.13.0" "AeccXUiLand.AeccApplication.12.0"
-    "AeccXUiLand.AeccApplication.11.0" "AeccXUiLand.AeccApplication.10.5"))
+  '("AeccXUiLand.AeccApplication.13.7" "AeccXUiLand.AeccApplication.13.6"
+    "AeccXUiLand.AeccApplication.13.5" "AeccXUiLand.AeccApplication.13.4"
+    "AeccXUiLand.AeccApplication.13.3" "AeccXUiLand.AeccApplication.13.2"
+    "AeccXUiLand.AeccApplication.13.1" "AeccXUiLand.AeccApplication.13.0"
+    "AeccXUiLand.AeccApplication.12.0" "AeccXUiLand.AeccApplication.11.0"
+    "AeccXUiLand.AeccApplication.10.6" "AeccXUiLand.AeccApplication.10.5"
+    "AeccXUiLand.AeccApplication.10.4" "AeccXUiLand.AeccApplication.10.0"
+    "AeccXUiLand.AeccApplication.9.0"  "AeccXUiLand.AeccApplication.8.0"))
 
-;; Подключение к УЖЕ ЗАПУЩЕННОМУ Civil 3D.
+;; Системная переменная строкой, с защитой: на разных сборках часть
+;; переменных отсутствует.
+(defun gc-kg-var (name / r)
+  (setq r (vl-catch-all-apply 'getvar (list name)))
+  (if (or (vl-catch-all-error-p r) (null r)) "?" (vl-princ-to-string r)))
+
+;; Копим отчёт о попытках подключения.
+(defun gc-kg-log (pid how msg / )
+  (setq *gc-kg-try-log*
+    (cons (strcat "    " pid "  [" how "]  " msg) *gc-kg-try-log*)))
+
+;; Подключение к Civil 3D одним из трёх способов.
 ;;
-;; ПОЧЕМУ vlax-get-object, а не vlax-get-or-create-object: второй при неудаче
-;; ЗАПУСКАЕТ новый экземпляр Civil 3D в фоне вместо подключения к текущему.
-;; Пользователь этого не видит, а чертёж читается не тот. Создавать ничего
-;; не надо — Civil 3D уже перед глазами.
-(defun gc-kg-app ( / res r)
-  (setq res nil)
+;; ПОЧЕМУ ТРИ, А НЕ ОДИН. Объект приложения Civil 3D не обязан быть
+;; зарегистрирован в таблице запущенных объектов Windows, поэтому
+;; vlax-get-object его часто не находит — именно на этом v3 объявила
+;; настоящий Civil 3D «обычным автокадом».
+;; Штатный способ — спросить объект у самого AutoCAD через GetInterfaceObject,
+;; он и идёт первым. Остальные два запасные: на разных сборках срабатывают
+;; разные, а угадывать заранее нечем.
+;;
+;; Возвращает объект либо nil. Что пробовали и что ответило — копится
+;; в *gc-kg-try-log* для отчёта.
+(defun gc-kg-connect (pid / acad r)
+  (setq r nil)
+  ;; 1. GetInterfaceObject у объекта AutoCAD — основной путь для Civil 3D.
+  (setq acad (vl-catch-all-apply 'vlax-get-acad-object nil))
+  (if (not (vl-catch-all-error-p acad))
+    (progn
+      (setq r (vl-catch-all-apply 'vlax-invoke (list acad 'GetInterfaceObject pid)))
+      (if (vl-catch-all-error-p r)
+        (progn
+          (gc-kg-log pid "GetInterfaceObject" (vl-catch-all-error-message r))
+          (setq r nil))
+        (gc-kg-log pid "GetInterfaceObject" "ok"))))
+  ;; 2. Уже работающий экземпляр из таблицы запущенных объектов.
+  (if (null r)
+    (progn
+      (setq r (vl-catch-all-apply 'vlax-get-object (list pid)))
+      (if (vl-catch-all-error-p r)
+        (progn
+          (gc-kg-log pid "get-object" (vl-catch-all-error-message r))
+          (setq r nil))
+        (if r (gc-kg-log pid "get-object" "ok")))))
+  ;; 3. Последняя попытка. ПОЧЕМУ последняя: этот способ может ЗАПУСТИТЬ
+  ;; ещё один экземпляр CAD в фоне вместо подключения к работающему.
+  (if (null r)
+    (progn
+      (setq r (vl-catch-all-apply 'vlax-get-or-create-object (list pid)))
+      (if (vl-catch-all-error-p r)
+        (progn
+          (gc-kg-log pid "get-or-create" (vl-catch-all-error-message r))
+          (setq r nil))
+        (if r (gc-kg-log pid "get-or-create" "ok")))))
+  r)
+
+;; Перебор версий. У каждой версии Civil 3D своё имя подключения, поэтому
+;; жёстко зашитое сломалось бы при первом обновлении.
+;; Годным считаем только тот объект, у которого реально читается чертёж:
+;; подключиться иногда удаётся и к пустышке.
+(defun gc-kg-app ( / res r doc)
+  (setq res nil *gc-kg-try-log* nil *gc-kg-pid* nil)
   (foreach pid *gc-kg-progids*
     (if (null res)
       (progn
-        (setq r (vl-catch-all-apply 'vlax-get-object (list pid)))
-        (if (and (not (vl-catch-all-error-p r)) r)
-          (setq res r)))))
+        (setq r (gc-kg-connect pid))
+        (if r
+          (progn
+            (setq doc (gc-kg-com-get r "ActiveDocument"))
+            (if (car doc)
+              (setq res r *gc-kg-pid* pid)
+              (gc-kg-log pid "ActiveDocument" (cdr doc))))))))
   res)
+
+;; Отчёт: что за CAD перед нами и чем закончились попытки.
+;; ПОЧЕМУ печатаем при неудаче целиком: гадать по строке «не удалось» можно
+;; бесконечно, а тут сразу видно версию и ответ каждой попытки.
+(defun gc-kg-connect-report ( / )
+  (princ (strcat "\n[i] CAD: " (gc-kg-var "PRODUCT")
+                 "  версия " (gc-kg-var "ACADVER")))
+  (if *gc-kg-pid*
+    (princ (strcat "\n[i] Civil 3D подключён: " *gc-kg-pid*))
+    (progn
+      (princ "\n[!] Ни одно имя подключения к Civil 3D не отозвалось.")
+      (princ "\n    Что пробовали и что ответило:")
+      (foreach s (reverse *gc-kg-try-log*) (princ (strcat "\n" s)))))
+  (princ))
 
 ;; Список имён поверхностей Civil 3D.
 ;; Никогда не падает. При отказе возвращает nil, а причину кладёт
@@ -499,6 +583,7 @@
   (if (and (null *gc-kg-surf-list*) *gc-kg-surf-why*)
     (progn
       (princ (strcat "\n[!] Поверхности прочитать не удалось: " *gc-kg-surf-why*))
+      (gc-kg-connect-report)
       (princ "\n    Окно откроется, остальные настройки доступны.")))
   (setq path (gc-kg-dcl-file))
   (if (null path)
@@ -743,6 +828,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v3 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v4 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 1 из 5: окно настроек и проверка отметок.")
 (princ)
