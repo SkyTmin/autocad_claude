@@ -1,8 +1,20 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v9)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v10)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v10: SETKA VYLEZALA ZA MENSHUYU POVERHNOST.
+;;;      Tam, gde krasnaya poverhnost vyhodit za zelenuyu, kvadraty vse ravno
+;;;      stroilis, hotya vtoroy poverhnosti tam net.
+;;;      Prichina: poverhnost obemov Civil 3D stroitsya na BAZOVOY poverhnosti,
+;;;      a otmetki beret u sravnivaemoy. Gde bazovaya est, a vtoroy net, ona
+;;;      vse ravno mozhet otvetit -- i oblast poluchaetsya po bazovoy.
+;;;      Teper tochka schitaetsya vnutri, tolko esli otvetili VSE TROE:
+;;;      poverhnost obemov i obe ishodnye. Peresechenie trekh otvetov
+;;;      uzhe ne shire ni odnogo iz nih.
+;;;      Rezhim "Proverka" teper pokazyvaet otvet KAZHDOY poverhnosti
+;;;      i vyvod "vnutri / vne oblasti" -- chtoby ne gadat, kto vinovat.
 ;;;
 ;;; v9: DVE OSHIBKI, VIDNYE NA CHERTEZHE.
 ;;;
@@ -849,11 +861,22 @@
 ;; ПОЧЕМУ переменные s-blk и s-red, а не короткие ob и or: «or» —
 ;; встроенная функция AutoLISP, и локальная переменная с таким именем
 ;; перекрыла бы её внутри всей функции (docs/pitfalls.md -> П19).
-(defun gc-kg-probe-one (p s-blk s-red / zb zr h)
+(defun gc-kg-probe-one (p s-blk s-red / zb zr zv h)
   (setq zb (gc-kg-elev s-blk (car p) (cadr p)))
   (setq zr (gc-kg-elev s-red (car p) (cadr p)))
+  (setq zv (if *gc-kg-vol* (gc-kg-elev *gc-kg-vol* (car p) (cadr p)) nil))
   (princ (strcat "\n  чёрная  " (gc-kg-z zb)
                  "   красная " (gc-kg-z zr)))
+  ;; Ответ поверхности объёмов печатаем отдельной строкой: именно по нему
+  ;; решается, попадёт сюда квадрат или нет, и когда область выходит не той,
+  ;; разбираться надо с ним.
+  (if *gc-kg-vol*
+    (princ (strcat "\n  поверхность объёмов: " (gc-kg-z zv)
+                   "   -> точка "
+                   (if (and zb zr zv) "ВНУТРИ области" "ВНЕ области")))
+    (princ (strcat "\n  поверхность объёмов: не создана"
+                   "   -> точка "
+                   (if (and zb zr) "ВНУТРИ области" "ВНЕ области"))))
   (cond
     ((and zb zr)
      (setq h (- zr zb))
@@ -1222,26 +1245,26 @@
 
 ;; Внутри ли точка области картограммы.
 ;;
-;; ДВА ПУТИ, И ОНИ НЕ РАВНОЦЕННЫ.
+;; СПРАШИВАЕМ ВСЕХ ТРОИХ, А НЕ ОДНОГО.
 ;;
-;; 1. Поверхность объёмов Civil 3D. Она существует ровно там, где область
-;;    картограммы, и УЧИТЫВАЕТ границы, навешенные на исходные поверхности.
-;;    Это то же, на чём стоит эталонный инструмент. Плюс вдвое быстрее:
-;;    один вопрос вместо двух.
+;; Поверхность объёмов Civil 3D учитывает границы, навешенные на исходные
+;; поверхности, — этого не умеет прямой опрос (docs/pitfalls.md -> П30).
+;; Но у неё своя беда: она строится на БАЗОВОЙ поверхности, а отметки берёт
+;; у сравниваемой. Значит там, где базовая есть, а второй нет, поверхность
+;; объёмов всё равно может ответить — и сетка вылезет за меньшую поверхность.
 ;;
-;; 2. Запасной: спросить обе исходные поверхности. Работает всегда, но
-;;    отвечает по ТРИАНГУЛЯЦИИ, а не по тому, что показано на экране.
-;;    Поэтому область выходит шире: краевые тонкие треугольники и участки
-;;    за границей, навешенной на поверхность, в неё попадают.
-;;    Команда об этом предупреждает вслух.
-(defun gc-kg-node-ok (p / w)
-  (setq w (gc-kg-to-wcs p))
-  (if *gc-kg-vol*
-    (if (gc-kg-elev *gc-kg-vol* (car w) (cadr w)) T nil)
-    (if (and (gc-kg-elev *gc-kg-sb* (car w) (cadr w))
-             (gc-kg-elev *gc-kg-sr* (car w) (cadr w)))
-      T
-      nil)))
+;; Поэтому точка считается внутри, только если ответили ВСЕ, кто есть.
+;; Пересечение трёх ответов уже не шире ни одного из них.
+;;
+;; Порядок не случаен: сначала поверхность объёмов — она отсекает больше
+;; всего и дешевле всего; исходные спрашиваем, только если она пропустила.
+(defun gc-kg-node-ok (p / w x y)
+  (setq w (gc-kg-to-wcs p) x (car w) y (cadr w))
+  (if (and (or (null *gc-kg-vol*) (gc-kg-elev *gc-kg-vol* x y))
+           (gc-kg-elev *gc-kg-sb* x y)
+           (gc-kg-elev *gc-kg-sr* x y))
+    T
+    nil))
 
 ;;; --------------------------------------------------------------------
 ;;; Поверхность объёмов
@@ -1652,6 +1675,11 @@
                                         "  (краевые целые)")))
                 (princ (strcat "\n  слой             : " lay
                                "  (цвет по слою, белый)"))
+                (if auto
+                  (princ (strcat "\n  область          : "
+                                 (if *gc-kg-vol*
+                                   "поверхность объёмов + обе исходные"
+                                   "только две исходные (объёмов не вышло)"))))
                 (princ (strcat "\n  шаг              : " (gc-kg-fmt sx)
                                " x " (gc-kg-fmt sy) " м"))
                 (if (> *gc-kg-holes-fixed* 0)
@@ -1768,6 +1796,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v9 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v10 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
