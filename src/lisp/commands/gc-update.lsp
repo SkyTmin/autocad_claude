@@ -1,4 +1,8 @@
-;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v5)
+;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v6)
+;;;
+;;; v6: command zavernuta v lyambdu. Eto ne obychnaya funkciya, a osobaya
+;;;     forma yazyka, i peredat ee v vl-catch-all-apply napryamuyu nelzya:
+;;;     AutoCAD otvechaet "nevernaya poryadkovaya funkciya: COMMAND".
 ;;;
 ;;; v5: NETLOAD vyzyvaetsya pri FILEDIA=0. Pri vklyuchennom dialoge on
 ;;;     otkryvaet okno vybora fayla i PEREDANNYY PUT IGNORIRUET: komanda
@@ -262,7 +266,13 @@
      ;; отрабатывает без ошибки, а модуль не грузится.
      (setq fd (getvar "FILEDIA"))
      (setvar "FILEDIA" 0)
-     (setq r (vl-catch-all-apply 'command (list "_.NETLOAD" p)))
+     ;; command заворачиваем в лямбду. Это НЕ обычная функция, а особая
+     ;; форма языка, и передать её в vl-catch-all-apply напрямую нельзя:
+     ;; AutoCAD отвечает "неверная порядковая функция: COMMAND".
+     (setq r (vl-catch-all-apply '(lambda () (command "_.NETLOAD" p)) nil))
+     ;; FILEDIA возвращаем ДО любых проверок и выходов: если оставить её
+     ;; выключенной, у пользователя пропадут диалоги открытия файлов
+     ;; во всех остальных командах, и связать это с нами он не сможет.
      (setvar "FILEDIA" fd)
      (if (vl-catch-all-error-p r)
        (setq *gc-upd-net-why* (vl-catch-all-error-message r)))
@@ -350,6 +360,10 @@
 ;; Загрузить всё: команды с диска и модуль .NET. Ничего не качает.
 ;; Нужна, когда CAD почему-то не подхватил автозагрузку.
 (defun c:gcload ( / dir n path r)
+  ;; Страховка: если прошлый запуск оборвался на NETLOAD, FILEDIA могла
+  ;; остаться выключенной. Возвращаем молча - лучше починить, чем
+  ;; рассказывать про чужую поломку.
+  (if (= 0 (getvar "FILEDIA")) (setvar "FILEDIA" 1))
   (setq dir (gc-upd-dir))
   (if (null dir)
     (princ "\n[!] Папка не задана.")
@@ -372,6 +386,7 @@
   (princ))
 
 (defun c:gcu ( / dir nd n ok bad r path)
+  (if (= 0 (getvar "FILEDIA")) (setvar "FILEDIA" 1))
   (setq dir (gc-upd-dir))
   (if (null dir)
     (princ "\n[!] Папка не задана - обновлять некуда.")
@@ -485,6 +500,6 @@
 ;; A -> Ф, T -> Е, O -> Щ
 (defun c:псфгещ ( / ) (c:gcauto))
 
-(princ "\n[gc] gc-update.lsp v5 загружен.")
+(princ "\n[gc] gc-update.lsp v6 загружен.")
 (princ "\n     GCU обновить | GCV версии | GCLOAD загрузить | GCAUTO автозагрузка | GCDIR папка")
 (princ)

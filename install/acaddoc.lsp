@@ -43,9 +43,20 @@
            (setvar "TRUSTEDPATHS"
                    (if (= tp "") d (strcat tp ";" d)))))
       nil)
-    (if (vl-catch-all-error-p
-          (vl-catch-all-apply
-            'command (list "_.NETLOAD" (strcat *gc-home* "net\\GcSurface.dll"))))
+    ;; FILEDIA=0 об€зателен: при включЄнном диалоге NETLOAD открывает окно
+    ;; выбора файла и переданный путь игнорирует.
+    ;; command заворачиваем в л€мбду - это особа€ форма €зыка, напр€мую
+    ;; в vl-catch-all-apply еЄ передать нельз€.
+    (vl-catch-all-apply
+      '(lambda ( / fd)
+         (setq fd (getvar "FILEDIA"))
+         (setvar "FILEDIA" 0)
+         (vl-catch-all-apply
+           '(lambda () (command "_.NETLOAD" (strcat *gc-home* "net\\GcSurface.dll")))
+           nil)
+         (setvar "FILEDIA" fd))
+      nil)
+    (if (not (member "gc_surface_border" (atoms-family 1)))
       (princ "\n[gc] модуль .NET не загрузилс€ Ч край области будет приближЄнным."))))
 
 (princ)
