@@ -1,8 +1,15 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v21)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v22)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v22: OTVET MODULYA RAZBIRAETSYA PO SODERZHIMOMU, A NE PO OZHIDANIYAM.
+;;;      "neverny tip argumenta: consp 1.44907e+06" -- v tekste oshibki
+;;;      koordinata: modul otdal ODIN kontur ploskim spiskom tochek,
+;;;      a razbor lez na uroven glubzhe, kak esli by konturov bylo neskolko.
+;;;      Teper forma opredelyaetsya po soderzhimomu, i pechataetsya, skolko
+;;;      konturov i tochek prishlo -- chtoby ne gadat, chto vernul modul.
 ;;;
 ;;; v21: UBRAN eval V ZASHCHITE POLEY OKNA.
 ;;;      "nevernaya funkciya: #<SUBR ... -lambda->" -- eval prevrashchaet
@@ -1380,15 +1387,49 @@
     T
     nil))
 
+;; Привести ответ модуля к одному виду: СПИСОК КОНТУРОВ.
+;;
+;; Модуль отдаёт контуры вложенными списками, но когда контур ОДИН,
+;; лишнего уровня не возникает, и на выходе оказывается просто список
+;; точек. Разбирать это "как ожидалось" нельзя: попытка зайти на уровень
+;; глубже даёт "неверный тип аргумента: consp" с координатой в тексте
+;; (docs/pitfalls.md -> П52).
+;;
+;; Поэтому смотрим на СОДЕРЖИМОЕ, а не на предполагаемую форму.
+(defun gc-kg-norm-loops (r)
+  (cond
+    ((or (null r) (not (listp r))) nil)
+    ;; список контуров: первый элемент - список, и внутри него тоже список
+    ((and (listp (car r)) (listp (car (car r))))
+     (mapcar '(lambda (lp) (mapcar 'gc-kg-2d lp)) r))
+    ;; один контур: список точек, у точки первый элемент - число
+    ((and (listp (car r)) (numberp (car (car r))))
+     (list (mapcar 'gc-kg-2d r)))
+    (T nil)))
+
 ;; Контуры границы поверхности: список списков 2D-точек, либо nil.
 ;; Первый контур наружный, остальные - внутренние вырезы.
-(defun gc-kg-net-border (name / r)
+(defun gc-kg-net-border (name / r out)
   (if (and (gc-kg-net-p) name)
     (progn
       (setq r (vl-catch-all-apply 'gc_surface_border (list name)))
-      (if (or (vl-catch-all-error-p r) (null r) (not (listp r)))
-        nil
-        (mapcar '(lambda (lp) (mapcar 'gc-kg-2d lp)) r)))
+      (cond
+        ((vl-catch-all-error-p r)
+         (princ (strcat "\n[!] Модуль не отдал границу \"" name "\": "
+                        (vl-catch-all-error-message r)))
+         nil)
+        ((null r)
+         (princ (strcat "\n[!] Модуль вернул пусто для \"" name "\"."))
+         nil)
+        (T
+         (setq out (gc-kg-norm-loops r))
+         (if out
+           (princ (strcat "\n[i] Граница \"" name "\": контуров "
+                          (itoa (length out)) ", точек в наружном "
+                          (itoa (length (car out)))))
+           (princ (strcat "\n[!] Ответ модуля для \"" name
+                          "\" не разобран.")))
+         out)))
     nil))
 
 ;; Собрать ВСЕ точные контуры области и все вырезы.
@@ -2276,6 +2317,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v21 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v22 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
