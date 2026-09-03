@@ -1,8 +1,25 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v10)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v11)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v11: NAYDENA NASTOYASHCHAYA PRICHINA "LISHNEGO UCHASTKA".
+;;;      V otchete stoyalo "granica naruzhnaya: vybrana". Granica, vybrannaya
+;;;      v odnom iz proshlyh zapuskov, hranilas do zakrytiya chertezha, i
+;;;      komanda shla PO NEY, voobshche ne sprashivaya poverhnosti. Setka
+;;;      lozhilas na polyliniyu, a ne na obshchuyu oblast dvuh poverhnostey.
+;;;      Snyat granicu bylo nechem: knopki sbrosa ne bylo.
+;;;
+;;;      Prichina v arhitekture: granica ZAMENYALA poverhnosti, a dolzhna
+;;;      byla DOBAVLYATSYA k nim. Teper oblast -- peresechenie: obe
+;;;      poverhnosti otvetili I tochka vnutri granicy, esli ta vybrana.
+;;;      V okne poyavilas knopka "Sbros granic".
+;;;
+;;;      Zaodno ubran put cherez poverhnost obemov (v9-v10). On dobavlyalsya
+;;;      pod oshibochnyy diagnoz, ni razu ne srabotal na chertezhe i menyal
+;;;      chertezh polzovatelya. Proverka Shamilya pokazala: opros dvuh
+;;;      poverhnostey daet pravilnuyu oblast sam.
 ;;;
 ;;; v10: SETKA VYLEZALA ZA MENSHUYU POVERHNOST.
 ;;;      Tam, gde krasnaya poverhnost vyhodit za zelenuyu, kvadraty vse ravno
@@ -532,7 +549,10 @@
 "      : row {"
 "        : text   { label = \"Хар. линии    \"; }"
 "        : button { key = \"pick_lines\"; label = \"Выбрать\"; fixed_width = true; } }"
-"      : text { key = \"lines_txt\"; } } }"
+"      : text { key = \"lines_txt\"; }"
+"      : button { key = \"clr_bnd\"; label = \"Сброс границ\"; }"
+"      : text { label = \"без границ область = общая\"; }"
+"      : text { label = \"часть двух поверхностей\"; } } }"
 "  : boxed_column { label = \" Подписи отметок в узлах \";"
 "    : row {"
 "      : popup_list { key = \"t_style\"; label = \"Стиль текста \"; width = 22; fixed_width = true; }"
@@ -763,6 +783,7 @@
          (action_tile "pick_outer" "(progn (gc-kg-read-tiles) (done_dialog 12))")
          (action_tile "pick_inner" "(progn (gc-kg-read-tiles) (done_dialog 13))")
          (action_tile "pick_lines" "(progn (gc-kg-read-tiles) (done_dialog 14))")
+         (action_tile "clr_bnd"    "(progn (gc-kg-read-tiles) (done_dialog 15))")
          ;; ОК: сначала проверяем, при ошибке окно не закрываем.
          (action_tile "accept" "(if (gc-kg-validate) (progn (gc-kg-read-tiles) (done_dialog 1)))")
          (action_tile "cancel" "(done_dialog 0)")
@@ -792,6 +813,11 @@
       ((= res 12) (gc-kg-set "outer" (gc-kg-pick-curves "Наружная граница участка: " T)))
       ((= res 13) (gc-kg-set "inner" (gc-kg-pick-curves "Внутренние границы (исключения): " nil)))
       ((= res 14) (gc-kg-set "lines" (gc-kg-pick-curves "Характерные линии рельефа: " nil)))
+      ;; Сброс границ отдельной кнопкой. Без неё выбранная однажды граница
+      ;; жила до закрытия чертежа, и снять её было нечем (docs/pitfalls.md -> П33).
+      ((= res 15)
+       (gc-kg-set "outer" nil) (gc-kg-set "inner" nil) (gc-kg-set "lines" nil)
+       (princ "\n[i] Границы сброшены. Область теперь задают только поверхности."))
       (T (setq done T))))
   ok)
 
@@ -811,7 +837,9 @@
   (princ (strcat "\n  краевые квадраты    : "
                  (if (= "1" (gc-kg-get "trim")) "обрезать границей" "оставлять целыми")))
   (princ (strcat "\n  граница наружная    : "
-                 (if (gc-kg-get "outer") "выбрана" "НЕ выбрана")))
+                 (if (gc-kg-get "outer")
+                   "ВЫБРАНА - дополнительно сужает область"
+                   "не выбрана - область по поверхностям")))
   (princ (strcat "\n  границы внутренние  : "
                  (if (gc-kg-get "inner")
                    (itoa (sslength (gc-kg-get "inner"))) "нет")))
@@ -861,35 +889,36 @@
 ;; ПОЧЕМУ переменные s-blk и s-red, а не короткие ob и or: «or» —
 ;; встроенная функция AutoLISP, и локальная переменная с таким именем
 ;; перекрыла бы её внутри всей функции (docs/pitfalls.md -> П19).
-(defun gc-kg-probe-one (p s-blk s-red / zb zr zv h)
+(defun gc-kg-probe-one (p s-blk s-red / zb zr h ins)
   (setq zb (gc-kg-elev s-blk (car p) (cadr p)))
   (setq zr (gc-kg-elev s-red (car p) (cadr p)))
-  (setq zv (if *gc-kg-vol* (gc-kg-elev *gc-kg-vol* (car p) (cadr p)) nil))
+  (setq ins (and zb zr))
+  (if (and ins *gc-kg-outer*) (setq ins (gc-kg-in-poly p *gc-kg-outer*)))
+  (if ins
+    (foreach hh *gc-kg-holes*
+      (if (and ins (gc-kg-in-poly p hh)) (setq ins nil))))
   (princ (strcat "\n  чёрная  " (gc-kg-z zb)
                  "   красная " (gc-kg-z zr)))
-  ;; Ответ поверхности объёмов печатаем отдельной строкой: именно по нему
-  ;; решается, попадёт сюда квадрат или нет, и когда область выходит не той,
-  ;; разбираться надо с ним.
-  (if *gc-kg-vol*
-    (princ (strcat "\n  поверхность объёмов: " (gc-kg-z zv)
-                   "   -> точка "
-                   (if (and zb zr zv) "ВНУТРИ области" "ВНЕ области")))
-    (princ (strcat "\n  поверхность объёмов: не создана"
-                   "   -> точка "
-                   (if (and zb zr) "ВНУТРИ области" "ВНЕ области"))))
+  ;; Границу печатаем отдельной строкой: когда область выходит не той,
+  ;; виновата чаще всего забытая с прошлого запуска граница, а не поверхности.
+  (if *gc-kg-outer*
+    (princ (strcat "\n  наружная граница: точка "
+                   (if (gc-kg-in-poly p *gc-kg-outer*) "внутри" "СНАРУЖИ"))))
+  (princ (strcat "\n  -> " (if ins "ВНУТРИ области" "ВНЕ области")))
   (cond
     ((and zb zr)
      (setq h (- zr zb))
      (princ (strcat "   рабочая " (gc-kg-work-str h)))
      T)
     (T
-     (princ "\n  [!] Точка вне одной из поверхностей — рабочая не считается.")
+     (princ "\n  [!] Точка вне одной из поверхностей - рабочая не считается.")
      nil)))
 
 ;; Цикл проверки. Возвращает T, если хоть одна точка прочиталась.
 (defun gc-kg-probe ( / s-blk s-red p ok any why)
   (setq s-blk (gc-kg-surf-obj (gc-kg-get "s-black"))
         s-red (gc-kg-surf-obj (gc-kg-get "s-red")))
+  (gc-kg-load-bounds)
   (princ "\n\n--- ПРОВЕРКА ОТМЕТОК ---")
   (princ "\nТыкайте по чертежу — покажу, что вернула каждая поверхность.")
   (princ "\nЭто проверка фундамента: на этой операции держится весь расчёт.")
@@ -966,45 +995,30 @@
           y0 (min y0 (cadr p)) y1 (max y1 (cadr p))))
   (list x0 y0 x1 y1))
 
-;; С нужной ли стороны прямой лежит точка. axis: 0 = X, 1 = Y.
-(defun gc-kg-inside (p axis val keep / c)
-  (setq c (if (= axis 0) (car p) (cadr p)))
-  (if keep (>= c val) (<= c val)))
-
-;; Точка пересечения отрезка a-b с прямой axis = val.
-(defun gc-kg-isect (a b axis val / ca cb k)
-  (setq ca (if (= axis 0) (car a) (cadr a))
-        cb (if (= axis 0) (car b) (cadr b)))
-  (if (equal ca cb 1.0e-12)
-    b
-    (progn
-      (setq k (/ (- val ca) (- cb ca)))
-      (list (+ (car a)  (* k (- (car b)  (car a))))
-            (+ (cadr a) (* k (- (cadr b) (cadr a))))))))
-
-;; Отсечение многоугольника одной полуплоскостью.
-(defun gc-kg-clip-half (pts axis val keep / out a b ia ib)
-  (setq out nil)
-  (if pts
-    (progn
-      (setq a (last pts))
-      (setq ia (gc-kg-inside a axis val keep))
-      (foreach b pts
-        (setq ib (gc-kg-inside b axis val keep))
-        (cond
-          ((and ia ib) (setq out (cons b out)))
-          (ia          (setq out (cons (gc-kg-isect a b axis val) out)))
-          (ib          (setq out (cons b (cons (gc-kg-isect a b axis val) out)))))
-        (setq a b ia ib))))
-  (reverse out))
-
-;; Отсечение прямоугольником. Четыре полуплоскости подряд.
-(defun gc-kg-clip-rect (pts x0 y0 x1 y1)
-  (setq pts (gc-kg-clip-half pts 0 x0 T))
-  (setq pts (gc-kg-clip-half pts 0 x1 nil))
-  (setq pts (gc-kg-clip-half pts 1 y0 T))
-  (setq pts (gc-kg-clip-half pts 1 y1 nil))
-  pts)
+;; Внутри ли точка замкнутого контура. Метод луча: считаем, сколько раз
+;; горизонтальный луч из точки пересёк стороны. Нечётное число - внутри.
+;;
+;; Годится для любого контура, включая вогнутый, и не требует ни COM,
+;; ни разбора направления обхода.
+(defun gc-kg-in-poly (p pts / n i a b c ia ib res)
+  (setq n (length pts) res nil i 0)
+  (setq a (nth (1- n) pts))
+  (while (< i n)
+    (setq b (nth i pts))
+    ;; Сторона пересекает горизонталь точки, если её концы по разные
+    ;; стороны от неё. Сравниваем через eq, а не через /= : в AutoLISP
+    ;; /= сравнивает ЧИСЛА, и на T/nil он падает.
+    (setq ia (> (cadr a) (cadr p))
+          ib (> (cadr b) (cadr p)))
+    (if (and (not (eq (not ia) (not ib)))
+             (/= (cadr b) (cadr a)))
+      (progn
+        (setq c (+ (car a) (/ (* (- (car b) (car a)) (- (cadr p) (cadr a)))
+                              (- (cadr b) (cadr a)))))
+        (if (< (car p) c) (setq res (not res)))))
+    (setq a b)
+    (setq i (1+ i)))
+  res)
 
 ;; Выбросить совпадающие подряд точки. Отсечение их плодит, а полилиния
 ;; с нулевыми рёбрами потом мешает при штриховке.
@@ -1113,6 +1127,11 @@
     nil))
 
 ;; Внутренние границы-исключения списком контуров.
+(defun gc-kg-load-bounds ( / )
+  (setq *gc-kg-outer* (gc-kg-outer-pts)
+        *gc-kg-holes* (gc-kg-holes-pts))
+  (princ))
+
 (defun gc-kg-holes-pts ( / ss i out pts)
   (setq ss (gc-kg-get "inner") out nil)
   (if ss
@@ -1245,94 +1264,41 @@
 
 ;; Внутри ли точка области картограммы.
 ;;
-;; СПРАШИВАЕМ ВСЕХ ТРОИХ, А НЕ ОДНОГО.
+;; Область - это ПЕРЕСЕЧЕНИЕ условий, а не выбор одного из них:
+;;   1. чёрная поверхность отвечает;
+;;   2. красная поверхность отвечает;
+;;   3. точка внутри выбранной наружной границы, если она выбрана;
+;;   4. точка вне внутренних границ-исключений.
 ;;
-;; Поверхность объёмов Civil 3D учитывает границы, навешенные на исходные
-;; поверхности, — этого не умеет прямой опрос (docs/pitfalls.md -> П30).
-;; Но у неё своя беда: она строится на БАЗОВОЙ поверхности, а отметки берёт
-;; у сравниваемой. Значит там, где базовая есть, а второй нет, поверхность
-;; объёмов всё равно может ответить — и сетка вылезет за меньшую поверхность.
+;; Пункт 3 РАНЬШЕ ЗАМЕНЯЛ первые два, а не добавлялся к ним. Забытая
+;; с прошлого запуска граница молча отключала поверхности, и сетка уходила
+;; туда, где второй поверхности нет (docs/pitfalls.md -> П33).
 ;;
-;; Поэтому точка считается внутри, только если ответили ВСЕ, кто есть.
-;; Пересечение трёх ответов уже не шире ни одного из них.
-;;
-;; Порядок не случаен: сначала поверхность объёмов — она отсекает больше
-;; всего и дешевле всего; исходные спрашиваем, только если она пропустила.
-(defun gc-kg-node-ok (p / w x y)
+;; Порядок не случаен: сначала поверхности - они отсекают больше всего,
+;; и каждый их ответ стоит обращения к CAD. Проверка контура своя, дешёвая.
+(defun gc-kg-node-ok (p / w x y ok)
   (setq w (gc-kg-to-wcs p) x (car w) y (cadr w))
-  (if (and (or (null *gc-kg-vol*) (gc-kg-elev *gc-kg-vol* x y))
-           (gc-kg-elev *gc-kg-sb* x y)
-           (gc-kg-elev *gc-kg-sr* x y))
-    T
-    nil))
-
-;;; --------------------------------------------------------------------
-;;; Поверхность объёмов
-;;;
-;;; Создаётся временно, ТОЛЬКО чтобы спросить у неё границу области,
-;;; и удаляется после построения — в том числе при ошибке и по Esc.
-;;; Исходные поверхности не трогаются вообще.
-;;; --------------------------------------------------------------------
-
-;; Имя временной поверхности. Заметное нарочно: если её всё же не удалось
-;; удалить, в списке поверхностей видно, что это наше и что это мусор.
-(defun gc-kg-vol-name ( / )
-  (strcat "GC-KG-ВРЕМЕННАЯ-" (itoa (fix (* 100000.0 (- (getvar "CDATE")
-                                                       (fix (getvar "CDATE"))))))))
-
-;; Создать поверхность объёмов: красная минус чёрная.
-;; Порядок именно такой: отметка такой поверхности и есть рабочая отметка
-;; в нашем знаке (плюс — насыпь, docs/formulas.md).
-;; Возвращает объект либо nil; ход попыток — в *gc-kg-try-log*.
-(defun gc-kg-vol-create (sbn srn sb sr / nm r res)
-  (setq res nil *gc-kg-try-log* nil)
-  (if (and *gc-kg-surf-coll* sb sr)
-    (progn
-      (setq nm (gc-kg-vol-name))
-      ;; Имя метода и вид аргументов у разных версий Civil 3D отличаются,
-      ;; поэтому перебираем варианты и пишем, что ответил каждый. Тот же
-      ;; приём уже спас подключение к Civil 3D (docs/pitfalls.md -> П25).
-      (foreach way (list (list 'AddTinVolumeSurface sb  sr)
-                         (list 'AddTinVolumeSurface sbn srn)
-                         (list 'AddVolumeSurface    sb  sr)
-                         (list 'AddVolumeSurface    sbn srn)
-                         (list 'AddTinVolume        sb  sr))
-        (if (null res)
-          (progn
-            (setq r (vl-catch-all-apply 'vlax-invoke
-                      (list *gc-kg-surf-coll* (car way) nm
-                            (cadr way) (caddr way))))
-            (if (vl-catch-all-error-p r)
-              (gc-kg-log "поверхность объёмов" (vl-princ-to-string (car way))
-                         (vl-catch-all-error-message r))
-              (progn
-                (gc-kg-log "поверхность объёмов" (vl-princ-to-string (car way)) "ok")
-                (setq res r *gc-kg-vol-name* nm))))))))
-  res)
-
-;; Удалить временную поверхность. Тихо: вызывается и из обработчика ошибок,
-;; где ругаться уже поздно и незачем.
-(defun gc-kg-vol-delete ( / r)
-  (if *gc-kg-vol*
-    (progn
-      (setq r (vl-catch-all-apply 'vlax-invoke (list *gc-kg-vol* 'Delete)))
-      (if (vl-catch-all-error-p r)
-        (setq r (vl-catch-all-apply 'vla-delete (list *gc-kg-vol*))))
-      (setq *gc-kg-vol* nil *gc-kg-vol-name* nil)))
-  (princ))
+  (setq ok (and (gc-kg-elev *gc-kg-sb* x y)
+                (gc-kg-elev *gc-kg-sr* x y)))
+  (if (and ok *gc-kg-outer*)
+    (setq ok (gc-kg-in-poly w *gc-kg-outer*)))
+  (if ok
+    (foreach h *gc-kg-holes*
+      (if (and ok (gc-kg-in-poly w h)) (setq ok nil))))
+  (if ok T nil))
 
 ;; Допуск на поиск края, м. Мельче не нужно: сама съёмка грубее.
 (setq *gc-kg-edge-tol* 0.05)
 
 ;; На сколько частей дробится сторона КРАЕВОГО квадрата при счёте площади.
 ;;
-;; ЗАЧЕМ ЭТО ВООБЩЕ НУЖНО. Прямая, проведённая между двумя точками края на
-;; сторонах квадрата, СРЕЗАЕТ угол границы, если он попал внутрь квадрата.
-;; Численная проверка: на шаге 20 м это давало до 3 % по всей площадке —
-;; для ведомости объёмов недопустимо. Дробление 4 x 4 убирает ошибку
-;; до сотых долей процента.
+;; ЗАЧЕМ ЭТО НУЖНО. Прямая, проведённая между двумя точками края на сторонах
+;; квадрата, СРЕЗАЕТ угол границы, если он попал внутрь квадрата. Численная
+;; проверка: на шаге 20 м это давало до 3 % по всей площадке - для ведомости
+;; объёмов недопустимо. Дробление 4 x 4 убирает ошибку до сотых долей
+;; процента (docs/pitfalls.md -> П29).
 ;;
-;; Цена — опрос поверхностей в узлах дробления, но только у краевых
+;; Цена - опрос поверхностей в узлах дробления, но только у краевых
 ;; квадратов, а их порядка периметра, а не площади.
 (setq *gc-kg-sub* 4)
 
@@ -1527,33 +1493,6 @@
     (setq j (1+ j)))
   (reverse cells))
 
-;; Квадраты по выбранной полилинии.
-(defun gc-kg-cells-poly (gp gh i0 j0 i1 j1 sx sy
-                         / i j cx cy cx1 cy1 poly ar hr hps ce cells eps)
-  (setq cells nil eps (* 1.0e-6 sx sy))
-  (setq j j0)
-  (while (< j j1)
-    (setq i i0)
-    (while (< i i1)
-      (setq cx (* i sx) cy (* j sy) cx1 (+ cx sx) cy1 (+ cy sy))
-      (setq poly (gc-kg-clip-rect gp cx cy cx1 cy1))
-      (setq ar (gc-kg-area poly) hr 0.0 hps nil)
-      (foreach h gh
-        (setq ce (gc-kg-clip-rect h cx cy cx1 cy1))
-        (if (> (gc-kg-area ce) eps)
-          (progn (setq hr (+ hr (gc-kg-area ce)))
-                 (setq hps (cons ce hps)))))
-      (setq ar (- ar hr))
-      (if (> ar eps)
-        (setq cells (cons (list i j ar
-                                (list (list cx cy) (list cx1 cy)
-                                      (list cx1 cy1) (list cx cy1))
-                                poly hps)
-                          cells)))
-      (setq i (1+ i)))
-    (setq j (1+ j)))
-  (reverse cells))
-
 ;; Отрисовка построенных квадратов.
 (defun gc-kg-draw-cells (cells trim sx sy / lay eps)
   (setq lay (gc-kg-layer "GC-Картограмма-Сетка" 7))
@@ -1569,9 +1508,8 @@
   (command "_.UNDO" "_END")
   lay)
 
-(defun gc-kg-build ( / sbn srn ang sx sy base trim outer holes auto
-                       bb ext gbb gp gh i0 j0 i1 j1 nc cells total lay aout
-                       rows nnodes)
+(defun gc-kg-build ( / sbn srn ang sx sy base trim
+                       bb ext gbb i0 j0 i1 j1 nc cells total lay rows nnodes)
   (setq sbn (gc-kg-get "s-black") srn (gc-kg-get "s-red"))
   (setq *gc-kg-sb* (gc-kg-surf-obj sbn)
         *gc-kg-sr* (gc-kg-surf-obj srn))
@@ -1581,48 +1519,26 @@
   (setq sx (gc-kg-num (gc-kg-get "step-x"))
         sy (gc-kg-num (gc-kg-get "step-y")))
   (setq trim (= "1" (gc-kg-get "trim")))
-  (setq outer (gc-kg-outer-pts))
-  (setq auto (null outer))
+  (gc-kg-load-bounds)
+  (setq *gc-kg-holes-fixed* 0)
   (cond
-    ;; --- нечем работать
-    ((and auto (or (null *gc-kg-sb*) (null *gc-kg-sr*)))
-     (princ "\n[!] Обе поверхности не выбраны, а наружная граница не указана.")
-     (princ "\n    Выберите поверхности в окне — область определится сама.")
+    ((or (null *gc-kg-sb*) (null *gc-kg-sr*))
+     (princ "\n[!] Выбраны не обе поверхности - область строить не из чего.")
+     (princ "\n    Область картограммы задают сами поверхности: она там,")
+     (princ "\n    где отметку дают обе. Выберите чёрную и красную в окне.")
      nil)
     (T
-     (setq holes (gc-kg-holes-pts))
-     ;; --- поверхность объёмов: главный путь к правильной области
-     (setq *gc-kg-vol* nil *gc-kg-holes-fixed* 0)
-     (if auto
-       (progn
-         (setq *gc-kg-vol* (gc-kg-vol-create sbn srn *gc-kg-sb* *gc-kg-sr*))
-         (if *gc-kg-vol*
-           (princ (strcat "\n[i] Область: поверхность объёмов Civil 3D."
-                          "  Границы поверхностей учтены."))
-           (progn
-             (princ "\n[!] Поверхность объёмов создать не удалось. Причины:")
-             (foreach ln (reverse *gc-kg-try-log*) (princ (strcat "\n" ln)))
-             (princ "\n    Иду запасным путём: спрашиваю обе поверхности.")
-             (princ "\n    ВНИМАНИЕ: он отвечает по триангуляции, а не по тому,")
-             (princ "\n    что показано. Границы, навешенные на поверхность,")
-             (princ "\n    и краевые тонкие треугольники могут попасть в сетку.")))))
-     ;; --- габариты области
-     (if auto
-       (progn
-         (if *gc-kg-vol* (setq bb (gc-kg-bb-of-vla *gc-kg-vol*)))
-         ;; Габариты не прочитались у самой поверхности объёмов — берём
-         ;; у исходных. Область от этого не поедет: габариты только задают
-         ;; рамку перебора, внутри неё всё решает опрос.
-         (if (null bb)
-           (setq bb (gc-kg-bb-and (gc-kg-surf-bb sbn *gc-kg-sb*)
-                                  (gc-kg-surf-bb srn *gc-kg-sr*))))))
+     ;; --- габариты: пересечение габаритов поверхностей и границы
+     (setq bb (gc-kg-bb-and (gc-kg-surf-bb sbn *gc-kg-sb*)
+                            (gc-kg-surf-bb srn *gc-kg-sr*)))
+     (if *gc-kg-outer* (setq bb (gc-kg-bb-and bb (gc-kg-bbox *gc-kg-outer*))))
      (cond
-       ((and auto (null bb))
+       ((null bb)
         (princ "\n[!] Габариты поверхностей не читаются либо они не пересекаются.")
-        (princ "\n    Выберите наружную границу в окне — построю по ней.")
+        (princ "\n    Проверьте, что выбраны разные поверхности и они накладываются.")
         nil)
        (T
-        (setq ext (if auto (gc-kg-bb-pts bb) outer))
+        (setq ext (gc-kg-bb-pts bb))
         ;; --- система координат сетки
         (setq base (gc-kg-get "base"))
         (if (null base)
@@ -1646,22 +1562,22 @@
                            ". Увеличьте шаг."))
             nil)
           (progn
-            (if auto
-              (progn
-                (setq nnodes (* (1+ (- i1 i0)) (1+ (- j1 j0))))
-                (princ (strcat "\n[i] Опрашиваю: " (itoa nnodes) " узлов. "))
-                (setq rows (gc-kg-rows i0 j0 i1 j1 sx sy))
-                (setq rows (gc-kg-fix-holes rows))
-                (setq cells (gc-kg-cells-auto rows i0 j0 i1 j1 sx sy)))
-              (progn
-                (princ "\n[i] Область: по выбранной наружной границе.")
-                (setq gp (mapcar 'gc-kg-to-grid outer))
-                (setq gh (mapcar '(lambda (h) (mapcar 'gc-kg-to-grid h)) holes))
-                (setq cells (gc-kg-cells-poly gp gh i0 j0 i1 j1 sx sy))))
+            (princ (strcat "\n[i] Область: обе поверхности"
+                           (if *gc-kg-outer* " + выбранная наружная граница" "")
+                           (if *gc-kg-holes*
+                             (strcat " минус внутренние границы ("
+                                     (itoa (length *gc-kg-holes*)) ")")
+                             "")))
+            (setq nnodes (* (1+ (- i1 i0)) (1+ (- j1 j0))))
+            (princ (strcat "\n[i] Опрашиваю: " (itoa nnodes) " узлов. "))
+            (setq rows (gc-kg-rows i0 j0 i1 j1 sx sy))
+            (setq rows (gc-kg-fix-holes rows))
+            (setq cells (gc-kg-cells-auto rows i0 j0 i1 j1 sx sy))
             (if (null cells)
               (progn
                 (princ "\n[!] Ни один квадрат не попал в область.")
-                (princ "\n    Проверьте, что поверхности пересекаются по площади.")
+                (princ "\n    Поверхности не пересекаются по площади, либо")
+                (princ "\n    выбранная граница лежит вне их общей области.")
                 nil)
               (progn
                 (setq total 0.0)
@@ -1675,30 +1591,17 @@
                                         "  (краевые целые)")))
                 (princ (strcat "\n  слой             : " lay
                                "  (цвет по слою, белый)"))
-                (if auto
-                  (princ (strcat "\n  область          : "
-                                 (if *gc-kg-vol*
-                                   "поверхность объёмов + обе исходные"
-                                   "только две исходные (объёмов не вышло)"))))
                 (princ (strcat "\n  шаг              : " (gc-kg-fmt sx)
                                " x " (gc-kg-fmt sy) " м"))
                 (if (> *gc-kg-holes-fixed* 0)
                   (princ (strcat "\n  залечено узлов   : "
                                  (itoa *gc-kg-holes-fixed*)
-                                 "  (одиночные осечки опроса, см. П17)")))
+                                 "  (одиночные осечки опроса, П31)")))
                 (princ (strcat "\n  площадь по сетке : " (gc-kg-fmt total) " м2"))
-                (if (not auto)
+                (if *gc-kg-outer*
                   (progn
-                    (setq aout (gc-kg-area outer))
-                    (foreach h holes (setq aout (- aout (gc-kg-area h))))
-                    (princ (strcat "\n  площадь границы  : " (gc-kg-fmt aout) " м2"))
-                    (if (> aout 1.0e-9)
-                      (princ (strcat "\n  расхождение      : "
-                                     (gc-kg-fmt (* 100.0 (/ (abs (- total aout)) aout)))
-                                     " %"
-                                     (if trim
-                                       "  (при обрезке должно быть около нуля)"
-                                       "  (целые квадраты больше площадки — так и надо)"))))))
+                    (princ "\n  [!] Наружная граница ВЫБРАНА и сужает область.")
+                    (princ "\n      Не нужна - кнопка «Сброс границ» в окне.")))
                 (princ "\n[i] Один Ctrl+Z убирает всю сетку целиком.")
                 T)))))))))
 
@@ -1716,7 +1619,7 @@
     (setq k (getkword (strcat "\nЧто делаем? [Сетка/Проверка/Выход] <" dflt ">: ")))
     (if (null k) (setq k dflt))
     (cond
-      ((= k "Сетка")    (gc-kg-build) (gc-kg-vol-delete) (setq dflt "Выход"))
+      ((= k "Сетка")    (gc-kg-build) (setq dflt "Выход"))
       ((= k "Проверка") (gc-kg-probe) (setq dflt "Выход"))
       (T (setq done T))))
   (princ))
@@ -1750,7 +1653,6 @@
       ;; Сетка строится сразу: окно и есть подтверждение. Лишний вопрос
       ;; между «ОК» и результатом ничего не добавляет.
       (gc-kg-build)
-      (gc-kg-vol-delete)
       (gc-kg-menu)))
   (princ "\n[i] KG завершена.")
   (princ))
@@ -1775,9 +1677,6 @@
 
 (defun c:kg ( / *error*)
   (defun *error* (msg)
-    ;; Временную поверхность убираем в первую очередь: чужой чертёж не должен
-    ;; остаться с нашим мусором из-за нашей же ошибки.
-    (gc-kg-vol-delete)
     (if (gc-kg-cancel-p msg)
       (princ "\n[ОТМЕНА] KG прерван.")
       (princ (strcat "\n[ОШИБКА] KG: " msg)))
@@ -1796,6 +1695,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v10 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v11 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
