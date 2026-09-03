@@ -13,6 +13,10 @@ rem ---------------------------------------------------------------
 rem САМООБНОВЛЕНИЕ. Первым делом установщик проверяет самого себя.
 rem
 rem Зачем: в папке загрузок скапливаются копии, и запускается не та.
+rem
+rem CachePolicy обязателен. WebClient по умолчанию берёт файл из кэша
+rem САМОЙ WINDOWS, и никакие хвосты в адресе на это не влияют: сервер
+rem отдаёт свежее, а на диск ложится вчерашнее.
 rem Симптом при этом обманчив - установка идёт, файлы качаются, но
 rem ошибка повторяется слово в слово, потому что работает прошлая
 rem версия. Догадаться об этом со стороны почти невозможно.
@@ -24,7 +28,7 @@ if /i "%~1"=="fresh" goto :main
 set "NEWSELF=%TEMP%\gc_install_fresh.bat"
 del /q "%NEWSELF%" 2>nul
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
- "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); $wc.Headers.Add('Cache-Control','no-cache'); $wc.Headers.Add('Pragma','no-cache'); try { $wc.DownloadFile('https://raw.githubusercontent.com/%REPO_%/%BRANCH_%/install/install.bat?t=%RANDOM%%RANDOM%','%NEWSELF%') } catch { exit 1 } }"
+ "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); $wc.CachePolicy=New-Object Net.Cache.RequestCachePolicy([Net.Cache.RequestCacheLevel]::NoCacheNoStore); $wc.Headers.Add('Cache-Control','no-cache'); $wc.Headers.Add('Pragma','no-cache'); try { $wc.DownloadFile('https://raw.githubusercontent.com/%REPO_%/%BRANCH_%/install/install.bat?t=%RANDOM%%RANDOM%','%NEWSELF%') } catch { exit 1 } }"
 if exist "%NEWSELF%" (
   fc /b "%~f0" "%NEWSELF%" >nul 2>&1
   if errorlevel 1 (
@@ -45,7 +49,7 @@ set "HOME_DIR=%APPDATA%\Autodesk\ApplicationPlugins\GeoClaude.bundle"
 
 echo.
 echo ==================================================
-echo   GeoClaude - установка
+echo   GeoClaude - установка  (установщик 3)
 echo ==================================================
 echo.
 echo Ставлю сюда:
@@ -189,7 +193,7 @@ rem ---------------------------------------------------------------
 :get
 echo   качаю %~1
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
- "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $u='%RAW%/%~1?t=%RANDOM%%RANDOM%'; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); $wc.Headers.Add('Cache-Control','no-cache'); $wc.Headers.Add('Pragma','no-cache'); try { $wc.DownloadFile($u,'%~2') } catch { $c=0; if ($_.Exception.Response) { $c=[int]$_.Exception.Response.StatusCode }; if ($c -gt 0) { Write-Host ('        HTTP ' + $c) } else { Write-Host ('        ' + $_.Exception.Message) }; exit 1 } }"
+ "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $u='%RAW%/%~1?t=%RANDOM%%RANDOM%'; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); $wc.CachePolicy=New-Object Net.Cache.RequestCachePolicy([Net.Cache.RequestCacheLevel]::NoCacheNoStore); $wc.Headers.Add('Cache-Control','no-cache'); $wc.Headers.Add('Pragma','no-cache'); try { $wc.DownloadFile($u,'%~2') } catch { $c=0; if ($_.Exception.Response) { $c=[int]$_.Exception.Response.StatusCode }; if ($c -gt 0) { Write-Host ('        HTTP ' + $c) } else { Write-Host ('        ' + $_.Exception.Message) }; exit 1 } }"
 if errorlevel 1 (
   echo         НЕ СКАЧАЛОСЬ
   set /a FAIL=!FAIL!+1

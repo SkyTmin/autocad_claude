@@ -113,6 +113,11 @@
       (setq r (vl-catch-all-apply
                 '(lambda ()
                    (vlax-invoke http 'Open "GET" url :vlax-false)
+                   ;; Заголовки против кэша. Меняющегося хвоста в адресе
+                   ;; мало: кэшировать умеет и сам Windows, и тогда сервер
+                   ;; отдаёт свежее, а на диск ложится вчерашнее.
+                   (vlax-invoke http 'SetRequestHeader "Cache-Control" "no-cache")
+                   (vlax-invoke http 'SetRequestHeader "Pragma" "no-cache")
                    (vlax-invoke http 'Send)
                    (vlax-get http 'Status))
                 nil))

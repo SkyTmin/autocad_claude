@@ -8,7 +8,7 @@ title Сборка GcSurface.dll
 
 echo.
 echo ==================================================
-echo   Сборка GcSurface.dll для Civil 3D
+echo   Сборка GcSurface.dll для Civil 3D  (сборщик 3)
 echo ==================================================
 echo.
 echo Visual Studio и SDK от Autodesk НЕ нужны.
