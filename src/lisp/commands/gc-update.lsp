@@ -1,4 +1,9 @@
-;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v9)
+;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v10)
+;;;
+;;; v10: proverku modulya VYZOVOM prishlos ubrat. Esli funkcii net,
+;;;      AutoLISP otvechaet "nevernaya funkciya", i vl-catch-all-apply
+;;;      etogo NE perehvatyvaet: oshibka proishodit do vhoda v funkciyu.
+;;;      Proveryaem tolko po tablice simvolov i tolko ZAGLAVNYMI.
 ;;;
 ;;; v9: zagruzka po puti s PRYAMYMI slesham i s povtorom. Pri obratnyh
 ;;;     AutoCAD v nekotoryh sborkah uhodit perebirat puti poiska i
@@ -283,31 +288,21 @@
 ;;; разрешение, либо откажет молча.
 ;;; ====================================================================
 
-(defun gc-upd-net-loaded ( / r m)
-  ;; ПРОВЕРЯЕМ ВЫЗОВОМ, А НЕ ПОИСКОМ ИМЕНИ.
+(defun gc-upd-net-loaded ( / )
+  ;; Ищем имя в таблице символов, ЗАГЛАВНЫМИ. Здесь была ошибка, стоившая
+  ;; двух дней: (atoms-family 1) отдаёт имена в верхнем регистре, а
+  ;; сравнивались они со строчной строкой - проверка не могла вернуть
+  ;; истину никогда, и по её ложному ответу поставлены два неверных
+  ;; диагноза (docs/pitfalls.md -> П46).
   ;;
-  ;; Здесь была ошибка, которая стоила двух дней: (atoms-family 1) отдаёт
-  ;; имена символов ЗАГЛАВНЫМИ, а сравнивались они со строчной строкой.
-  ;; Проверка не могла вернуть истину НИКОГДА, даже при загруженном модуле,
-  ;; и по её ложному ответу были поставлены два неверных диагноза - про
-  ;; FILEDIA и про SECURELOAD (docs/pitfalls.md -> П46).
-  ;;
-  ;; Вызов не зависит ни от регистра, ни от того, как CAD кладёт внешние
-  ;; функции в таблицу атомов.
-  (cond
-    ((member "GC_NET_VERSION" (atoms-family 1)) T)
-    (T
-     (setq r (vl-catch-all-apply 'gc_net_version nil))
-     (cond
-       ((not (vl-catch-all-error-p r)) T)
-       (T
-        ;; Отличаем "функции нет" от "функция есть, но ругнулась":
-        ;; вторая означает, что модуль всё-таки загружен.
-        (setq m (vl-catch-all-error-message r))
-        (cond
-          ((wcmatch (strcase m) "*NO FUNCTION DEFINITION*") nil)
-          ((wcmatch m "*определени*,*Определени*,*ОПРЕДЕЛЕНИ*") nil)
-          (T T)))))))
+  ;; ВЫЗЫВАТЬ функцию для проверки НЕЛЬЗЯ: если её нет, AutoLISP отвечает
+  ;; "неверная функция", и vl-catch-all-apply этого НЕ перехватывает -
+  ;; ошибка происходит до входа в функцию. Попытка проверить вызовом
+  ;; уронила и обновление, и саму команду (П50).
+  (if (or (member "GC_SURFACE_BORDER" (atoms-family 1))
+          (member "GC_NET_VERSION"    (atoms-family 1)))
+    T
+    nil))
 
 (defun gc-upd-netload ( / d p r fd)
   (setq *gc-upd-net-why* nil)
@@ -537,9 +532,12 @@
   (princ "\n\n=== Модуль .NET ===")
   (if (gc-upd-net-loaded)
     (progn
-      (setq r (vl-catch-all-apply 'gc_net_version nil))
+      (setq r (if (member "GC_NET_VERSION" (atoms-family 1))
+                (vl-catch-all-apply 'gc_net_version nil)
+                nil))
       (princ (strcat "\n  загружен, версия "
-                     (if (vl-catch-all-error-p r) "?" (vl-princ-to-string r))))
+                     (if (or (null r) (vl-catch-all-error-p r))
+                       "?" (vl-princ-to-string r))))
       (princ "\n  край области берётся у поверхности - точно"))
     (progn
       (princ "\n  НЕ загружен")
@@ -582,6 +580,6 @@
 ;; A -> Ф, T -> Е, O -> Щ
 (defun c:псфгещ ( / ) (c:gcauto))
 
-(princ "\n[gc] gc-update.lsp v9 загружен.")
+(princ "\n[gc] gc-update.lsp v10 загружен.")
 (princ "\n     GCU обновить | GCV версии | GCLOAD загрузить | GCAUTO автозагрузка | GCDIR папка")
 (princ)

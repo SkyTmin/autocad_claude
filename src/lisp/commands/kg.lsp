@@ -1,8 +1,19 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v19)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v20)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v20: OKNO PADALO IZ-ZA PROTUHSHEGO NABORA VYBORA.
+;;;      "fixnump: nil" -- eto (itoa (sslength ss)), gde nabor uzhe
+;;;      nedeystvitelen. Nabory vybora zhivut ne vechno: sterli obekt,
+;;;      pereotkryli chertezh -- i sslength vozvrashchaet nil. A nastroyki
+;;;      hranyatsya do zakrytiya chertezha, poetomu protuhshiy nabor dozhivaet
+;;;      do sleduyushchego otkrytiya okna.
+;;;      Teper dlina nabora chitaetsya bezopasno, a v okne pishetsya
+;;;      "vybor ustarel, ukazhite zanovo".
+;;;      Zaodno kazhdyy shag zapolneniya okna zashchishchen po otdelnosti:
+;;;      okno otkryvaetsya v lyubom sluchae i nazyvaet slomannye polya.
 ;;;
 ;;; v19: OKNO BOLSHE NE PADAET NA ODNOM ISPORCHENNOM POLE.
 ;;;      "neverny tip argumenta: fixnump: nil" ronyal vse okno, hotya
@@ -750,9 +761,40 @@
                   '((0 . "LWPOLYLINE,POLYLINE,LINE,ARC,CIRCLE,ELLIPSE,SPLINE"))))
   ss)
 
+;; Длина набора. nil, если набор ПРОТУХ.
+;;
+;; Наборы выбора живут не вечно: стёрли объект, переоткрыли чертёж,
+;; набралось слишком много наборов - и sslength возвращает nil.
+;; Настройки же хранятся до закрытия чертежа, поэтому протухший набор
+;; вполне может дожить до следующего открытия окна.
+;;
+;; Именно на этом падало всё окно: (itoa nil) -> "fixnump: nil"
+;; (docs/pitfalls.md -> П49).
+(defun gc-kg-ss-len (ss / n)
+  (if (null ss)
+    nil
+    (progn
+      (setq n (vl-catch-all-apply 'sslength (list ss)))
+      (if (or (vl-catch-all-error-p n) (null n) (not (numberp n))) nil n))))
+
 ;; Строка-описание выбранного набора для показа в окне.
-(defun gc-kg-ss-txt (ss zero)
-  (if ss (strcat "  выбрано: " (itoa (sslength ss))) zero))
+(defun gc-kg-ss-txt (ss zero / n)
+  (setq n (gc-kg-ss-len ss))
+  (cond
+    ((null ss) zero)
+    ((null n)  "  выбор устарел, укажите заново")
+    (T (strcat "  выбрано: " (itoa n)))))
+
+;; Шаг заполнения окна. Ошибка в одном поле не должна закрывать окно:
+;; пользователю нужно окно, а нам - имя сломанного поля.
+(defun gc-kg-try (what fn / r)
+  (setq r (vl-catch-all-apply fn nil))
+  (if (vl-catch-all-error-p r)
+    (progn
+      (setq *gc-kg-dlg-err*
+        (cons (strcat what ": " (vl-catch-all-error-message r)) *gc-kg-dlg-err*))
+      nil)
+    r))
 
 ;; Проверка полей при нажатии ОК. Возвращает T если всё разобрано.
 ;; ПОЧЕМУ не закрываем окно при ошибке: пользователь потеряет всё введённое.
@@ -826,7 +868,7 @@
     (progn
       (setq id (load_dialog path))
       (cond
-        ((< id 0)
+        ((or (null id) (not (numberp id)) (< id 0))
          (princ "\n[ОШИБКА] Не удалось загрузить диалог.")
          nil)
         ((not (new_dialog *gc-kg-dlg* id))
@@ -834,7 +876,9 @@
          (unload_dialog id)
          nil)
         (T
+         (setq *gc-kg-dlg-err* nil)
          ;; --- поверхности
+         (gc-kg-try "поверхности" '(lambda ( / )
          (if *gc-kg-surf-list*
            (progn
              (gc-kg-fill-list "s_black" *gc-kg-surf-list*
@@ -851,24 +895,32 @@
              (set_tile "s_note"
                (if *gc-kg-surf-why*
                  (strcat "  [!] " *gc-kg-surf-why*)
-                 "  [!] Поверхности не найдены — расчёт будет недоступен"))))
-         ;; --- сетка и подписи
-         (foreach k '("step_x" "step_y" "angle" "h_mark" "h_vol" "min_vol")
-           (set_tile k (gc-kg-get (gc-kg-key k))))
-         (set_tile "trim"    (gc-kg-get "trim"))
-         (set_tile "use_min" (gc-kg-get "use-min"))
-         (gc-kg-fill-list "p_mark" *gc-kg-prec* (gc-kg-get "p-mark"))
-         (gc-kg-fill-list "p_vol"  *gc-kg-prec* (gc-kg-get "p-vol"))
-         (gc-kg-fill-list "t_style" *gc-kg-styles*
-           (gc-kg-index-of (gc-kg-get "style") *gc-kg-styles*))
+                 "  [!] Поверхности не найдены — расчёт будет недоступен"))))))
+         ;; --- сетка и подписи. Каждое поле отдельно: одно испорченное
+         ;; значение не уносит с собой остальные девятнадцать.
+         (foreach k '("step_x" "step_y" "angle" "h_mark" "h_vol" "min_vol"
+                      "trim" "use_min")
+           (gc-kg-try k
+             (eval (list 'lambda '( / )
+                     (list 'set_tile k (list 'gc-kg-get (gc-kg-key k)))))))
+         (gc-kg-try "p_mark" '(lambda ( / )
+           (gc-kg-fill-list "p_mark" *gc-kg-prec* (gc-kg-get "p-mark"))))
+         (gc-kg-try "p_vol" '(lambda ( / )
+           (gc-kg-fill-list "p_vol" *gc-kg-prec* (gc-kg-get "p-vol"))))
+         (gc-kg-try "t_style" '(lambda ( / )
+           (gc-kg-fill-list "t_style" *gc-kg-styles*
+             (gc-kg-index-of (gc-kg-get "style") *gc-kg-styles*))))
          ;; --- цвета
          (foreach k '("c_black" "c_red" "c_work" "c_plus" "c_minus" "c_zero")
-           (gc-kg-show-color k (gc-kg-get (gc-kg-key k))))
+           (gc-kg-try k
+             (eval (list 'lambda '( / )
+                     (list 'gc-kg-show-color k (list 'gc-kg-get (gc-kg-key k)))))))
          ;; --- выбранные объекты
-         (set_tile "base_txt"  (if (gc-kg-get "base") "  задана" "  не задана"))
-         (set_tile "outer_txt" (gc-kg-ss-txt (gc-kg-get "outer") "  не выбрана"))
-         (set_tile "inner_txt" (gc-kg-ss-txt (gc-kg-get "inner") "  нет"))
-         (set_tile "lines_txt" (gc-kg-ss-txt (gc-kg-get "lines") "  нет"))
+         (gc-kg-try "выбранные объекты" '(lambda ( / )
+           (set_tile "base_txt"  (if (gc-kg-get "base") "  задана" "  не задана"))
+           (set_tile "outer_txt" (gc-kg-ss-txt (gc-kg-get "outer") "  не выбрана"))
+           (set_tile "inner_txt" (gc-kg-ss-txt (gc-kg-get "inner") "  нет"))
+           (set_tile "lines_txt" (gc-kg-ss-txt (gc-kg-get "lines") "  нет"))))
          ;; --- действия
          (foreach k '("c_black" "c_red" "c_work" "c_plus" "c_minus" "c_zero")
            (action_tile k (strcat "(gc-kg-pick-color \"" k "\")")))
@@ -884,6 +936,12 @@
          ;; ОК: сначала проверяем, при ошибке окно не закрываем.
          (action_tile "accept" "(if (gc-kg-validate) (progn (gc-kg-read-tiles) (done_dialog 1)))")
          (action_tile "cancel" "(done_dialog 0)")
+         ;; Что не заполнилось - говорим вслух, но окно показываем.
+         (if *gc-kg-dlg-err*
+           (progn
+             (princ "\n[!] Часть полей окна не заполнилась:")
+             (foreach e (reverse *gc-kg-dlg-err*) (princ (strcat "\n    " e)))
+             (princ "\n    Окно открыто, остальные поля работают.")))
          (setq res (start_dialog))
          (unload_dialog id)
          (if (findfile path) (vl-file-delete path))
@@ -934,17 +992,19 @@
   (princ (strcat "\n  краевые квадраты    : "
                  (if (= "1" (gc-kg-get "trim")) "обрезать границей" "оставлять целыми")))
   (princ (strcat "\n  граница наружная    : "
-                 (if (gc-kg-get "outer")
-                   (strcat "ВЫБРАНО контуров: "
-                           (itoa (sslength (gc-kg-get "outer")))
-                           " - каждый сужает область")
-                   "не выбрана - область по поверхностям")))
+                 (cond
+                   ((gc-kg-ss-len (gc-kg-get "outer"))
+                    (strcat "ВЫБРАНО контуров: "
+                            (itoa (gc-kg-ss-len (gc-kg-get "outer")))
+                            " - каждый сужает область"))
+                   ((gc-kg-get "outer") "выбор устарел - укажите заново")
+                   (T "не выбрана - область по поверхностям"))))
   (princ (strcat "\n  границы внутренние  : "
-                 (if (gc-kg-get "inner")
-                   (itoa (sslength (gc-kg-get "inner"))) "нет")))
+                 (if (gc-kg-ss-len (gc-kg-get "inner"))
+                   (itoa (gc-kg-ss-len (gc-kg-get "inner"))) "нет")))
   (princ (strcat "\n  характерные линии   : "
-                 (if (gc-kg-get "lines")
-                   (itoa (sslength (gc-kg-get "lines"))) "нет")))
+                 (if (gc-kg-ss-len (gc-kg-get "lines"))
+                   (itoa (gc-kg-ss-len (gc-kg-get "lines"))) "нет")))
   (princ (strcat "\n  отметки             : стиль " (gc-kg-get "style")
                  ", высота " (gc-kg-get "h-mark") " м"
                  ", точность " (nth (gc-kg-get "p-mark") *gc-kg-prec*)))
@@ -1257,12 +1317,14 @@
 
 ;; Контур площадки, если он выбран в окне вручную. nil, если не выбран —
 ;; тогда область берётся по поверхностям, спрашивать нечего.
-(defun gc-kg-outer-pts ( / ss i out pts)
-  (setq ss (gc-kg-get "outer") out nil)
-  (if ss
+(defun gc-kg-outer-pts ( / ss n i out pts)
+  (setq ss (gc-kg-get "outer") out nil n (gc-kg-ss-len ss))
+  (if (and ss (null n))
+    (princ "\n[!] Выбор наружных границ устарел - укажите заново."))
+  (if n
     (progn
       (setq i 0)
-      (while (< i (sslength ss))
+      (while (< i n)
         (setq pts (gc-kg-ent-pts (ssname ss i)))
         (if (and pts (> (length pts) 2))
           (setq out (cons pts out))
@@ -1276,12 +1338,12 @@
         *gc-kg-holes* (gc-kg-holes-pts))
   (princ))
 
-(defun gc-kg-holes-pts ( / ss i out pts)
-  (setq ss (gc-kg-get "inner") out nil)
-  (if ss
+(defun gc-kg-holes-pts ( / ss n i out pts)
+  (setq ss (gc-kg-get "inner") out nil n (gc-kg-ss-len ss))
+  (if n
     (progn
       (setq i 0)
-      (while (< i (sslength ss))
+      (while (< i n)
         (setq pts (gc-kg-ent-pts (ssname ss i)))
         (if (and pts (> (length pts) 2)) (setq out (cons pts out)))
         (setq i (1+ i)))))
@@ -1297,21 +1359,19 @@
 ;;; Модуль необязателен. Нет его - идём прежним путём и говорим об этом.
 ;;; --------------------------------------------------------------------
 
-(defun gc-kg-net-p ( / r m)
-  ;; Проверяем ВЫЗОВОМ, а не поиском имени: (atoms-family 1) отдаёт имена
-  ;; заглавными, и сравнение со строчной строкой не срабатывало никогда
-  ;; (docs/pitfalls.md -> П46).
-  (cond
-    ((member "GC_SURFACE_BORDER" (atoms-family 1)) T)
-    (T
-     (setq r (vl-catch-all-apply 'gc_net_version nil))
-     (cond
-       ((not (vl-catch-all-error-p r)) T)
-       (T (setq m (vl-catch-all-error-message r))
-          (cond
-            ((wcmatch (strcase m) "*NO FUNCTION DEFINITION*") nil)
-            ((wcmatch m "*определени*,*Определени*,*ОПРЕДЕЛЕНИ*") nil)
-            (T T)))))))
+(defun gc-kg-net-p ( / )
+  ;; Ищем имя в таблице символов, и обязательно ЗАГЛАВНЫМИ: atoms-family
+  ;; отдаёт имена в верхнем регистре, а сравнение со строчной строкой
+  ;; не срабатывало никогда (docs/pitfalls.md -> П46).
+  ;;
+  ;; ВЫЗЫВАТЬ функцию для проверки НЕЛЬЗЯ. Если её нет, AutoLISP отвечает
+  ;; "неверная функция", и это НЕ перехватывается vl-catch-all-apply:
+  ;; ошибка происходит до входа в функцию, перехватывать нечего.
+  ;; Попытка проверить вызовом уронила команду целиком (П50).
+  (if (or (member "GC_SURFACE_BORDER" (atoms-family 1))
+          (member "GC_NET_VERSION"    (atoms-family 1)))
+    T
+    nil))
 
 ;; Контуры границы поверхности: список списков 2D-точек, либо nil.
 ;; Первый контур наружный, остальные - внутренние вырезы.
@@ -2209,6 +2269,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v19 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v20 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
