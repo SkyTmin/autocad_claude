@@ -1381,7 +1381,14 @@
 
 (defun gc-kg-surf-bb (name obj / bb)
   (setq bb (if obj (gc-kg-bb-of-vla obj) nil))
-  (if (null bb) (setq bb (gc-kg-bb-of-ent name)))
+  (if bb
+    (gc-kg-log "габариты" name "у объекта поверхности")
+    (progn
+      (gc-kg-log "габариты" name "объект поверхности не отдал")
+      (setq bb (gc-kg-bb-of-ent name))
+      (if bb
+        (gc-kg-log "габариты" name "по объекту на чертеже")
+        (gc-kg-log "габариты" name "и по чертежу не вышло"))))
   bb)
 
 ;; Пересечение габаритов. nil, если поверхности вообще не пересекаются.
@@ -1543,6 +1550,27 @@
     (setq j (1+ j)))
   (setq *gc-kg-holes-fixed* cnt)
   (reverse out))
+
+;; Рамка вокруг площадки двумя углами. Запасной путь, когда габариты
+;; поверхностей прочитать не удалось.
+;;
+;; Углы строятся в ПСК и переводятся в МСК поштучно: если ПСК повёрнута,
+;; смешивать координаты до перевода нельзя (docs/pitfalls.md -> П1).
+(defun gc-kg-ask-bb ( / p1 p2 pts)
+  (setq p1 (getpoint "\nПервый угол рамки: "))
+  (if (null p1)
+    nil
+    (progn
+      (setq p2 (getcorner p1 "\nПротивоположный угол: "))
+      (if (null p2)
+        nil
+        (progn
+          (setq pts (mapcar '(lambda (q) (gc-kg-2d (trans q 1 0)))
+                            (list p1
+                                  (list (car p2) (cadr p1))
+                                  p2
+                                  (list (car p1) (cadr p2)))))
+          (gc-kg-bbox pts))))))
 
 ;;; --------------------------------------------------------------------
 ;;; Построение
@@ -1769,8 +1797,7 @@
   (command "_.UNDO" "_END")
   lay)
 
-(defun gc-kg-build ( / sbn srn ang sx sy base trim gp gh aout
-                       bb ext gbb i0 j0 i1 j1 nc cells total lay rows nnodes)
+(defun gc-kg-build ( / sbn srn ang sx sy base trim bb)
   (setq sbn (gc-kg-get "s-black") srn (gc-kg-get "s-red"))
   (setq *gc-kg-sb* (gc-kg-surf-obj sbn)
         *gc-kg-sr* (gc-kg-surf-obj srn))
@@ -1793,6 +1820,9 @@
      nil)
     (T
      ;; --- габариты области
+     ;; Лог чистим: иначе в отчёт попадут записи от подключения к Civil 3D,
+     ;; сделанные при открытии окна, и причина утонет среди них.
+     (setq *gc-kg-try-log* nil)
      (if *gc-kg-exact*
        (setq bb (gc-kg-bbox *gc-kg-exact*))
        (progn
@@ -1801,10 +1831,26 @@
          (if *gc-kg-outer* (setq bb (gc-kg-bb-and bb (gc-kg-bbox *gc-kg-outer*))))))
      (cond
        ((null bb)
-        (princ "\n[!] Габариты поверхностей не читаются либо они не пересекаются.")
-        (princ "\n    Проверьте, что выбраны разные поверхности и они накладываются.")
-        nil)
-       (T
+        ;; Габариты нужны только чтобы очертить рамку перебора: внутри неё
+        ;; всё решает проверка "точка внутри области". Поэтому отказ здесь
+        ;; не повод останавливаться - достаточно, чтобы рамку задал человек.
+        (princ "\n[!] Габариты поверхностей не читаются. Что отвечал CAD:")
+        (foreach ln (reverse *gc-kg-try-log*) (princ (strcat "\n" ln)))
+        (princ "\n[i] Это не мешает счёту: габариты задают только рамку")
+        (princ "\n    перебора, а что попадёт в сетку - решают поверхности.")
+        (princ "\n    Укажите рамку вокруг площадки двумя углами.")
+        (setq bb (gc-kg-ask-bb))
+        (if (null bb)
+          (progn (princ "\n[i] Рамка не задана - сетка не построена.") nil)
+          (gc-kg-build-in bb sbn srn ang sx sy base trim)))
+       (T (gc-kg-build-in bb sbn srn ang sx sy base trim))))))
+
+;; Построение в заданных габаритах. Вынесено отдельно, потому что попасть
+;; сюда можно двумя путями: габариты прочитались сами либо их задал человек.
+(defun gc-kg-build-in (bb sbn srn ang sx sy base trim
+                       / ext gbb gp gh i0 j0 i1 j1 nc cells total lay
+                         rows nnodes aout)
+  (progn
         (setq ext (gc-kg-bb-pts bb))
         ;; --- система координат сетки
         (setq base (gc-kg-get "base"))
@@ -1901,7 +1947,7 @@
                     (princ "\n  [!] Наружная граница ВЫБРАНА и сужает область.")
                     (princ "\n      Не нужна - кнопка «Сброс границ» в окне.")))
                 (princ "\n[i] Один Ctrl+Z убирает всю сетку целиком.")
-                T)))))))))
+                T))))))
 
 ;;; --------------------------------------------------------------------
 ;;; Меню действий
