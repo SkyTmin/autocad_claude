@@ -49,7 +49,7 @@ set "HOME_DIR=%APPDATA%\Autodesk\ApplicationPlugins\GeoClaude.bundle"
 
 echo.
 echo ==================================================
-echo   GeoClaude - установка  (установщик 3)
+echo   GeoClaude - установка  (установщик 4)
 echo ==================================================
 echo.
 echo Ставлю сюда:
@@ -115,6 +115,11 @@ echo --------------------------------------------------
 echo   Собираю модуль .NET (необязательный)
 echo --------------------------------------------------
 echo Это занимает несколько секунд. Ход сборки ниже.
+echo.
+rem Дата файлов - самый быстрый способ увидеть, что на диск лёг свежий
+rem файл, а не вчерашний из кэша. Раньше это выяснялось по косвенным
+rem признакам в тексте ошибки.
+for %%f in ("%HOME_DIR%\Contents\net\build.bat" "%HOME_DIR%\Contents\net\GcSurface.cs") do echo   %%~tf  %%~nxf
 echo.
 
 rem GC_NOPAUSE: сборщик не должен ждать нажатия клавиши. Его вывод
@@ -192,6 +197,18 @@ rem выходит пустым - на этом уже обожглись.
 rem ---------------------------------------------------------------
 :get
 echo   качаю %~1
+rem curl не кэширует вообще - в отличие от WebClient, который умеет
+rem отдать файл из кэша Windows, и тогда сервер присылает свежее,
+rem а на диск ложится вчерашнее. Он входит в Windows 10 с 2018 года;
+rem если его нет, остаётся PowerShell.
+if exist "%SystemRoot%\System32\curl.exe" (
+  "%SystemRoot%\System32\curl.exe" -s -f -L --retry 2 -H "Cache-Control: no-cache" -H "Pragma: no-cache" -o "%~2" "%RAW%/%~1?t=%RANDOM%%RANDOM%"
+  if errorlevel 1 (
+    echo         НЕ СКАЧАЛОСЬ
+    set /a FAIL=!FAIL!+1
+  )
+  exit /b 0
+)
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
  "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $u='%RAW%/%~1?t=%RANDOM%%RANDOM%'; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); $wc.CachePolicy=New-Object Net.Cache.RequestCachePolicy([Net.Cache.RequestCacheLevel]::NoCacheNoStore); $wc.Headers.Add('Cache-Control','no-cache'); $wc.Headers.Add('Pragma','no-cache'); try { $wc.DownloadFile($u,'%~2') } catch { $c=0; if ($_.Exception.Response) { $c=[int]$_.Exception.Response.StatusCode }; if ($c -gt 0) { Write-Host ('        HTTP ' + $c) } else { Write-Host ('        ' + $_.Exception.Message) }; exit 1 } }"
 if errorlevel 1 (
