@@ -1,8 +1,15 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v24)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v25)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v25: PECHATAEM PLOSHCHAD KONTURA I VERSIYU MODULYA.
+;;;      "model" i "plan" dali odinakovye 35 i 19 tochek -- znachit libo
+;;;      modul v pamyati eshche 1.0 i vtoroy argument ignoriruet, libo
+;;;      ExtractBorder otdaet odno i to zhe. Chislo tochek o sovpadenii
+;;;      s chertezhom ne govorit, a ploshchad -- sravnima s ploshchadyu setki.
+;;;      Teper pechataetsya i to, i drugoe, i versiya modulya.
 ;;;
 ;;; v24: GRANICA BERETSYA REZHIMOM "plan", A NE "model".
 ;;;      Komanda KGB narisovala oba varianta na chertezhe, i vidno srazu:
@@ -1457,10 +1464,14 @@
         (T
          (setq out (gc-kg-norm-loops r))
          (if out
+           ;; Печатаем и ПЛОЩАДЬ контура: по ней сразу видно, тот ли это
+           ;; контур. Число точек о совпадении с чертежом не говорит,
+           ;; а площадь сравнима с площадью сетки.
            (princ (strcat "\n[i] Граница \"" name "\" ["
                           (if mode mode "по умолчанию") "]: контуров "
                           (itoa (length out)) ", точек в наружном "
-                          (itoa (length (car out)))))
+                          (itoa (length (car out)))
+                          ", площадь " (gc-kg-fmt (gc-kg-area (car out))) " м2"))
            (princ (strcat "\n[!] Ответ модуля для \"" name
                           "\" не разобран.")))
          out)))
@@ -2180,6 +2191,9 @@
             (cond
               ;; --- точный путь: область задана многоугольником
               (*gc-kg-clips*
+               (if (member "GC_NET_VERSION" (atoms-family 1))
+                 (princ (strcat "\n[i] Модуль .NET версии "
+                                (vl-princ-to-string (gc_net_version)))))
                (princ (strcat "\n[i] Граница: ТОЧНАЯ, источник - "
                               (if *gc-kg-clip-src* *gc-kg-clip-src* "?")
                               " (контуров: " (itoa (length *gc-kg-clips*)) ")"))
@@ -2302,6 +2316,10 @@
 
 (defun c:kgb ( / sbn srn n)
   (princ "\n\n=== KGB - показать границы поверхностей от модуля ===")
+  (if (member "GC_NET_VERSION" (atoms-family 1))
+    (princ (strcat "\n[i] Модуль .NET версии "
+                   (vl-princ-to-string (gc_net_version))
+                   " (для выбора режима нужна 1.1)")))
   (if (not (gc-kg-net-p))
     (princ "\n[!] Модуль .NET не загружен - показывать нечего.")
     (progn
@@ -2323,7 +2341,9 @@
                     (if (= m "model") 4 6))
                   (princ (strcat "\n  " (cdr pair) " [" m "]: контуров "
                                  (itoa (length n)) ", точек "
-                                 (itoa (length (car n))))))
+                                 (itoa (length (car n)))
+                                 ", площадь "
+                                 (gc-kg-fmt (gc-kg-area (car n))) " м2")))
                 (princ (strcat "\n  " (cdr pair) " [" m "]: пусто")))))
           (command "_.UNDO" "_END")
           (princ "\n\n[i] Нарисовано на слоях:")
