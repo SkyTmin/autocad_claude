@@ -1,8 +1,16 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v18)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v19)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v19: OKNO BOLSHE NE PADAET NA ODNOM ISPORCHENNOM POLE.
+;;;      "neverny tip argumenta: fixnump: nil" ronyal vse okno, hotya
+;;;      vinovato bylo odno pole iz dvadcati: dimx_tile vozvrashchaet nil
+;;;      dlya nesushchestvuyushchego polya, a cvet mozhet byt nil pri starom
+;;;      nabore nastroek. Nastroyki zhivut do zakrytiya chertezha i
+;;;      perezhivayut obnovlenie komandy, poetomu staryy nabor ne znaet
+;;;      pro novye klyuchi -- teper nedostayushchee beretsya iz umolchaniy.
 ;;;
 ;;; v18: PROVERKA MODULYA .NET BYLA SLOMANA REGISTROM.
 ;;;      (atoms-family 1) otdaet imena ZAGLAVNYMI, a sravnivalis oni
@@ -286,8 +294,12 @@
 ;;; МЕЛОЧИ
 ;;; ====================================================================
 
-(defun gc-kg-get (k)
-  (cdr (assoc k *gc-kg-cfg*)))
+(defun gc-kg-get (k / v)
+  (setq v (assoc k *gc-kg-cfg*))
+  ;; Ключа нет в настройках - берём из значений по умолчанию, а не nil.
+  ;; Настройки живут до закрытия чертежа и переживают обновление команды,
+  ;; поэтому старый набор может не знать про новый ключ.
+  (if v (cdr v) (cdr (assoc k *gc-kg-def*))))
 
 (defun gc-kg-set (k v)
   (if (assoc k *gc-kg-cfg*)
@@ -693,10 +705,16 @@
 
 ;; Залить квадратик кнопки цветом — так виден выбранный цвет.
 (defun gc-kg-show-color (tile col / w h)
+  ;; dimx_tile возвращает nil, если такого поля в окне нет, а цвет может
+  ;; оказаться nil при испорченных настройках. Оба случая роняли всё окно
+  ;; сообщением "неверный тип аргумента: fixnump: nil" - а виновато при
+  ;; этом одно поле из двадцати (docs/pitfalls.md -> П48).
   (setq w (dimx_tile tile) h (dimy_tile tile))
-  (start_image tile)
-  (fill_image 0 0 w h col)
-  (end_image))
+  (if (and w h (numberp col))
+    (progn
+      (start_image tile)
+      (fill_image 0 0 w h col)
+      (end_image))))
 
 ;; Клик по квадратику цвета — штатное окно выбора цвета AutoCAD.
 (defun gc-kg-pick-color (tile / ck c)
@@ -2191,6 +2209,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v18 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v19 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)

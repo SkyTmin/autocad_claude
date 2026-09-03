@@ -1,4 +1,11 @@
-;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v8)
+;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v9)
+;;;
+;;; v9: zagruzka po puti s PRYAMYMI slesham i s povtorom. Pri obratnyh
+;;;     AutoCAD v nekotoryh sborkah uhodit perebirat puti poiska i
+;;;     spotykaetsya o nesushchestvuyushchuyu papku iz nastroek polzovatelya,
+;;;     vydavaya "Win32: ne udaetsya nayti ukazannyy put" s CHUZHIM putem.
+;;;     Pri otkaze pechataetsya polnyy put -- chtoby ne gadat, chto imenno
+;;;     ne nashlos.
 ;;;
 ;;; v8: NAYDENA NASTOYASHCHAYA PRICHINA. Proverka zagruzki modulya byla
 ;;;     SLOMANA: (atoms-family 1) otdaet imena ZAGLAVNYMI, a sravnivalis
@@ -235,6 +242,30 @@
                                      (vl-catch-all-error-message r)))
                    (cons T "ok")))))))))))
 
+;; Путь для load. Обратные слэши меняем на прямые: AutoCAD понимает оба,
+;; но при обратных он в некоторых сборках уходит перебирать пути поиска -
+;; и спотыкается о несуществующую папку из настроек пользователя, выдавая
+;; "Win32: не удаётся найти указанный путь" с ЧУЖИМ путём в тексте
+;; (docs/pitfalls.md -> П47).
+(defun gc-upd-slash (p / i c out)
+  (setq out "" i 1)
+  (while (<= i (strlen p))
+    (setq c (substr p i 1))
+    (setq out (strcat out (if (= c "\\") "/" c)))
+    (setq i (1+ i)))
+  out)
+
+;; Загрузить файл. Возвращает nil при успехе либо текст ошибки.
+;; Вторая попытка не прихоть: первая может сорваться на обходе путей
+;; поиска, а по прямому пути пройти.
+(defun gc-upd-load (path / r)
+  (setq r (vl-catch-all-apply 'load (list (gc-upd-slash path))))
+  (if (vl-catch-all-error-p r)
+    (progn
+      (setq r (vl-catch-all-apply 'load (list path)))
+      (if (vl-catch-all-error-p r) (vl-catch-all-error-message r) nil))
+    nil))
+
 ;; Первая строка файла - в ней у нас стоит имя и версия.
 (defun gc-upd-head (path / f s)
   (setq s nil)
@@ -346,7 +377,7 @@
   (if dir
     (foreach n *gc-upd-files*
       (setq path (strcat dir n))
-      (if (findfile path) (vl-catch-all-apply 'load (list path)))))
+      (if (findfile path) (gc-upd-load path))))
   (gc-upd-netload)
   (princ))
 
@@ -424,9 +455,8 @@
         (setq path (strcat dir n))
         (if (findfile path)
           (progn
-            (setq r (vl-catch-all-apply 'load (list path)))
-            (if (vl-catch-all-error-p r)
-              (princ (strcat "\n  [!!] " n " - " (vl-catch-all-error-message r)))))
+            (setq r (gc-upd-load path))
+            (if r (princ (strcat "\n  [!!] " n " - " r))))
           (princ (strcat "\n  [!!] " n " - нет на диске"))))
       (if (gc-upd-netload)
         (princ "\n[i] Модуль .NET загружен.")
@@ -475,10 +505,11 @@
             (setq path (strcat dir n))
             (if (findfile path)
               (progn
-                (setq r (vl-catch-all-apply 'load (list path)))
-                (if (vl-catch-all-error-p r)
-                  (princ (strcat "\n  [!!] " n " - "
-                                 (vl-catch-all-error-message r)))))))
+                (setq r (gc-upd-load path))
+                (if r
+                  (progn
+                    (princ (strcat "\n  [!!] " n " - " r))
+                    (princ (strcat "\n        путь: " path)))))))
           ;; Модуль грузим сами: перезапуск CAD ради этого не нужен.
           (if (gc-upd-netload)
             (princ "\n\n[i] Готово. Модуль .NET загружен, край будет точным.")
@@ -551,6 +582,6 @@
 ;; A -> Ф, T -> Е, O -> Щ
 (defun c:псфгещ ( / ) (c:gcauto))
 
-(princ "\n[gc] gc-update.lsp v8 загружен.")
+(princ "\n[gc] gc-update.lsp v9 загружен.")
 (princ "\n     GCU обновить | GCV версии | GCLOAD загрузить | GCAUTO автозагрузка | GCDIR папка")
 (princ)
