@@ -1,8 +1,18 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v26)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v27)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v27: ETAP 3 -- PODPISI OTMETOK V UZLAH.
+;;;      V kazhdom uzle setki tri chisla: krasnaya sverhu, chernaya snizu,
+;;;      rabochaya sprava CVETOM PO ZNAKU. Znak cvetom -- ne ukrashenie:
+;;;      uzlov na ploshchadke sotni, i razbirat znak chteniem kazhdogo
+;;;      chisla nevozmozhno.
+;;;      Uzly berutsya u POSTROENNOY setki, a ne schitayutsya zanovo:
+;;;      podpisyvaetsya rovno to, chto narisovano.
+;;;      Sosednie kvadraty delyat uzly, poetomu sobiraem bez povtorov --
+;;;      inache kazhdaya podpis legla by dvazhdy.
 ;;;
 ;;; v26: TOCHNOE PERESECHENIE OBLASTEY CHEREZ TREUGOLNIKI.
 ;;;      Kontury ot modulya okazalis PRAVILNYE -- Shamil podtverdil, chto
@@ -333,7 +343,15 @@
     (cons "use-min"  "0")         ; включён ли порог
     (cons "c-black"  8)           ; цвет чёрной (существующей) отметки
     (cons "c-red"    1)           ; цвет красной (проектной) отметки
-    (cons "c-work"   3)           ; цвет рабочей отметки
+    (cons "c-work"   3)           ; цвет рабочей отметки (общий, запасной)
+    ;; У рабочей отметки ТРИ цвета по знаку: знак виден цветом, без чтения
+    ;; самого числа (specs/009 §5Б.5). Это не украшение - на картограмме
+    ;; узлов сотни, и глазами их не перебрать.
+    (cons "c-wminus" 1)           ; рабочая: выемка (-)
+    (cons "c-wzero"  7)           ; рабочая: ноль
+    (cons "c-wplus"  3)           ; рабочая: насыпь (+)
+    (cons "sep"      "0")         ; разделитель: 0 запятая, 1 точка
+    (cons "style"    "Standard")  ; стиль текста подписей
     (cons "c-plus"   5)           ; цвет насыпи  (+)
     (cons "c-minus"  1)           ; цвет выемки  (-)
     (cons "c-zero"   7)))         ; цвет нулевой зоны
@@ -718,7 +736,18 @@
 "      : text { label = \" красной\"; }"
 "      : image_button { key = \"c_red\";   width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
 "      : text { label = \" рабочей\"; }"
-"      : image_button { key = \"c_work\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } } }"
+"      : image_button { key = \"c_work\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } }"
+"    : row {"
+"      : text { label = \"Рабочая по знаку:\"; }"
+"      : text { label = \" выемка\"; }"
+"      : image_button { key = \"c_wminus\"; width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
+"      : text { label = \" ноль\"; }"
+"      : image_button { key = \"c_wzero\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
+"      : text { label = \" насыпь\"; }"
+"      : image_button { key = \"c_wplus\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } }"
+"    : row {"
+"      : text   { label = \"Разделитель дробной части:\"; }"
+"      : toggle { key = \"sep\"; label = \"точка вместо запятой\"; } } }"
 "  : boxed_column { label = \" Объёмы \";"
 "    : row {"
 "      : edit_box   { key = \"h_vol\"; label = \"Высота текста, м \"; edit_width = 6; }"
@@ -885,6 +914,7 @@
     (gc-kg-set (gc-kg-key k) (get_tile k)))
   (gc-kg-set "trim"    (get_tile "trim"))
   (gc-kg-set "use-min" (get_tile "use_min"))
+  (gc-kg-set "sep"     (get_tile "sep"))
   (gc-kg-set "p-mark"  (atoi (get_tile "p_mark")))
   (gc-kg-set "p-vol"   (atoi (get_tile "p_vol")))
   (gc-kg-set "style"   (nth (atoi (get_tile "t_style")) *gc-kg-styles*))
@@ -955,7 +985,7 @@
          ;; --- сетка и подписи. Каждое поле отдельно: одно испорченное
          ;; значение не уносит с собой остальные девятнадцать.
          (foreach k '("step_x" "step_y" "angle" "h_mark" "h_vol" "min_vol"
-                      "trim" "use_min")
+                      "trim" "use_min" "sep")
            (gc-kg-try k 'set_tile (list k (gc-kg-get (gc-kg-key k)))))
          (gc-kg-try "p_mark" 'gc-kg-fill-list
            (list "p_mark" *gc-kg-prec* (gc-kg-get "p-mark")))
@@ -965,7 +995,9 @@
            (list "t_style" *gc-kg-styles*
                  (gc-kg-index-of (gc-kg-get "style") *gc-kg-styles*)))
          ;; --- цвета
-         (foreach k '("c_black" "c_red" "c_work" "c_plus" "c_minus" "c_zero")
+         (foreach k '("c_black" "c_red" "c_work"
+                      "c_wminus" "c_wzero" "c_wplus"
+                      "c_plus" "c_minus" "c_zero")
            (gc-kg-try k 'gc-kg-show-color (list k (gc-kg-get (gc-kg-key k)))))
          ;; --- выбранные объекты
          (gc-kg-try "выбранные объекты" '(lambda ( / )
@@ -975,7 +1007,9 @@
            (set_tile "lines_txt" (gc-kg-ss-txt (gc-kg-get "lines") "  нет")))
            nil)
          ;; --- действия
-         (foreach k '("c_black" "c_red" "c_work" "c_plus" "c_minus" "c_zero")
+         (foreach k '("c_black" "c_red" "c_work"
+                      "c_wminus" "c_wzero" "c_wplus"
+                      "c_plus" "c_minus" "c_zero")
            (action_tile k (strcat "(gc-kg-pick-color \"" k "\")")))
          ;; ПОЧЕМУ перед закрытием читаем поля: тыкать по чертежу при открытом
          ;; окне DCL нельзя, окно приходится закрывать. Без этой строки всё
@@ -1060,12 +1094,134 @@
                    (itoa (gc-kg-ss-len (gc-kg-get "lines"))) "нет")))
   (princ (strcat "\n  отметки             : стиль " (gc-kg-get "style")
                  ", высота " (gc-kg-get "h-mark") " м"
-                 ", точность " (nth (gc-kg-get "p-mark") *gc-kg-prec*)))
+                 ", точность " (nth (gc-kg-get "p-mark") *gc-kg-prec*)
+                 ", разделитель "
+                 (if (= "1" (gc-kg-get "sep")) "точка" "запятая")))
   (princ (strcat "\n  объёмы              : высота " (gc-kg-get "h-vol") " м"
                  ", точность " (nth (gc-kg-get "p-vol") *gc-kg-prec*)))
   (if (= "1" (gc-kg-get "use-min"))
     (princ (strcat "\n  порог объёма        : " (gc-kg-get "min-vol") " м3")))
   (princ))
+
+;;; --------------------------------------------------------------------
+;;; ЭТАП 3. ПОДПИСИ ОТМЕТОК В УЗЛАХ
+;;;
+;;; В каждом узле сетки три числа:
+;;;   красная  - проектная отметка, сверху;
+;;;   чёрная   - существующая, снизу;
+;;;   рабочая  - справа, ЦВЕТОМ ПО ЗНАКУ.
+;;;
+;;; Знак рабочей цветом - требование спеки, и оно по делу: узлов на
+;;; площадке сотни, и разбирать знак чтением каждого числа невозможно.
+;;;
+;;; Узлы берутся у ПОСТРОЕННОЙ сетки, а не считаются заново: подписывается
+;;; ровно то, что нарисовано, и расхождению взяться неоткуда.
+;;; --------------------------------------------------------------------
+
+;; Число с нужной точностью и нужным разделителем.
+(defun gc-kg-fmt-p (x prec sep / s i out ch)
+  (setq s (rtos x 2 prec) out "" i 1)
+  (while (<= i (strlen s))
+    (setq ch (substr s i 1))
+    (setq out (strcat out (if (= ch ".") (if (= sep "1") "." ",") ch)))
+    (setq i (1+ i)))
+  out)
+
+;; Текст в точке. Выравнивание: 0 влево, 1 по центру.
+;; Группа 72/73 и точка 11 - выравнивание идёт по ней, а не по 10
+;; (docs/pitfalls.md -> П2: со стилем фиксированной высоты и аннотативным
+;; текст ведёт себя иначе, поэтому высоту задаём явно).
+(defun gc-kg-text (p txt h col lay stl just / d)
+  (setq d (list '(0 . "TEXT") '(100 . "AcDbEntity")
+                (cons 8 lay) (cons 62 col)
+                '(100 . "AcDbText")
+                (cons 10 p) (cons 11 p)
+                (cons 40 h) (cons 1 txt)
+                (cons 7 (if stl stl "Standard"))
+                (cons 72 (if (= just 1) 1 0))
+                '(73 . 0)))
+  (entmake d))
+
+;; Уникальные узлы построенной сетки: список пар (i . j).
+;; Ячейка (i j) владеет четырьмя узлами, соседние ячейки их делят -
+;; поэтому собираем без повторов, иначе каждая подпись легла бы дважды
+;; и на печати вышла бы жирной кашей.
+(defun gc-kg-nodes (cells / seen key out i j)
+  (setq seen nil out nil)
+  (foreach c cells
+    (setq i (car c) j (cadr c))
+    (foreach nd (list (cons i j) (cons (1+ i) j)
+                      (cons (1+ i) (1+ j)) (cons i (1+ j)))
+      (setq key (strcat (itoa (car nd)) "," (itoa (cdr nd))))
+      (if (not (member key seen))
+        (progn (setq seen (cons key seen))
+               (setq out (cons nd out))))))
+  (reverse out))
+
+;; Подписать отметки в узлах построенной сетки.
+(defun gc-kg-label ( / cells par base ang sx sy nodes lay stl h prec sep
+                       n p w zb zr hw col cnt skip cls)
+  (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
+  (cond
+    ((or (null cells) (null par))
+     (princ "\n[!] Сетки нет - сначала постройте её.")
+     nil)
+    ((or (null *gc-kg-sb*) (null *gc-kg-sr*))
+     (princ "\n[!] Поверхности не выбраны - отметки взять неоткуда.")
+     nil)
+    (T
+     (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
+     (gc-kg-set-frame base ang)
+     (setq nodes (gc-kg-nodes cells))
+     (setq lay  (gc-kg-layer "GC-Картограмма-Отметки" 7)
+           stl  (gc-kg-get "style")
+           h    (gc-kg-num (gc-kg-get "h-mark"))
+           prec (gc-kg-get "p-mark")
+           sep  (gc-kg-get "sep"))
+     (if (or (null h) (<= h 0.0)) (setq h 0.5))
+     (if (not (numberp prec)) (setq prec 2))
+     (princ (strcat "\n[i] Узлов сетки: " (itoa (length nodes)) ". Считаю отметки..."))
+     (setq cnt 0 skip 0)
+     (setvar "CMDECHO" 0)
+     (command "_.UNDO" "_BEGIN")
+     (foreach n nodes
+       (setq p (gc-kg-to-wcs (list (* (car n) sx) (* (cdr n) sy))))
+       (setq zb (gc-kg-elev *gc-kg-sb* (car p) (cadr p)))
+       (setq zr (gc-kg-elev *gc-kg-sr* (car p) (cadr p)))
+       (if (and zb zr)
+         (progn
+           (setq hw (- zr zb))
+           (setq cls (gc-kg-work-class hw))
+           (setq col (cond
+                       ((= cls "ZERO") (gc-kg-get "c-wzero"))
+                       ((= cls "CUT")  (gc-kg-get "c-wminus"))
+                       (T              (gc-kg-get "c-wplus"))))
+           ;; красная сверху, чёрная снизу, рабочая справа
+           (gc-kg-text (list (car p) (+ (cadr p) (* 0.35 h)))
+                       (gc-kg-fmt-p zr prec sep) h
+                       (gc-kg-get "c-red") lay stl 1)
+           (gc-kg-text (list (car p) (- (cadr p) (* 1.35 h)))
+                       (gc-kg-fmt-p zb prec sep) h
+                       (gc-kg-get "c-black") lay stl 1)
+           (gc-kg-text (list (+ (car p) (* 0.6 h)) (- (cadr p) (* 0.5 h)))
+                       (strcat (if (= cls "FILL") "+" "") (gc-kg-fmt-p hw prec sep)) h
+                       col lay stl 0)
+           (setq cnt (1+ cnt)))
+         (setq skip (1+ skip))))
+     (command "_.UNDO" "_END")
+     (princ (strcat "\n\n--- ОТМЕТКИ ПОДПИСАНЫ ---"))
+     (princ (strcat "\n  узлов подписано  : " (itoa cnt)))
+     (if (> skip 0)
+       (princ (strcat "\n  пропущено        : " (itoa skip)
+                      "  (одна из поверхностей не дала отметку)")))
+     (princ (strcat "\n  слой             : " lay))
+     (princ (strcat "\n  высота текста    : " (gc-kg-fmt h) " м"
+                    ", точность " (itoa prec) " знака"))
+     (princ (strcat "\n  разделитель      : "
+                    (if (= sep "1") "точка" "запятая")))
+     (princ "\n  цвет рабочей     : по знаку — выемка, ноль, насыпь")
+     (princ "\n[i] Один Ctrl+Z убирает все подписи.")
+     T)))
 
 ;;; ====================================================================
 ;;; ПРОВЕРКА ОТМЕТОК
@@ -2407,6 +2563,8 @@
                                      (gc-kg-fmt (* 100.0 (/ (abs (- total aout)) aout)))
                                      " %  (должно быть около нуля)")))))
                 (princ "\n[i] Один Ctrl+Z убирает всю сетку целиком.")
+                (princ "\n[i] Дальше — «Отметки»: подпишет чёрную, красную")
+                (princ "\n    и рабочую в каждом узле.")
                 T))))))
 
 ;;; --------------------------------------------------------------------
@@ -2419,11 +2577,13 @@
 (defun gc-kg-menu ( / k dflt done)
   (setq done nil dflt "Выход")
   (while (not done)
-    (initget "Сетка Проверка Выход")
-    (setq k (getkword (strcat "\nЧто делаем? [Сетка/Проверка/Выход] <" dflt ">: ")))
+    (initget "Сетка Отметки Проверка Выход")
+    (setq k (getkword
+              (strcat "\nЧто делаем? [Сетка/Отметки/Проверка/Выход] <" dflt ">: ")))
     (if (null k) (setq k dflt))
     (cond
-      ((= k "Сетка")    (gc-kg-build) (setq dflt "Выход"))
+      ((= k "Сетка")    (gc-kg-build) (setq dflt "Отметки"))
+      ((= k "Отметки")  (gc-kg-label) (setq dflt "Выход"))
       ((= k "Проверка") (gc-kg-probe) (setq dflt "Выход"))
       (T (setq done T))))
   (princ))
@@ -2503,12 +2663,14 @@
   (princ "\nСетка квадратов, отметки в узлах, объёмы выемки и насыпи,")
   (princ "\nлиния нулевых работ и ведомость.")
   (princ "\n")
-  (princ "\n[i] ЭТАП 2 ИЗ 5: настройки и сетка квадратов.")
+  (princ "\n[i] ЭТАП 3 ИЗ 5: сетка квадратов и подписи отметок в узлах.")
   (princ "\n    Выберите в окне две поверхности и нажмите ОК — сетка ляжет")
   (princ "\n    на их общую область сама. Границу выбирать не нужно: рабочая")
   (princ "\n    отметка есть только там, где отметку дают обе поверхности.")
   (princ "\n    Границы, добавленные в саму поверхность, тоже учтутся.")
-  (princ "\n    Отметки в узлах, объёмы и ведомость — этапы 3–5."))
+  (princ "\n    После сетки — «Отметки»: в каждом узле три числа,")
+  (princ "\n    красная сверху, чёрная снизу, рабочая справа цветом по знаку.")
+  (princ "\n    Объёмы и ведомость — этапы 4–5."))
 
 (defun gc-kg-run ( / )
   (gc-kg-defaults)
@@ -2562,6 +2724,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v26 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
-(princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
+(princ "\n[gc] kg.lsp v27 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
+(princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
 (princ)
