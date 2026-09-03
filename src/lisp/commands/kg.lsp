@@ -1,8 +1,17 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v23)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v24)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v24: GRANICA BERETSYA REZHIMOM "plan", A NE "model".
+;;;      Komanda KGB narisovala oba varianta na chertezhe, i vidno srazu:
+;;;      "plan" lozhitsya na nastoyashchuyu granicu s izlomami, "model"
+;;;      otdaet grubyy kontur v poltora desyatka tochek -- po nemu setka
+;;;      i srezala ugly.
+;;;      "model" stoyal po umolchaniyu prosto potomu, chto ya tak reshil,
+;;;      i eto ni razu ne bylo provereno. Teper snachala "plan",
+;;;      "model" -- zapasnoy.
 ;;;
 ;;; v23: KOMANDA KGB -- POKAZAT GRANICY, POLUCHENNYE OT MODULYA.
 ;;;      Kontur ot modulya okazalsya grubee nastoyashchey granicy: 35 i 19
@@ -1416,8 +1425,18 @@
 
 ;; Контуры границы поверхности: список списков 2D-точек, либо nil.
 ;; Первый контур наружный, остальные - внутренние вырезы.
-(defun gc-kg-net-border (name / r out)
-  (gc-kg-net-border-m name nil))
+(defun gc-kg-net-border (name / out)
+  ;; СНАЧАЛА "plan", потом "model".
+  ;;
+  ;; Проверка на чертеже (команда KGB) показала: "plan" даёт границу такой,
+  ;; какой её видно - с изломами, по настоящему краю. "model" отдаёт грубый
+  ;; контур в полтора десятка точек, и сетка по нему срезает углы.
+  ;;
+  ;; Раньше "model" стоял по умолчанию просто потому, что я так решил,
+  ;; и это ни разу не было проверено (docs/pitfalls.md -> П53).
+  (setq out (gc-kg-net-border-m name "plan"))
+  (if (null out) (setq out (gc-kg-net-border-m name "model")))
+  out)
 
 ;; То же, но с указанием режима извлечения: nil - как настроено,
 ;; "plan" - по показанному в плане, "model" - по модели поверхности.
@@ -1438,7 +1457,8 @@
         (T
          (setq out (gc-kg-norm-loops r))
          (if out
-           (princ (strcat "\n[i] Граница \"" name "\": контуров "
+           (princ (strcat "\n[i] Граница \"" name "\" ["
+                          (if mode mode "по умолчанию") "]: контуров "
                           (itoa (length out)) ", точек в наружном "
                           (itoa (length (car out)))))
            (princ (strcat "\n[!] Ответ модуля для \"" name
@@ -2388,6 +2408,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v23 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
+(princ "\n[gc] kg.lsp v24 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
