@@ -49,7 +49,7 @@ set "HOME_DIR=%APPDATA%\Autodesk\ApplicationPlugins\GeoClaude.bundle"
 
 echo.
 echo ==================================================
-echo   GeoClaude - установка  (установщик 4)
+echo   GeoClaude - установка  (установщик 5)
 echo ==================================================
 echo.
 echo Ставлю сюда:
@@ -84,6 +84,7 @@ call :get "src/lisp/commands/vid.lsp"            "%HOME_DIR%\Contents\lisp\vid.l
 call :get "src/lisp/commands/rs.lsp"             "%HOME_DIR%\Contents\lisp\rs.lsp"
 call :get "src/dotnet/GcSurface/GcSurface.cs"    "%HOME_DIR%\Contents\net\GcSurface.cs"
 call :get "src/dotnet/GcSurface/build.bat"       "%HOME_DIR%\Contents\net\build.bat"
+call :get "install/acaddoc.lsp"                  "%HOME_DIR%\acaddoc.lsp"
 
 if %FAIL% GTR 0 (
   echo.
@@ -156,6 +157,35 @@ if exist "%HOME_DIR%\Contents\net\GcSurface.dll" (
 )
 del /q "%HOME_DIR%\pc-lisp.xml" "%HOME_DIR%\pc-net.xml" 2>nul
 
+rem ---------------------------------------------------------------
+rem АВТОЗАГРУЗКА через acaddoc.lsp.
+rem
+rem Пакет .bundle в ApplicationPlugins подхватывается не всегда и молча:
+rem ни сообщения, ни способа узнать почему. acaddoc.lsp AutoCAD читает
+rem САМ при открытии каждого чертежа - это работает везде.
+rem
+rem Чужой acaddoc.lsp не затираем: если он уже есть и не наш, делаем
+rem резервную копию и дописываем свой блок в конец. Затереть чужую
+rem настройку - худшее, что может сделать установщик.
+rem ---------------------------------------------------------------
+echo.
+echo --------------------------------------------------
+echo   Прописываю автозагрузку
+echo --------------------------------------------------
+set AUTO=0
+for /d %%a in ("%APPDATA%\Autodesk\C3D*") do (
+  for /d %%b in ("%%a\*") do (
+    if exist "%%b\Support" call :autoload "%%b\Support"
+  )
+)
+if !AUTO! EQU 0 (
+  echo [!] Не нашёл папку поддержки Civil 3D.
+  echo     Команды придётся грузить вручную: APPLOAD файла
+  echo     %HOME_DIR%\Contents\lisp\gc-update.lsp
+) else (
+  echo [ok] автозагрузка прописана, папок: !AUTO!
+)
+
 echo.
 echo ==================================================
 echo   ГОТОВО
@@ -169,6 +199,11 @@ echo      и загрузился ли модуль .NET.
 echo.
 echo Обновлять команды: GCU прямо в командной строке CAD.
 echo Перезапуск CAD при этом не нужен.
+echo.
+echo Если команды всё же не появились - GCLOAD загрузит их
+echo с диска, а APPLOAD файла
+echo   %HOME_DIR%\Contents\lisp\gc-update.lsp
+echo остаётся крайним запасным путём.
 echo.
 echo Если команда GCV не находится - значит CAD не подхватил
 echo пакет. Запасной путь: APPLOAD и выбрать файл
@@ -215,6 +250,23 @@ if errorlevel 1 (
   echo         НЕ СКАЧАЛОСЬ
   set /a FAIL=!FAIL!+1
 )
+exit /b 0
+
+:autoload
+if exist "%~1\acaddoc.lsp" (
+  findstr /i /c:"GeoClaude" "%~1\acaddoc.lsp" >nul
+  if errorlevel 1 (
+    copy /y "%~1\acaddoc.lsp" "%~1\acaddoc.lsp.bak" >nul
+    type "%HOME_DIR%\acaddoc.lsp" >> "%~1\acaddoc.lsp"
+    echo   дописал в  %~1
+  ) else (
+    echo   уже прописано  %~1
+  )
+) else (
+  copy /y "%HOME_DIR%\acaddoc.lsp" "%~1\acaddoc.lsp" >nul
+  echo   прописал  %~1
+)
+set /a AUTO=!AUTO!+1
 exit /b 0
 
 :end

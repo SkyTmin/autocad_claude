@@ -1,4 +1,9 @@
-;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v2)
+;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v3)
+;;;
+;;; v3: modul .NET gruzitsya sam, cherez NETLOAD iz LISP. Perezapuskat CAD
+;;;     radi etogo ne nuzhno. Put zaranee dobavlyaetsya v doverennye, inache
+;;;     AutoCAD libo sprosit razreshenie, libo otkazhet molcha.
+;;;     Novaya komanda GCLOAD -- zagruzit vse s diska, nichego ne kachaya.
 ;;;
 ;;; v2: zakachka cherez curl. WinHttp v etom CAD ne sozdaetsya vovse -
 ;;;     komanda padala na kazhdom fayle s "set: WinHttp.WinHttpRequest".
@@ -213,8 +218,56 @@
   (if (or (null s) (= s "")) "?" s))
 
 ;;; ====================================================================
+;;; ЗАГРУЗКА МОДУЛЯ .NET
+;;;
+;;; NETLOAD можно вызвать из LISP - значит перезапускать CAD не нужно.
+;;; Путь сначала добавляется в доверенные, иначе AutoCAD либо спросит
+;;; разрешение, либо откажет молча.
+;;; ====================================================================
+
+(defun gc-upd-net-loaded ( / )
+  (if (member "gc_surface_border" (atoms-family 1)) T nil))
+
+(defun gc-upd-netload ( / d p r)
+  (cond
+    ((gc-upd-net-loaded) T)
+    ((null (setq d (gc-upd-net-dir))) nil)
+    ((null (findfile (setq p (strcat d "GcSurface.dll")))) nil)
+    (T
+     (vl-catch-all-apply
+       '(lambda ( / tp dd)
+          (setq dd (substr d 1 (1- (strlen d))))
+          (setq tp (getvar "TRUSTEDPATHS"))
+          (if (not (wcmatch (strcase tp) (strcase (strcat "*" dd "*"))))
+            (setvar "TRUSTEDPATHS" (if (= tp "") dd (strcat tp ";" dd)))))
+       nil)
+     (setq r (vl-catch-all-apply 'command (list "_.NETLOAD" p)))
+     (gc-upd-net-loaded))))
+
+;;; ====================================================================
 ;;; КОМАНДЫ
 ;;; ====================================================================
+
+;; Загрузить всё: команды с диска и модуль .NET. Ничего не качает.
+;; Нужна, когда CAD почему-то не подхватил автозагрузку.
+(defun c:gcload ( / dir n path r)
+  (setq dir (gc-upd-dir))
+  (if (null dir)
+    (princ "\n[!] Папка не задана.")
+    (progn
+      (princ "\n\n=== GCLOAD - загрузка с диска ===")
+      (foreach n *gc-upd-files*
+        (setq path (strcat dir n))
+        (if (findfile path)
+          (progn
+            (setq r (vl-catch-all-apply 'load (list path)))
+            (if (vl-catch-all-error-p r)
+              (princ (strcat "\n  [!!] " n " - " (vl-catch-all-error-message r)))))
+          (princ (strcat "\n  [!!] " n " - нет на диске"))))
+      (if (gc-upd-netload)
+        (princ "\n[i] Модуль .NET загружен.")
+        (princ "\n[i] Модуль .NET не загружен - край области будет приближённым."))))
+  (princ))
 
 (defun c:gcu ( / dir nd n ok bad r path)
   (setq dir (gc-upd-dir))
@@ -258,12 +311,13 @@
                 (if (vl-catch-all-error-p r)
                   (princ (strcat "\n  [!!] " n " - "
                                  (vl-catch-all-error-message r)))))))
-          (princ "\n\n[i] Готово. Перезапускать CAD не нужно.")
-          (if (not (member "gc_surface_border" (atoms-family 1)))
+          ;; Модуль грузим сами: перезапуск CAD ради этого не нужен.
+          (if (gc-upd-netload)
+            (princ "\n\n[i] Готово. Модуль .NET загружен, край будет точным.")
             (progn
-              (princ "\n[i] Модуль .NET не загружен. Если нужен точный край -")
-              (princ "\n    запустите build.bat в папке Contents\\net и")
-              (princ "\n    перезапустите CAD.")))))
+              (princ "\n\n[i] Готово, но модуль .NET не загружен -")
+              (princ "\n    край области посчитается приближённо.")
+              (princ "\n    Собрать: build.bat в папке Contents\\net")))))
       (if (> bad 0)
         (progn
           (princ "\n[i] Если файл не скачался, причины по частоте:")
@@ -322,6 +376,8 @@
 ;; G -> П, C -> С, U -> Г, V -> М. См. docs/pitfalls.md -> П15.
 (defun c:пег ( / ) (c:gcu))
 (defun c:пем ( / ) (c:gcv))
+;; L -> Д
+(defun c:псдщфв ( / ) (c:gcload))
 
-(princ "\n[gc] gc-update.lsp v2 загружен. Команды: GCU обновить | GCV версии | GCDIR папка")
+(princ "\n[gc] gc-update.lsp v3 загружен. Команды: GCU обновить | GCV версии | GCLOAD загрузить | GCDIR папка")
 (princ)
