@@ -1,8 +1,13 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v20)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v21)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v21: UBRAN eval V ZASHCHITE POLEY OKNA.
+;;;      "nevernaya funkciya: #<SUBR ... -lambda->" -- eval prevrashchaet
+;;;      lyambdu v skompilirovannyy obekt, a vl-catch-all-apply takoy
+;;;      ne prinimaet. Peredaem IMYA funkcii i spisok argumentov.
 ;;;
 ;;; v20: OKNO PADALO IZ-ZA PROTUHSHEGO NABORA VYBORA.
 ;;;      "fixnump: nil" -- eto (itoa (sslength ss)), gde nabor uzhe
@@ -787,8 +792,13 @@
 
 ;; Шаг заполнения окна. Ошибка в одном поле не должна закрывать окно:
 ;; пользователю нужно окно, а нам - имя сломанного поля.
-(defun gc-kg-try (what fn / r)
-  (setq r (vl-catch-all-apply fn nil))
+;;
+;; Передаём ИМЯ функции и список аргументов, а не лямбду через eval:
+;; eval превращает лямбду в скомпилированный объект, а vl-catch-all-apply
+;; такой не принимает и отвечает "неверная функция: #<SUBR ... -lambda->"
+;; (docs/pitfalls.md -> П51).
+(defun gc-kg-try (what fn args / r)
+  (setq r (vl-catch-all-apply fn args))
   (if (vl-catch-all-error-p r)
     (progn
       (setq *gc-kg-dlg-err*
@@ -895,32 +905,29 @@
              (set_tile "s_note"
                (if *gc-kg-surf-why*
                  (strcat "  [!] " *gc-kg-surf-why*)
-                 "  [!] Поверхности не найдены — расчёт будет недоступен"))))))
+                 "  [!] Поверхности не найдены — расчёт будет недоступен"))))) nil)
          ;; --- сетка и подписи. Каждое поле отдельно: одно испорченное
          ;; значение не уносит с собой остальные девятнадцать.
          (foreach k '("step_x" "step_y" "angle" "h_mark" "h_vol" "min_vol"
                       "trim" "use_min")
-           (gc-kg-try k
-             (eval (list 'lambda '( / )
-                     (list 'set_tile k (list 'gc-kg-get (gc-kg-key k)))))))
-         (gc-kg-try "p_mark" '(lambda ( / )
-           (gc-kg-fill-list "p_mark" *gc-kg-prec* (gc-kg-get "p-mark"))))
-         (gc-kg-try "p_vol" '(lambda ( / )
-           (gc-kg-fill-list "p_vol" *gc-kg-prec* (gc-kg-get "p-vol"))))
-         (gc-kg-try "t_style" '(lambda ( / )
-           (gc-kg-fill-list "t_style" *gc-kg-styles*
-             (gc-kg-index-of (gc-kg-get "style") *gc-kg-styles*))))
+           (gc-kg-try k 'set_tile (list k (gc-kg-get (gc-kg-key k)))))
+         (gc-kg-try "p_mark" 'gc-kg-fill-list
+           (list "p_mark" *gc-kg-prec* (gc-kg-get "p-mark")))
+         (gc-kg-try "p_vol" 'gc-kg-fill-list
+           (list "p_vol" *gc-kg-prec* (gc-kg-get "p-vol")))
+         (gc-kg-try "t_style" 'gc-kg-fill-list
+           (list "t_style" *gc-kg-styles*
+                 (gc-kg-index-of (gc-kg-get "style") *gc-kg-styles*)))
          ;; --- цвета
          (foreach k '("c_black" "c_red" "c_work" "c_plus" "c_minus" "c_zero")
-           (gc-kg-try k
-             (eval (list 'lambda '( / )
-                     (list 'gc-kg-show-color k (list 'gc-kg-get (gc-kg-key k)))))))
+           (gc-kg-try k 'gc-kg-show-color (list k (gc-kg-get (gc-kg-key k)))))
          ;; --- выбранные объекты
          (gc-kg-try "выбранные объекты" '(lambda ( / )
            (set_tile "base_txt"  (if (gc-kg-get "base") "  задана" "  не задана"))
            (set_tile "outer_txt" (gc-kg-ss-txt (gc-kg-get "outer") "  не выбрана"))
            (set_tile "inner_txt" (gc-kg-ss-txt (gc-kg-get "inner") "  нет"))
-           (set_tile "lines_txt" (gc-kg-ss-txt (gc-kg-get "lines") "  нет"))))
+           (set_tile "lines_txt" (gc-kg-ss-txt (gc-kg-get "lines") "  нет")))
+           nil)
          ;; --- действия
          (foreach k '("c_black" "c_red" "c_work" "c_plus" "c_minus" "c_zero")
            (action_tile k (strcat "(gc-kg-pick-color \"" k "\")")))
@@ -2269,6 +2276,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v20 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v21 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
