@@ -32,6 +32,11 @@
 (setq *gc-upd-files*
   '("kg.lsp" "ol.lsp" "vo.lsp" "sv.lsp" "vid.lsp" "rs.lsp" "gc-update.lsp"))
 
+;; Файлы модуля .NET. Лежат в соседней папке и обновляются вместе
+;; с командами: иначе за свежим исходником пришлось бы каждый раз лезть
+;; на сайт руками, а это ровно то, от чего мы уходили.
+(setq *gc-upd-net-files* '("GcSurface.cs" "build.bat"))
+
 ;; Где запомнить папку: чтобы не спрашивать её при каждом запуске CAD.
 (setq *gc-upd-reg* "HKEY_CURRENT_USER\\Software\\GeoClaude\\Home")
 
@@ -85,6 +90,18 @@
   (strcat "https://raw.githubusercontent.com/" *gc-upd-repo* "/"
           *gc-upd-branch* "/src/lisp/commands/" name
           "?nocache=" (rtos (getvar "CDATE") 2 8)))
+
+(defun gc-upd-net-url (name)
+  (strcat "https://raw.githubusercontent.com/" *gc-upd-repo* "/"
+          *gc-upd-branch* "/src/dotnet/GcSurface/" name
+          "?nocache=" (rtos (getvar "CDATE") 2 8)))
+
+;; Папка модуля - соседняя с папкой команд.
+(defun gc-upd-net-dir ( / d)
+  (setq d (gc-upd-dir))
+  (if d
+    (strcat (vl-filename-directory (substr d 1 (1- (strlen d)))) "\\net\\")
+    nil))
 
 ;; Скачать один файл. Возвращает (T . "ok") либо (nil . причина).
 (defun gc-upd-get (url path / http st r body)
@@ -151,7 +168,7 @@
 ;;; КОМАНДЫ
 ;;; ====================================================================
 
-(defun c:gcu ( / dir n ok bad r path)
+(defun c:gcu ( / dir nd n ok bad r path)
   (setq dir (gc-upd-dir))
   (if (null dir)
     (princ "\n[!] Папка не задана - обновлять некуда.")
@@ -168,6 +185,17 @@
                  (princ (strcat "\n  [ok] " n)))
           (progn (setq bad (1+ bad))
                  (princ (strcat "\n  [!!] " n " - " (cdr r))))))
+      ;; Заодно тянем исходник модуля .NET. Сам модуль пересобирать
+      ;; приходится редко, но когда приходится - файл должен быть свежим,
+      ;; иначе сборка чинит вчерашнюю ошибку.
+      (setq nd (gc-upd-net-dir))
+      (if (and nd (vl-file-directory-p nd))
+        (foreach n *gc-upd-net-files*
+          (setq r (gc-upd-get (gc-upd-net-url n) (strcat nd n)))
+          (if (car r)
+            (progn (setq ok (1+ ok)) (princ (strcat "\n  [ok] net/" n)))
+            (progn (setq bad (1+ bad))
+                   (princ (strcat "\n  [!!] net/" n " - " (cdr r)))))))
       (princ (strcat "\n\nскачано: " (itoa ok) ", не вышло: " (itoa bad)))
       (if (> ok 0)
         (progn
@@ -182,7 +210,12 @@
                 (if (vl-catch-all-error-p r)
                   (princ (strcat "\n  [!!] " n " - "
                                  (vl-catch-all-error-message r)))))))
-          (princ "\n\n[i] Готово. Перезапускать CAD не нужно.")))
+          (princ "\n\n[i] Готово. Перезапускать CAD не нужно.")
+          (if (not (member "gc_surface_border" (atoms-family 1)))
+            (progn
+              (princ "\n[i] Модуль .NET не загружен. Если нужен точный край -")
+              (princ "\n    запустите build.bat в папке Contents\\net и")
+              (princ "\n    перезапустите CAD.")))))
       (if (> bad 0)
         (progn
           (princ "\n[i] Если файл не скачался, причины по частоте:")

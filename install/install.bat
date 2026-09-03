@@ -6,6 +6,38 @@ rem в другой. Переключаем явно, а сам файл храним в CP1251.
 chcp 1251 >nul
 title Установка GeoClaude
 
+set "REPO_=SkyTmin/autocad_claude"
+set "BRANCH_=claude/project-status-check-h0n2w"
+
+rem ---------------------------------------------------------------
+rem САМООБНОВЛЕНИЕ. Первым делом установщик проверяет самого себя.
+rem
+rem Зачем: в папке загрузок скапливаются копии, и запускается не та.
+rem Симптом при этом обманчив - установка идёт, файлы качаются, но
+rem ошибка повторяется слово в слово, потому что работает прошлая
+rem версия. Догадаться об этом со стороны почти невозможно.
+rem
+rem Сравниваем побайтно и, если файл на сервере другой, передаём
+rem работу ему. Слово fresh в аргументах не даёт зациклиться.
+rem ---------------------------------------------------------------
+if /i "%~1"=="fresh" goto :main
+set "NEWSELF=%TEMP%\gc_install_fresh.bat"
+del /q "%NEWSELF%" 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+ "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); $wc.Headers.Add('Cache-Control','no-cache'); $wc.Headers.Add('Pragma','no-cache'); try { $wc.DownloadFile('https://raw.githubusercontent.com/%REPO_%/%BRANCH_%/install/install.bat?t=%RANDOM%%RANDOM%','%NEWSELF%') } catch { exit 1 } }"
+if exist "%NEWSELF%" (
+  fc /b "%~f0" "%NEWSELF%" >nul 2>&1
+  if errorlevel 1 (
+    echo.
+    echo [i] Этот установщик устарел. Запускаю свежий.
+    echo.
+    call "%NEWSELF%" fresh
+    goto :eof
+  )
+)
+
+:main
+
 set "REPO=SkyTmin/autocad_claude"
 set "BRANCH=claude/project-status-check-h0n2w"
 set "RAW=https://raw.githubusercontent.com/%REPO%/%BRANCH%"
@@ -157,7 +189,7 @@ rem ---------------------------------------------------------------
 :get
 echo   качаю %~1
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
- "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $u='%RAW%/%~1?t=%RANDOM%%RANDOM%'; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); try { $wc.DownloadFile($u,'%~2') } catch { $c=0; if ($_.Exception.Response) { $c=[int]$_.Exception.Response.StatusCode }; if ($c -gt 0) { Write-Host ('        HTTP ' + $c) } else { Write-Host ('        ' + $_.Exception.Message) }; exit 1 } }"
+ "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $u='%RAW%/%~1?t=%RANDOM%%RANDOM%'; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); $wc.Headers.Add('Cache-Control','no-cache'); $wc.Headers.Add('Pragma','no-cache'); try { $wc.DownloadFile($u,'%~2') } catch { $c=0; if ($_.Exception.Response) { $c=[int]$_.Exception.Response.StatusCode }; if ($c -gt 0) { Write-Host ('        HTTP ' + $c) } else { Write-Host ('        ' + $_.Exception.Message) }; exit 1 } }"
 if errorlevel 1 (
   echo         НЕ СКАЧАЛОСЬ
   set /a FAIL=!FAIL!+1
