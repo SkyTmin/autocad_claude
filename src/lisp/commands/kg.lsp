@@ -1,8 +1,14 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v17)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v18)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v18: PROVERKA MODULYA .NET BYLA SLOMANA REGISTROM.
+;;;      (atoms-family 1) otdaet imena ZAGLAVNYMI, a sravnivalis oni
+;;;      so strochnoy strokoy: proverka ne mogla vernut istinu nikogda.
+;;;      Modul, veroyatno, gruzilsya s samogo nachala, a komanda schitala
+;;;      ego otsutstvuyushchim i shla priblizhennym putem.
 ;;;
 ;;; v17: NARUZHNYH GRANIC MOZHNO VYBRAT NESKOLKO.
 ;;;      Odna polilinya opisyvaet kray odnoy poverhnosti i nichego ne govorit
@@ -1273,8 +1279,21 @@
 ;;; Модуль необязателен. Нет его - идём прежним путём и говорим об этом.
 ;;; --------------------------------------------------------------------
 
-(defun gc-kg-net-p ( / )
-  (if (member "gc_surface_border" (atoms-family 1)) T nil))
+(defun gc-kg-net-p ( / r m)
+  ;; Проверяем ВЫЗОВОМ, а не поиском имени: (atoms-family 1) отдаёт имена
+  ;; заглавными, и сравнение со строчной строкой не срабатывало никогда
+  ;; (docs/pitfalls.md -> П46).
+  (cond
+    ((member "GC_SURFACE_BORDER" (atoms-family 1)) T)
+    (T
+     (setq r (vl-catch-all-apply 'gc_net_version nil))
+     (cond
+       ((not (vl-catch-all-error-p r)) T)
+       (T (setq m (vl-catch-all-error-message r))
+          (cond
+            ((wcmatch (strcase m) "*NO FUNCTION DEFINITION*") nil)
+            ((wcmatch m "*определени*,*Определени*,*ОПРЕДЕЛЕНИ*") nil)
+            (T T)))))))
 
 ;; Контуры границы поверхности: список списков 2D-точек, либо nil.
 ;; Первый контур наружный, остальные - внутренние вырезы.
@@ -2172,6 +2191,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v17 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v18 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)

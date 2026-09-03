@@ -1,4 +1,11 @@
-;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v7)
+;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v8)
+;;;
+;;; v8: NAYDENA NASTOYASHCHAYA PRICHINA. Proverka zagruzki modulya byla
+;;;     SLOMANA: (atoms-family 1) otdaet imena ZAGLAVNYMI, a sravnivalis
+;;;     oni so strochnoy strokoy. Ona ne mogla vernut istinu NIKOGDA.
+;;;     Po ee lozhnomu otvetu byli postavleny dva nevernyh diagnoza --
+;;;     pro FILEDIA i pro SECURELOAD. Modul, veroyatno, gruzilsya srazu.
+;;;     Teper proveryaem VYZOVOM funkcii.
 ;;;
 ;;; v7: SECURELOAD. Zapret na zagruzku ispolnyaemogo koda otkuda popalo
 ;;;     ne snimaetsya dobavleniem papki v doverennye. Snimaem ego
@@ -245,8 +252,31 @@
 ;;; разрешение, либо откажет молча.
 ;;; ====================================================================
 
-(defun gc-upd-net-loaded ( / )
-  (if (member "gc_surface_border" (atoms-family 1)) T nil))
+(defun gc-upd-net-loaded ( / r m)
+  ;; ПРОВЕРЯЕМ ВЫЗОВОМ, А НЕ ПОИСКОМ ИМЕНИ.
+  ;;
+  ;; Здесь была ошибка, которая стоила двух дней: (atoms-family 1) отдаёт
+  ;; имена символов ЗАГЛАВНЫМИ, а сравнивались они со строчной строкой.
+  ;; Проверка не могла вернуть истину НИКОГДА, даже при загруженном модуле,
+  ;; и по её ложному ответу были поставлены два неверных диагноза - про
+  ;; FILEDIA и про SECURELOAD (docs/pitfalls.md -> П46).
+  ;;
+  ;; Вызов не зависит ни от регистра, ни от того, как CAD кладёт внешние
+  ;; функции в таблицу атомов.
+  (cond
+    ((member "GC_NET_VERSION" (atoms-family 1)) T)
+    (T
+     (setq r (vl-catch-all-apply 'gc_net_version nil))
+     (cond
+       ((not (vl-catch-all-error-p r)) T)
+       (T
+        ;; Отличаем "функции нет" от "функция есть, но ругнулась":
+        ;; вторая означает, что модуль всё-таки загружен.
+        (setq m (vl-catch-all-error-message r))
+        (cond
+          ((wcmatch (strcase m) "*NO FUNCTION DEFINITION*") nil)
+          ((wcmatch m "*определени*,*Определени*,*ОПРЕДЕЛЕНИ*") nil)
+          (T T)))))))
 
 (defun gc-upd-netload ( / d p r fd)
   (setq *gc-upd-net-why* nil)
@@ -474,7 +504,7 @@
   ;; Состояние модуля .NET печатаем первым: он необязателен, и когда
   ;; команда вдруг работает грубее обычного, причина чаще всего тут.
   (princ "\n\n=== Модуль .NET ===")
-  (if (member "gc_surface_border" (atoms-family 1))
+  (if (gc-upd-net-loaded)
     (progn
       (setq r (vl-catch-all-apply 'gc_net_version nil))
       (princ (strcat "\n  загружен, версия "
@@ -521,6 +551,6 @@
 ;; A -> Ф, T -> Е, O -> Щ
 (defun c:псфгещ ( / ) (c:gcauto))
 
-(princ "\n[gc] gc-update.lsp v7 загружен.")
+(princ "\n[gc] gc-update.lsp v8 загружен.")
 (princ "\n     GCU обновить | GCV версии | GCLOAD загрузить | GCAUTO автозагрузка | GCDIR папка")
 (princ)

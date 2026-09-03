@@ -33,7 +33,7 @@
 ;; Путь сначала добавляется в доверенные: иначе AutoCAD либо спросит
 ;; разрешение при каждом открытии чертежа, либо откажет молча.
 (if (and (findfile (strcat *gc-home* "net\\GcSurface.dll"))
-         (not (member "gc_surface_border" (atoms-family 1))))
+         (not (member "GC_SURFACE_BORDER" (atoms-family 1))))
   (progn
     (vl-catch-all-apply
       '(lambda ( / tp d)
@@ -56,7 +56,7 @@
            nil)
          (setvar "FILEDIA" fd))
       nil)
-    (if (not (member "gc_surface_border" (atoms-family 1)))
+    (if (not (member "GC_SURFACE_BORDER" (atoms-family 1)))
       (princ "\n[gc] модуль .NET не загрузился — край области будет приближённым."))))
 
 (princ)

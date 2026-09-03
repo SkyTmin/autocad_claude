@@ -31,7 +31,10 @@ using AcRx = Autodesk.AutoCAD.Runtime;
 using CivApp = Autodesk.Civil.ApplicationServices;
 using CivDb = Autodesk.Civil.DatabaseServices;
 
-[assembly: AcRx.CommandClass(typeof(GeoClaude.GcSurface))]
+// CommandClass намеренно НЕ объявлен. Этот атрибут ограничивает список
+// типов, которые AutoCAD сканирует при загрузке, а команд ([CommandMethod])
+// у нас нет вовсе - только функции для LISP. В заведомо рабочем образце
+// для Civil 3D 2021 его тоже нет.
 
 namespace GeoClaude
 {
