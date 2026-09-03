@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Описание пакета для Civil 3D.
+
+  Что это даёт: папка с таким файлом, положенная в ApplicationPlugins,
+  подхватывается CAD при запуске сама. Ни APPLOAD, ни NETLOAD руками
+  больше не нужны.
+
+  Обновление команд идёт заменой .lsp внутри Contents/lisp -- этим
+  занимается команда GCU. Модуль .NET трогать при этом не приходится:
+  он тонкий и меняется почти никогда (ADR-0008).
+-->
+<ApplicationPackage
+    SchemaVersion="1.0"
+    AppVersion="1.0.0"
+    ProductCode="{7C4A1E62-9B3D-4F58-A0C7-2E5D8B14F903}"
+    Name="GeoClaude"
+    Description="Команды геодезиста для Civil 3D: картограмма, отклонения, схемы"
+    Author="GeoClaude"
+    ProductType="Application"
+    UpgradeCode="{7C4A1E62-9B3D-4F58-A0C7-2E5D8B14F904}">
+
+  <CompanyDetails Name="GeoClaude" />
+
+  <Components Description="Команды на AutoLISP">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R21.0" />
+
+    <!-- Обновление грузим первым: если остальные файлы окажутся битыми,
+         команда GCU всё равно будет доступна и позволит перекачать их. -->
+    <ComponentEntry AppName="GeoClaude-Update" Version="1.0.0"
+                    ModuleName="./Contents/lisp/gc-update.lsp"
+                    AppType=".lsp" LoadOnAutoCADStartup="True" />
+
+    <ComponentEntry AppName="GeoClaude-KG" Version="1.0.0"
+                    ModuleName="./Contents/lisp/kg.lsp"
+                    AppType=".lsp" LoadOnAutoCADStartup="True" />
+    <ComponentEntry AppName="GeoClaude-OL" Version="1.0.0"
+                    ModuleName="./Contents/lisp/ol.lsp"
+                    AppType=".lsp" LoadOnAutoCADStartup="True" />
+    <ComponentEntry AppName="GeoClaude-VO" Version="1.0.0"
+                    ModuleName="./Contents/lisp/vo.lsp"
+                    AppType=".lsp" LoadOnAutoCADStartup="True" />
+    <ComponentEntry AppName="GeoClaude-SV" Version="1.0.0"
+                    ModuleName="./Contents/lisp/sv.lsp"
+                    AppType=".lsp" LoadOnAutoCADStartup="True" />
+    <ComponentEntry AppName="GeoClaude-VID" Version="1.0.0"
+                    ModuleName="./Contents/lisp/vid.lsp"
+                    AppType=".lsp" LoadOnAutoCADStartup="True" />
+    <ComponentEntry AppName="GeoClaude-RS" Version="1.0.0"
+                    ModuleName="./Contents/lisp/rs.lsp"
+                    AppType=".lsp" LoadOnAutoCADStartup="True" />
+  </Components>
+
+  <Components Description="Модуль .NET (необязательный)">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R21.0" />
+    <ComponentEntry AppName="GcSurface" Version="1.0.0"
+                    ModuleName="./Contents/net/GcSurface.dll"
+                    AppType=".net" LoadOnAutoCADStartup="True" />
+  </Components>
+
+</ApplicationPackage>
