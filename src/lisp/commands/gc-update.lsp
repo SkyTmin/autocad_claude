@@ -1,4 +1,9 @@
-;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v4)
+;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v5)
+;;;
+;;; v5: NETLOAD vyzyvaetsya pri FILEDIA=0. Pri vklyuchennom dialoge on
+;;;     otkryvaet okno vybora fayla i PEREDANNYY PUT IGNORIRUET: komanda
+;;;     otrabatyvaet bez oshibki, a modul ne gruzitsya. Prichina otkaza
+;;;     teper pechataetsya.
 ;;;
 ;;; v4: komanda GCAUTO propisyvaet avtozagruzku IZNUTRI CAD, bez .bat.
 ;;;     Papka podderzhki beretsya u samogo CAD cherez ROAMABLEROOTPREFIX,
@@ -234,12 +239,17 @@
 (defun gc-upd-net-loaded ( / )
   (if (member "gc_surface_border" (atoms-family 1)) T nil))
 
-(defun gc-upd-netload ( / d p r)
+(defun gc-upd-netload ( / d p r fd)
+  (setq *gc-upd-net-why* nil)
   (cond
     ((gc-upd-net-loaded) T)
-    ((null (setq d (gc-upd-net-dir))) nil)
-    ((null (findfile (setq p (strcat d "GcSurface.dll")))) nil)
+    ((null (setq d (gc-upd-net-dir)))
+     (setq *gc-upd-net-why* "не знаю папку модуля") nil)
+    ((null (findfile (setq p (strcat d "GcSurface.dll"))))
+     (setq *gc-upd-net-why* (strcat "нет файла " p)) nil)
     (T
+     ;; Папку - в доверенные, иначе AutoCAD либо спросит разрешение
+     ;; при каждом чертеже, либо откажет молча.
      (vl-catch-all-apply
        '(lambda ( / tp dd)
           (setq dd (substr d 1 (1- (strlen d))))
@@ -247,8 +257,23 @@
           (if (not (wcmatch (strcase tp) (strcase (strcat "*" dd "*"))))
             (setvar "TRUSTEDPATHS" (if (= tp "") dd (strcat tp ";" dd)))))
        nil)
+     ;; FILEDIA=0 ОБЯЗАТЕЛЕН. При включённом диалоге NETLOAD открывает
+     ;; окно выбора файла и ПЕРЕДАННЫЙ ПУТЬ ПРОСТО ИГНОРИРУЕТ: команда
+     ;; отрабатывает без ошибки, а модуль не грузится.
+     (setq fd (getvar "FILEDIA"))
+     (setvar "FILEDIA" 0)
      (setq r (vl-catch-all-apply 'command (list "_.NETLOAD" p)))
-     (gc-upd-net-loaded))))
+     (setvar "FILEDIA" fd)
+     (if (vl-catch-all-error-p r)
+       (setq *gc-upd-net-why* (vl-catch-all-error-message r)))
+     (if (gc-upd-net-loaded)
+       T
+       (progn
+         (if (null *gc-upd-net-why*)
+           (setq *gc-upd-net-why*
+             (strcat "NETLOAD прошёл, но функции нет. SECURELOAD="
+                     (vl-princ-to-string (getvar "SECURELOAD")))))
+         nil)))))
 
 ;;; ====================================================================
 ;;; КОМАНДЫ
@@ -340,7 +365,10 @@
           (princ (strcat "\n  [!!] " n " - нет на диске"))))
       (if (gc-upd-netload)
         (princ "\n[i] Модуль .NET загружен.")
-        (princ "\n[i] Модуль .NET не загружен - край области будет приближённым."))))
+        (progn
+          (princ "\n[i] Модуль .NET не загружен - край области будет приближённым.")
+          (if *gc-upd-net-why*
+            (princ (strcat "\n    Причина: " *gc-upd-net-why*)))))))
   (princ))
 
 (defun c:gcu ( / dir nd n ok bad r path)
@@ -391,7 +419,9 @@
             (progn
               (princ "\n\n[i] Готово, но модуль .NET не загружен -")
               (princ "\n    край области посчитается приближённо.")
-              (princ "\n    Собрать: build.bat в папке Contents\\net")))))
+              (if *gc-upd-net-why*
+                (princ (strcat "\n    Причина: " *gc-upd-net-why*))
+                (princ "\n    Собрать: build.bat в папке Contents\\net"))))))
       (if (> bad 0)
         (progn
           (princ "\n[i] Если файл не скачался, причины по частоте:")
@@ -455,6 +485,6 @@
 ;; A -> Ф, T -> Е, O -> Щ
 (defun c:псфгещ ( / ) (c:gcauto))
 
-(princ "\n[gc] gc-update.lsp v4 загружен.")
+(princ "\n[gc] gc-update.lsp v5 загружен.")
 (princ "\n     GCU обновить | GCV версии | GCLOAD загрузить | GCAUTO автозагрузка | GCDIR папка")
 (princ)

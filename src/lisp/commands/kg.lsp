@@ -1,8 +1,17 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v13)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v14)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v14: VYBRANNAYA POLILINIYA TOZHE SCHITAETSYA TOCHNOY GRANICEY.
+;;;      Ranshe ona rabotala filtrom poverh priblizhennogo oprosa, i kontur
+;;;      vse ravno srezal ugly. No u polilinii vershiny IZVESTNY -- rezat
+;;;      po ney tochno luchshe, chem nashchupyvat kray oprosom.
+;;;      Eto ne povtorenie P33: tam granica molcha ZAMENYALA poverhnosti,
+;;;      zdes ona beretsya osoznanno, o ney skazano v otchete otdelnoy
+;;;      strokoy, i sbrosit ee mozhno knopkoy v okne.
+;;;      V otchete teper vidno, OTKUDA vzyata granica.
 ;;;
 ;;; v13: TOCHNAYA GRANICA IZ MODULYA .NET.
 ;;;      Modul zagruzhen -- granica poverhnosti beretsya u nee samoy,
@@ -1256,18 +1265,38 @@
 ;; Собрать точную область: наружный контур и вырезы.
 ;; Возвращает T, если получилось.
 (defun gc-kg-load-exact (sbn srn / bl rl outs)
-  (setq *gc-kg-exact* nil *gc-kg-exact-holes* nil *gc-kg-exact-why* nil)
+  (setq *gc-kg-exact* nil *gc-kg-exact-holes* nil
+        *gc-kg-exact-why* nil *gc-kg-exact-src* nil)
   (cond
     ((not (gc-kg-net-p))
-     (setq *gc-kg-exact-why* "модуль .NET не загружен")
-     nil)
+     ;; Модуля нет - но если человек выбрал границу полилинией, она и есть
+     ;; точный контур. Резать по ней точно лучше, чем нащупывать край
+     ;; опросом: у полилинии вершины известны, у опроса - нет.
+     ;;
+     ;; Это НЕ повторение П33: там граница молча ЗАМЕНЯЛА поверхности,
+     ;; здесь она берётся осознанно и о ней сказано в отчёте отдельной
+     ;; строкой, а сбросить её можно кнопкой в окне.
+     (cond
+       (*gc-kg-outer*
+        (setq *gc-kg-exact* *gc-kg-outer*
+              *gc-kg-exact-holes* *gc-kg-holes*
+              *gc-kg-exact-src* "выбранная полилиния")
+        T)
+       (T
+        (setq *gc-kg-exact-why* "модуль .NET не загружен, граница не выбрана")
+        nil)))
     (T
      (setq bl (gc-kg-net-border sbn)
            rl (gc-kg-net-border srn))
      (cond
        ((or (null bl) (null rl))
         (setq *gc-kg-exact-why* "модуль не отдал границу одной из поверхностей")
-        nil)
+        (if *gc-kg-outer*
+          (progn (setq *gc-kg-exact* *gc-kg-outer*
+                       *gc-kg-exact-holes* *gc-kg-holes*
+                       *gc-kg-exact-src* "выбранная полилиния")
+                 T)
+          nil))
        (T
         (setq outs (list (car bl) (car rl)))
         (if *gc-kg-outer* (setq outs (cons *gc-kg-outer* outs)))
@@ -1282,6 +1311,7 @@
            ;; действуют вместе: дырка есть дырка, чья бы она ни была.
            (setq *gc-kg-exact-holes*
              (append (cdr bl) (cdr rl) *gc-kg-holes*))
+           (setq *gc-kg-exact-src* "границы поверхностей")
            T))))))) 
 
 ;;; --------------------------------------------------------------------
@@ -1878,7 +1908,8 @@
             (cond
               ;; --- точный путь: область задана многоугольником
               (*gc-kg-exact*
-               (princ "\n[i] Граница: ТОЧНАЯ, взята у поверхности.")
+               (princ (strcat "\n[i] Граница: ТОЧНАЯ, источник - "
+                              (if *gc-kg-exact-src* *gc-kg-exact-src* "?")))
                (setq gp (mapcar 'gc-kg-to-grid *gc-kg-exact*))
                (setq gh (mapcar '(lambda (h) (mapcar 'gc-kg-to-grid h))
                                 *gc-kg-exact-holes*))
@@ -1928,7 +1959,7 @@
                                  "  (одиночные осечки опроса, П31)")))
                 (princ (strcat "\n  граница          : "
                                (if *gc-kg-exact*
-                                 "ТОЧНАЯ, из поверхности"
+                                 (strcat "ТОЧНАЯ, " *gc-kg-exact-src*)
                                  "приближённая, опросом")))
                 (princ (strcat "\n  площадь по сетке : " (gc-kg-fmt total) " м2"))
                 (if *gc-kg-exact*
@@ -2039,6 +2070,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v13 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v14 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
