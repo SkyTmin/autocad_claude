@@ -66,6 +66,12 @@ rem    а AecBaseMgd.dll - в КОРНЕ папки AutoCAD. Без второго компилятор
 rem    не видит родства типов и сыплет ошибками, которые выглядят как
 rem    "нет такого метода", хотя метод есть.
 rem
+rem    Одну и ту же сборку нельзя подключать дважды. AecBaseMgd.dll лежит
+rem    и в корне, и в подпапке ACA - это один и тот же файл в двух местах,
+rem    и компилятор на такое ругается. Поэтому ведём список уже взятых
+rem    ИМЁН и второй раз то же имя не добавляем: побеждает тот, кто
+rem    встретился раньше, а порядок задан от корня к подпапкам.
+rem
 rem    Список пишем в файл ответов: ссылок под тридцать штук, и командная
 rem    строка упёрлась бы в свой предел длины.
 rem ---------------------------------------------------------------
@@ -78,13 +84,13 @@ set "RSP=%~dp0refs.rsp"
 >>"%RSP%" echo /r:"%ACAD%\AcDbMgd.dll"
 >>"%RSP%" echo /r:"%ACAD%\AcMgd.dll"
 if exist "%ACAD%\AcCoreMgd.dll" >>"%RSP%" echo /r:"%ACAD%\AcCoreMgd.dll"
-for %%f in ("%ACAD%\Aec*Mgd.dll")     do >>"%RSP%" echo /r:"%%~ff"
-for %%f in ("%ACAD%\C3D\Aec*Mgd.dll") do >>"%RSP%" echo /r:"%%~ff"
-if exist "%ACAD%\ACA" for %%f in ("%ACAD%\ACA\Aec*Mgd.dll") do >>"%RSP%" echo /r:"%%~ff"
+set REFN=0
+for %%f in ("%ACAD%\Aec*Mgd.dll")      do call :addref "%%~ff"
+for %%f in ("%ACAD%\C3D\Aec*Mgd.dll") do call :addref "%%~ff"
+if exist "%ACAD%\ACA" for %%f in ("%ACAD%\ACA\Aec*Mgd.dll") do call :addref "%%~ff"
 >>"%RSP%" echo "%~dp0GcSurface.cs"
 
-echo Подключено библиотек:
-find /c "/r:" "%RSP%"
+echo Подключено библиотек Aec*: !REFN!
 echo.
 echo Собираю...
 echo.
@@ -93,6 +99,19 @@ echo.
 if errorlevel 1 goto :fail
 if not exist "%~dp0GcSurface.dll" goto :fail
 del /q "%RSP%" 2>nul
+goto :built
+
+rem ---------------------------------------------------------------
+rem Добавить ссылку, если сборка с таким именем ещё не бралась.
+rem ---------------------------------------------------------------
+:addref
+if defined SEEN_%~n1 exit /b 0
+set "SEEN_%~n1=1"
+>>"%RSP%" echo /r:"%~f1"
+set /a REFN=!REFN!+1
+exit /b 0
+
+:built
 
 echo.
 echo ==================================================
