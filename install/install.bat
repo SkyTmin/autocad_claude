@@ -37,7 +37,8 @@ rem на Windows 7 и 8, а сообщение при этом невнятное.
 rem ---------------------------------------------------------------
 set FAIL=0
 
-call :get "install/PackageContents.xml"          "%HOME_DIR%\PackageContents.xml"
+call :get "install/PackageContents.xml"          "%HOME_DIR%\pc-lisp.xml"
+call :get "install/PackageContents-net.xml"      "%HOME_DIR%\pc-net.xml"
 call :get "src/lisp/commands/gc-update.lsp"      "%HOME_DIR%\Contents\lisp\gc-update.lsp"
 call :get "src/lisp/commands/kg.lsp"             "%HOME_DIR%\Contents\lisp\kg.lsp"
 call :get "src/lisp/commands/ol.lsp"             "%HOME_DIR%\Contents\lisp\ol.lsp"
@@ -93,14 +94,26 @@ rem из-за чего в прошлый раз было непонятно, работает она или встала.
 type "%HOME_DIR%\Contents\net\build.log"
 echo.
 
+rem ---------------------------------------------------------------
+rem Описание пакета кладём ПОД ФАКТ.
+rem
+rem Если в описании указан модуль, которого на диске нет, AutoCAD
+rem отвергает ВЕСЬ пакет - вместе с командами. То есть несобравшийся
+rem необязательный модуль утащил бы за собой и то, что работает без него.
+rem Поэтому вариант с .NET ставится только когда dll реально собрана.
+rem ---------------------------------------------------------------
 if exist "%HOME_DIR%\Contents\net\GcSurface.dll" (
-  echo [ok] GcSurface.dll собран
+  copy /y "%HOME_DIR%\pc-net.xml" "%HOME_DIR%\PackageContents.xml" >nul
+  echo [ok] GcSurface.dll собран - край области будет браться у поверхности
 ) else (
+  copy /y "%HOME_DIR%\pc-lisp.xml" "%HOME_DIR%\PackageContents.xml" >nul
   echo [i]  GcSurface.dll не собрался - это не страшно.
-  echo      Команды будут работать без него, край области
-  echo      посчитается приближённо.
+  echo      Команды работают без него, край области считается
+  echo      приближённо. Ставлю описание пакета без модуля,
+  echo      чтобы команды загрузились.
   echo      Подробности: %HOME_DIR%\Contents\net\build.log
 )
+del /q "%HOME_DIR%\pc-lisp.xml" "%HOME_DIR%\pc-net.xml" 2>nul
 
 echo.
 echo ==================================================
@@ -116,10 +129,19 @@ echo.
 echo Обновлять команды: GCU прямо в командной строке CAD.
 echo Перезапуск CAD при этом не нужен.
 echo.
+echo Если команда GCV не находится - значит CAD не подхватил
+echo пакет. Запасной путь: APPLOAD и выбрать файл
+echo   %HOME_DIR%\Contents\lisp\gc-update.lsp
+echo Дальше всё как обычно, включая GCU.
+echo.
 goto :end
 
 rem ---------------------------------------------------------------
 rem Закачка одного файла.
+rem
+rem К адресу добавляется случайный хвост. Без него GitHub несколько минут
+rem отдаёт файл из кэша, и установщик тихо ставит прошлую версию -
+rem ошибка выглядит как "правка не помогла", хотя правки просто нет.
 rem
 rem WebClient, а не Invoke-WebRequest: он сам ходит через системный
 rem прокси, а это как раз случай VPN и рабочих сетей.
@@ -135,7 +157,7 @@ rem ---------------------------------------------------------------
 :get
 echo   качаю %~1
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
- "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $u='%RAW%/%~1'; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); try { $wc.DownloadFile($u,'%~2') } catch { $c=0; if ($_.Exception.Response) { $c=[int]$_.Exception.Response.StatusCode }; if ($c -gt 0) { Write-Host ('        HTTP ' + $c) } else { Write-Host ('        ' + $_.Exception.Message) }; exit 1 } }"
+ "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $u='%RAW%/%~1?t=%RANDOM%%RANDOM%'; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); try { $wc.DownloadFile($u,'%~2') } catch { $c=0; if ($_.Exception.Response) { $c=[int]$_.Exception.Response.StatusCode }; if ($c -gt 0) { Write-Host ('        HTTP ' + $c) } else { Write-Host ('        ' + $_.Exception.Message) }; exit 1 } }"
 if errorlevel 1 (
   echo         НЕ СКАЧАЛОСЬ
   set /a FAIL=!FAIL!+1
