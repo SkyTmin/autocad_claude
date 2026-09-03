@@ -46,8 +46,21 @@ call :get "src/dotnet/GcSurface/build.bat"       "%HOME_DIR%\Contents\net\build.
 
 if %FAIL% GTR 0 (
   echo.
-  echo [ОШИБКА] Не скачалось файлов: %FAIL%
-  echo Проверьте интернет и повторите.
+  echo ==================================================
+  echo   НЕ СКАЧАЛОСЬ ФАЙЛОВ: %FAIL%
+  echo ==================================================
+  echo.
+  echo Смотрите код HTTP в строках выше:
+  echo.
+  echo   404 - репозиторий закрыт, либо ветка или файл
+  echo         переименованы. Из закрытого репозитория
+  echo         анонимно не скачать ничем.
+  echo   403 - доступ запрещён сетью или прокси.
+  echo   текст ошибки вместо кода - сеть, DNS, VPN.
+  echo.
+  echo Ветка, из которой качаю:
+  echo   %BRANCH%
+  echo.
   goto :end
 )
 
@@ -89,12 +102,25 @@ echo.
 goto :end
 
 rem ---------------------------------------------------------------
+rem Закачка одного файла.
+rem
+rem WebClient, а не Invoke-WebRequest: он сам ходит через системный
+rem прокси, а это как раз случай VPN и рабочих сетей.
+rem
+rem Сообщения от PowerShell печатаем латиницей: bat идёт в CP866,
+rem PowerShell отвечает в другой кодировке, и русский текст между ними
+rem превращается в кашу. Код ответа важнее красоты.
+rem
+rem Восклицательные знаки в echo внутри этого блока не используем:
+rem при включённом отложенном раскрытии они съедаются, и сообщение
+rem выходит пустым - на этом уже обожглись.
+rem ---------------------------------------------------------------
 :get
 echo   качаю %~1
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -UseBasicParsing -Uri '%RAW%/%~1' -OutFile '%~2' } catch { exit 1 }"
+ "& { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $u='%RAW%/%~1'; $wc=New-Object Net.WebClient; try { $wc.Proxy=[Net.WebRequest]::GetSystemWebProxy(); $wc.Proxy.Credentials=[Net.CredentialCache]::DefaultCredentials } catch {}; $wc.Headers.Add('User-Agent','GeoClaude'); try { $wc.DownloadFile($u,'%~2') } catch { $c=0; if ($_.Exception.Response) { $c=[int]$_.Exception.Response.StatusCode }; if ($c -gt 0) { Write-Host ('        HTTP ' + $c) } else { Write-Host ('        ' + $_.Exception.Message) }; exit 1 } }"
 if errorlevel 1 (
-  echo        [!!] не скачалось
+  echo         НЕ СКАЧАЛОСЬ
   set /a FAIL=!FAIL!+1
 )
 exit /b 0
