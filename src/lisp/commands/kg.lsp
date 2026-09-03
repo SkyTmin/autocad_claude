@@ -1,8 +1,15 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v22)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v23)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v23: KOMANDA KGB -- POKAZAT GRANICY, POLUCHENNYE OT MODULYA.
+;;;      Kontur ot modulya okazalsya grubee nastoyashchey granicy: 35 i 19
+;;;      tochek, i na chertezhe setka srezaet ugly. Spor "modul dal ne to"
+;;;      ili "my poschitali ne to" reshaetsya tolko glazami: risuem rovno
+;;;      to, chto vernul modul, oboimi sposobami (model i plan), raznymi
+;;;      cvetami -- i sravnivaem s granicey na chertezhe.
 ;;;
 ;;; v22: OTVET MODULYA RAZBIRAETSYA PO SODERZHIMOMU, A NE PO OZHIDANIYAM.
 ;;;      "neverny tip argumenta: consp 1.44907e+06" -- v tekste oshibki
@@ -1410,9 +1417,16 @@
 ;; Контуры границы поверхности: список списков 2D-точек, либо nil.
 ;; Первый контур наружный, остальные - внутренние вырезы.
 (defun gc-kg-net-border (name / r out)
+  (gc-kg-net-border-m name nil))
+
+;; То же, но с указанием режима извлечения: nil - как настроено,
+;; "plan" - по показанному в плане, "model" - по модели поверхности.
+(defun gc-kg-net-border-m (name mode / r out)
   (if (and (gc-kg-net-p) name)
     (progn
-      (setq r (vl-catch-all-apply 'gc_surface_border (list name)))
+      (setq r (if mode
+                (vl-catch-all-apply 'gc_surface_border (list name mode))
+                (vl-catch-all-apply 'gc_surface_border (list name))))
       (cond
         ((vl-catch-all-error-p r)
          (princ (strcat "\n[!] Модуль не отдал границу \"" name "\": "
@@ -2246,6 +2260,63 @@
       (T (setq done T))))
   (princ))
 
+;;; --------------------------------------------------------------------
+;;; Показать границы, полученные от модуля
+;;;
+;;; Отдельная команда, потому что спор "модуль дал не то" или "мы посчитали
+;;; не то" решается только глазами: рисуем ровно то, что вернул модуль,
+;;; и сравниваем с настоящей границей поверхности на чертеже.
+;;; Гадать по числу точек бесполезно.
+;;; --------------------------------------------------------------------
+
+(defun gc-kg-draw-loops (loops lay col / d)
+  (gc-kg-layer lay col)
+  (foreach lp loops
+    (if (> (length lp) 2)
+      (progn
+        (setq d (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity")
+                      (cons 8 lay) '(100 . "AcDbPolyline")
+                      (cons 90 (length lp)) '(70 . 1)))
+        (foreach p lp (setq d (append d (list (cons 10 (gc-kg-2d p))))))
+        (entmake d)))))
+
+(defun c:kgb ( / sbn srn n)
+  (princ "\n\n=== KGB - показать границы поверхностей от модуля ===")
+  (if (not (gc-kg-net-p))
+    (princ "\n[!] Модуль .NET не загружен - показывать нечего.")
+    (progn
+      (gc-kg-defaults)
+      (setq *gc-kg-surf-list* (gc-kg-surfaces))
+      (setq sbn (gc-kg-get "s-black") srn (gc-kg-get "s-red"))
+      (if (or (null sbn) (null srn))
+        (princ "\n[!] Сначала выберите поверхности в окне KG.")
+        (progn
+          (setvar "CMDECHO" 0)
+          (command "_.UNDO" "_BEGIN")
+          (foreach pair (list (cons sbn "чёрная") (cons srn "красная"))
+            (foreach m '("model" "plan")
+              (setq n (gc-kg-net-border-m (car pair) m))
+              (if n
+                (progn
+                  (gc-kg-draw-loops n
+                    (strcat "GC-Проверка-Граница-" m)
+                    (if (= m "model") 4 6))
+                  (princ (strcat "\n  " (cdr pair) " [" m "]: контуров "
+                                 (itoa (length n)) ", точек "
+                                 (itoa (length (car n))))))
+                (princ (strcat "\n  " (cdr pair) " [" m "]: пусто")))))
+          (command "_.UNDO" "_END")
+          (princ "\n\n[i] Нарисовано на слоях:")
+          (princ "\n    GC-Проверка-Граница-model  (голубой)")
+          (princ "\n    GC-Проверка-Граница-plan   (сиреневый)")
+          (princ "\n[i] Сравните с настоящей границей поверхности.")
+          (princ "\n    Какой из двух совпадает - тот режим и нужен.")
+          (princ "\n[i] Один Ctrl+Z убирает всё нарисованное."))))) 
+  (princ))
+
+;; K -> Л, G -> П, B -> И
+(defun c:лпи ( / ) (c:kgb))
+
 ;;; ====================================================================
 ;;; ЯДРО КОМАНДЫ
 ;;; ====================================================================
@@ -2317,6 +2388,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v22 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v23 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)

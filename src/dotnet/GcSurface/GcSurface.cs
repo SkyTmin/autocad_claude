@@ -42,7 +42,7 @@ namespace GeoClaude
     {
         // Версия печатается по запросу: чтобы не гадать, тот ли файл
         // подгрузился, когда поведение вдруг стало другим.
-        private const string Version = "1.0";
+        private const string Version = "1.1";
 
         [AcRx.LispFunction("GC_NET_VERSION")]
         public object GcNetVersion(AcDb.ResultBuffer args)
@@ -50,7 +50,7 @@ namespace GeoClaude
             return Version;
         }
 
-        // (GC_SURFACE_BORDER "имя поверхности")
+        // (GC_SURFACE_BORDER "имя поверхности" ["plan"|"model"])
         //
         // Возвращает список замкнутых контуров границы поверхности:
         //     ( ((x y) (x y) ...) ((x y) ...) ... )
@@ -72,6 +72,16 @@ namespace GeoClaude
                 doc.Editor.WriteMessage("\nGC_SURFACE_BORDER: нужно имя поверхности.");
                 return null;
             }
+
+            // Режим извлечения. Model - граница по самой модели поверхности,
+            // Plan - по тому, что показано в плане. Они РАЗНЫЕ, и какой
+            // совпадает с видимой границей, проверяется на чертеже,
+            // а не угадывается.
+            string mode = SecondString(args);
+            Autodesk.Civil.SurfaceExtractionSettingsType kind =
+                (mode != null && mode.ToLower().StartsWith("plan"))
+                    ? Autodesk.Civil.SurfaceExtractionSettingsType.Plan
+                    : Autodesk.Civil.SurfaceExtractionSettingsType.Model;
 
             AcDb.ObjectId surfId = FindSurface(doc, name);
             if (surfId.IsNull)
@@ -104,7 +114,7 @@ namespace GeoClaude
                     // а не такая, какой её рисует стиль. Нужна именно она:
                     // отметки поверхность даёт ровно внутри неё.
                     AcDb.ObjectIdCollection ids =
-                        surf.ExtractBorder(Autodesk.Civil.SurfaceExtractionSettingsType.Model);
+                        surf.ExtractBorder(kind);
 
                     foreach (AcDb.ObjectId id in ids)
                     {
@@ -154,6 +164,20 @@ namespace GeoClaude
             if (args == null) return null;
             foreach (AcDb.TypedValue tv in args.AsArray())
                 if (tv.TypeCode == (int)AcRx.LispDataType.Text) return (string)tv.Value;
+            return null;
+        }
+
+        // Второй текстовый аргумент, если он есть.
+        private static string SecondString(AcDb.ResultBuffer args)
+        {
+            if (args == null) return null;
+            int seen = 0;
+            foreach (AcDb.TypedValue tv in args.AsArray())
+                if (tv.TypeCode == (int)AcRx.LispDataType.Text)
+                {
+                    seen++;
+                    if (seen == 2) return (string)tv.Value;
+                }
             return null;
         }
 
