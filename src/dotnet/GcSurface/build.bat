@@ -56,23 +56,43 @@ echo [ok] Civil 3D: %ACAD%
 
 rem ---------------------------------------------------------------
 rem 3. Ссылки на библиотеки.
-rem    Aec*Mgd.dll подключаем ВСЕ, какие есть, а не выбранные
-rem    по именам: от версии к версии классы переезжают между
-rem    сборками, и угадывать, в какой лежит нужный, - гарантия
-rem    поломки на чужой машине. Лишние ссылки компилятору не мешают.
+rem
+rem    Aec*Mgd.dll подключаем ВСЕ, какие найдём, а не выбранные по именам:
+rem    от версии к версии классы переезжают между сборками, и угадывание,
+rem    в какой лежит нужный, - гарантия поломки на чужой машине.
+rem
+rem    Искать надо В ДВУХ МЕСТАХ. AeccDbMgd.dll лежит в подпапке C3D,
+rem    а AecBaseMgd.dll - в КОРНЕ папки AutoCAD. Без второго компилятор
+rem    не видит родства типов и сыплет ошибками, которые выглядят как
+rem    "нет такого метода", хотя метод есть.
+rem
+rem    Список пишем в файл ответов: ссылок под тридцать штук, и командная
+rem    строка упёрлась бы в свой предел длины.
 rem ---------------------------------------------------------------
-set "REFS=/r:"%ACAD%\AcDbMgd.dll" /r:"%ACAD%\AcMgd.dll""
-if exist "%ACAD%\AcCoreMgd.dll" set "REFS=!REFS! /r:"%ACAD%\AcCoreMgd.dll""
-for %%f in ("%ACAD%\C3D\Aec*Mgd.dll") do set "REFS=!REFS! /r:"%%~ff""
+set "RSP=%~dp0refs.rsp"
+> "%RSP%" echo /nologo
+>>"%RSP%" echo /target:library
+>>"%RSP%" echo /platform:x64
+>>"%RSP%" echo /optimize+
+>>"%RSP%" echo /out:"%~dp0GcSurface.dll"
+>>"%RSP%" echo /r:"%ACAD%\AcDbMgd.dll"
+>>"%RSP%" echo /r:"%ACAD%\AcMgd.dll"
+if exist "%ACAD%\AcCoreMgd.dll" >>"%RSP%" echo /r:"%ACAD%\AcCoreMgd.dll"
+for %%f in ("%ACAD%\Aec*Mgd.dll")     do >>"%RSP%" echo /r:"%%~ff"
+for %%f in ("%ACAD%\C3D\Aec*Mgd.dll") do >>"%RSP%" echo /r:"%%~ff"
+if exist "%ACAD%\ACA" for %%f in ("%ACAD%\ACA\Aec*Mgd.dll") do >>"%RSP%" echo /r:"%%~ff"
+>>"%RSP%" echo "%~dp0GcSurface.cs"
 
+echo Подключено библиотек:
+find /c "/r:" "%RSP%"
 echo.
 echo Собираю...
 echo.
-"%CSC%" /nologo /target:library /platform:x64 /optimize+ ^
-        /out:"%~dp0GcSurface.dll" !REFS! "%~dp0GcSurface.cs"
+"%CSC%" @"%RSP%"
 
 if errorlevel 1 goto :fail
 if not exist "%~dp0GcSurface.dll" goto :fail
+del /q "%RSP%" 2>nul
 
 echo.
 echo ==================================================

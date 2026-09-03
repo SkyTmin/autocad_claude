@@ -83,7 +83,19 @@ namespace GeoClaude
                 using (doc.LockDocument())
                 using (AcDb.Transaction tr = doc.Database.TransactionManager.StartTransaction())
                 {
-                    CivDb.Surface surf = (CivDb.Surface)tr.GetObject(surfId, AcDb.OpenMode.ForRead);
+                    // Именно TinSurface, а не базовый Surface: границу
+                    // умеет отдавать поверхность по триангуляции, а у нас
+                    // как раз такие. Если поверхность другого рода -
+                    // говорим об этом прямо, а не падаем.
+                    CivDb.TinSurface surf =
+                        tr.GetObject(surfId, AcDb.OpenMode.ForRead) as CivDb.TinSurface;
+                    if (surf == null)
+                    {
+                        doc.Editor.WriteMessage(
+                            "\nGC_SURFACE_BORDER: \"" + name + "\" - не TIN-поверхность.");
+                        tr.Commit();
+                        return null;
+                    }
 
                     // Model -- граница такая, какой поверхность ЯВЛЯЕТСЯ,
                     // а не такая, какой её рисует стиль. Нужна именно она:
