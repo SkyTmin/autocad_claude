@@ -1,4 +1,10 @@
-;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v3)
+;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v4)
+;;;
+;;; v4: komanda GCAUTO propisyvaet avtozagruzku IZNUTRI CAD, bez .bat.
+;;;     Papka podderzhki beretsya u samogo CAD cherez ROAMABLEROOTPREFIX,
+;;;     a ne sobiraetsya iz imeni versii i yazyka: ugadyvat ih -- vernyy
+;;;     sposob promahnutsya na chuzhoy mashine.
+;;;     Chuzhoy acaddoc.lsp ne zatiraetsya: nash blok dopisyvaetsya v konec.
 ;;;
 ;;; v3: modul .NET gruzitsya sam, cherez NETLOAD iz LISP. Perezapuskat CAD
 ;;;     radi etogo ne nuzhno. Put zaranee dobavlyaetsya v doverennye, inache
@@ -248,6 +254,74 @@
 ;;; КОМАНДЫ
 ;;; ====================================================================
 
+;; Загрузить всё с диска, молча. Этим же пользуется автозагрузка.
+(defun gc-upd-boot ( / dir n path)
+  (setq dir (gc-upd-dir))
+  (if dir
+    (foreach n *gc-upd-files*
+      (setq path (strcat dir n))
+      (if (findfile path) (vl-catch-all-apply 'load (list path)))))
+  (gc-upd-netload)
+  (princ))
+
+;;; ====================================================================
+;;; АВТОЗАГРУЗКА
+;;;
+;;; Пишем в acaddoc.lsp - файл, который AutoCAD читает САМ при открытии
+;;; каждого чертежа. Пакеты в ApplicationPlugins подхватываются не всегда
+;;; и молча, а этот способ работает везде.
+;;;
+;;; Папку берём у самого CAD через ROAMABLEROOTPREFIX, а не собираем
+;;; из имени версии и языка: угадывать их - верный способ промахнуться
+;;; на чужой машине.
+;;; ====================================================================
+
+;; Удвоить обратные слэши: путь пишется В ТЕКСТ ПРОГРАММЫ, а там одиночный
+;; слэш означает экранирование, и путь развалится при следующей загрузке.
+(defun gc-upd-esc (s / i c out)
+  (setq out "" i 1)
+  (while (<= i (strlen s))
+    (setq c (substr s i 1))
+    (setq out (strcat out (if (= c "\\") "\\\\" c)))
+    (setq i (1+ i)))
+  out)
+
+(defun gc-upd-support ( / p)
+  (setq p (vl-catch-all-apply 'getvar (list "ROAMABLEROOTPREFIX")))
+  (if (or (vl-catch-all-error-p p) (null p))
+    nil
+    (strcat p "Support\\")))
+
+(defun c:gcauto ( / sup path dir f old)
+  (setq sup (gc-upd-support)
+        dir (gc-upd-dir))
+  (cond
+    ((null dir) (princ "\n[!] Папка с командами не задана. Сначала GCDIR."))
+    ((null sup) (princ "\n[!] Не удалось узнать папку поддержки CAD."))
+    (T
+     (setq path (strcat sup "acaddoc.lsp"))
+     (setq dir (gc-upd-esc dir))
+     (setq old (if (findfile path) T nil))
+     ;; Чужой acaddoc.lsp не трогаем, а дописываем свой блок в конец:
+     ;; затереть чужую настройку - худшее, что можно сделать.
+     (setq f (open path (if old "a" "w")))
+     (if (null f)
+       (princ (strcat "\n[!] Не удалось открыть на запись: " path))
+       (progn
+         (write-line "" f)
+         (write-line ";;; --- GeoClaude: автозагрузка, добавлено командой GCAUTO ---" f)
+         (write-line (strcat "(if (findfile \"" dir "gc-update.lsp\")") f)
+         (write-line (strcat "  (progn (load \"" dir "gc-update.lsp\")") f)
+         (write-line "         (if gc-upd-boot (gc-upd-boot))))" f)
+         (write-line ";;; --- конец блока GeoClaude ---" f)
+         (close f)
+         (princ (strcat "\n[i] Автозагрузка прописана"
+                        (if old " (дописано в конец существующего файла)" "")
+                        ":"))
+         (princ (strcat "\n    " path))
+         (princ "\n[i] При следующем открытии чертежа команды загрузятся сами.")))))
+  (princ))
+
 ;; Загрузить всё: команды с диска и модуль .NET. Ничего не качает.
 ;; Нужна, когда CAD почему-то не подхватил автозагрузку.
 (defun c:gcload ( / dir n path r)
@@ -378,6 +452,9 @@
 (defun c:пем ( / ) (c:gcv))
 ;; L -> Д
 (defun c:псдщфв ( / ) (c:gcload))
+;; A -> Ф, T -> Е, O -> Щ
+(defun c:псфгещ ( / ) (c:gcauto))
 
-(princ "\n[gc] gc-update.lsp v3 загружен. Команды: GCU обновить | GCV версии | GCLOAD загрузить | GCDIR папка")
+(princ "\n[gc] gc-update.lsp v4 загружен.")
+(princ "\n     GCU обновить | GCV версии | GCLOAD загрузить | GCAUTO автозагрузка | GCDIR папка")
 (princ)
