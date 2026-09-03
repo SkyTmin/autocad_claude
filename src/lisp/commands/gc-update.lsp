@@ -1,4 +1,9 @@
-;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v6)
+;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v7)
+;;;
+;;; v7: SECURELOAD. Zapret na zagruzku ispolnyaemogo koda otkuda popalo
+;;;     ne snimaetsya dobavleniem papki v doverennye. Snimaem ego
+;;;     NA ODIN VYZOV i srazu vozvrashchaem: ostavit snyatym -- znachit
+;;;     molcha oslabit zashchitu chuzhoy mashiny.
 ;;;
 ;;; v6: command zavernuta v lyambdu. Eto ne obychnaya funkciya, a osobaya
 ;;;     forma yazyka, i peredat ee v vl-catch-all-apply napryamuyu nelzya:
@@ -270,6 +275,22 @@
      ;; форма языка, и передать её в vl-catch-all-apply напрямую нельзя:
      ;; AutoCAD отвечает "неверная порядковая функция: COMMAND".
      (setq r (vl-catch-all-apply '(lambda () (command "_.NETLOAD" p)) nil))
+     ;; SECURELOAD=1 запрещает загружать исполняемый код откуда попало,
+     ;; и одного добавления папки в доверенные ему мало. Тогда снимаем
+     ;; запрет НА ОДИН ВЫЗОВ и сразу возвращаем: оставить его снятым -
+     ;; значит молча ослабить защиту чужой машины.
+     (if (not (gc-upd-net-loaded))
+       (vl-catch-all-apply
+         '(lambda ( / sl)
+            (setq sl (getvar "SECURELOAD"))
+            (if (/= sl 0)
+              (progn
+                (setvar "SECURELOAD" 0)
+                (vl-catch-all-apply '(lambda () (command "_.NETLOAD" p)) nil)
+                (setvar "SECURELOAD" sl)
+                (if (gc-upd-net-loaded)
+                  (princ "\n[i] Модуль загружен со снятой на один раз проверкой SECURELOAD.")))))
+         nil))
      ;; FILEDIA возвращаем ДО любых проверок и выходов: если оставить её
      ;; выключенной, у пользователя пропадут диалоги открытия файлов
      ;; во всех остальных командах, и связать это с нами он не сможет.
@@ -500,6 +521,6 @@
 ;; A -> Ф, T -> Е, O -> Щ
 (defun c:псфгещ ( / ) (c:gcauto))
 
-(princ "\n[gc] gc-update.lsp v6 загружен.")
+(princ "\n[gc] gc-update.lsp v7 загружен.")
 (princ "\n     GCU обновить | GCV версии | GCLOAD загрузить | GCAUTO автозагрузка | GCDIR папка")
 (princ)

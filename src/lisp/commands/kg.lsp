@@ -1,8 +1,15 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v15)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v16)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v16: VYBRANNAYA POLILINIYA NE OTMENYAET PROVERKU POVERHNOSTEY.
+;;;      Bez modulya .NET granic poverhnostey net, i v peresechenii ostavalas
+;;;      odna polilinya. Ona mozhet vyhodit za poverhnosti -- i setka vstavala
+;;;      tam, gde vtoroy poverhnosti uzhe net.
+;;;      Teper: net granic OBEIH poverhnostey -- ih kray dopolnitelno
+;;;      ishchetsya oprosom otmetok, i eto skazano v otchete vsluh.
 ;;;
 ;;; v15: OBLAST -- PERESECHENIE VSEH KONTUROV, A NE ODIN IZ NIH.
 ;;;      v14 vernula staruyu oshibku: vybrannaya polilinya ZAMENYALA
@@ -1277,7 +1284,12 @@
 ;; Возвращает T, если хоть один точный контур есть.
 (defun gc-kg-load-clips (sbn srn / bl rl)
   (setq *gc-kg-clips* nil *gc-kg-hcuts* nil
-        *gc-kg-clip-src* nil *gc-kg-exact-why* nil)
+        *gc-kg-clip-src* nil *gc-kg-exact-why* nil
+        ;; Пока границ поверхностей нет, их край придётся нащупывать
+        ;; опросом отметок. Выбранная полилиния поверхности НЕ заменяет:
+        ;; она может выходить за них, и тогда сетка встанет там, где
+        ;; второй поверхности нет (docs/pitfalls.md -> П43).
+        *gc-kg-need-surf* T)
   ;; Границы поверхностей - если модуль .NET их отдал.
   (if (gc-kg-net-p)
     (progn
@@ -1289,9 +1301,10 @@
       (if (car rl)
         (setq *gc-kg-clips* (cons (car rl) *gc-kg-clips*)
               *gc-kg-hcuts* (append (cdr rl) *gc-kg-hcuts*)))
-      (if *gc-kg-clips*
-        (setq *gc-kg-clip-src* "границы поверхностей")
-        (setq *gc-kg-exact-why* "модуль не отдал границы поверхностей")))
+      (if (and (car bl) (car rl))
+        (setq *gc-kg-clip-src* "границы поверхностей"
+              *gc-kg-need-surf* nil)
+        (setq *gc-kg-exact-why* "модуль не отдал границы обеих поверхностей")))
     (setq *gc-kg-exact-why* "модуль .NET не загружен"))
   ;; Выбранная полилиния - ещё одно условие, а не замена предыдущих.
   (if *gc-kg-outer*
@@ -1458,6 +1471,11 @@
       (if ok
         (foreach h *gc-kg-hcuts*
           (if (and ok (gc-kg-in-poly w h)) (setq ok nil))))
+      ;; Границ поверхностей среди контуров нет - спрашиваем сами
+      ;; поверхности. Иначе точка за краем поверхности сойдёт за годную.
+      (if (and ok *gc-kg-need-surf*)
+        (setq ok (and (gc-kg-elev *gc-kg-sb* x y)
+                      (gc-kg-elev *gc-kg-sr* x y))))
       (setq w nil))
     (setq ok (and (gc-kg-elev *gc-kg-sb* x y)
                   (gc-kg-elev *gc-kg-sr* x y))))
@@ -1825,17 +1843,27 @@
           (setq c0 (list cx cy) c1 (list cx1 cy)
                 c2 (list cx1 cy1) c3 (list cx cy1))
           (setq cs (list c0 c1 c2 c3))
+          ;; Когда край поверхности не описан контуром, углы квадрата
+          ;; приходится проверять отдельно: контуры про поверхность
+          ;; ничего не знают.
+          (setq vs (if *gc-kg-need-surf*
+                     (list (gc-kg-node-ok c0) (gc-kg-node-ok c1)
+                           (gc-kg-node-ok c2) (gc-kg-node-ok c3))
+                     nil))
           (cond
             ;; целый квадрат
-            ((and (null cut) (null hcut))
+            ((and (null cut) (null hcut)
+                  (or (null vs) (and (car vs) (cadr vs) (caddr vs) (cadddr vs))))
              (setq parts (list cs) ar ca))
             ;; режет ровно один контур - точное отсечение
-            ((and (= 1 (length cut)) (null hcut))
+            ((and (= 1 (length cut)) (null hcut)
+                  (or (null vs) (and (car vs) (cadr vs) (caddr vs) (cadddr vs))))
              (setq parts (list (car cut)) ar (gc-kg-area (car cut))))
             ;; сходятся несколько краёв - дробим
             (T
-             (setq vs (list (gc-kg-node-ok c0) (gc-kg-node-ok c1)
-                            (gc-kg-node-ok c2) (gc-kg-node-ok c3)))
+             (if (null vs)
+               (setq vs (list (gc-kg-node-ok c0) (gc-kg-node-ok c1)
+                              (gc-kg-node-ok c2) (gc-kg-node-ok c3))))
              (setq sub (gc-kg-cell-parts cx cy sx sy vs))
              (setq ar 0.0)
              (foreach pp sub (setq ar (+ ar (gc-kg-area pp))))
@@ -1951,6 +1979,11 @@
                (princ (strcat "\n[i] Граница: ТОЧНАЯ, источник - "
                               (if *gc-kg-clip-src* *gc-kg-clip-src* "?")
                               " (контуров: " (itoa (length *gc-kg-clips*)) ")"))
+               (if *gc-kg-need-surf*
+                 (progn
+                   (princ "\n[!] Границ поверхностей нет - их край ищется опросом.")
+                   (if *gc-kg-exact-why*
+                     (princ (strcat "\n    " *gc-kg-exact-why*)))))
                (setq gp (mapcar '(lambda (c) (mapcar 'gc-kg-to-grid c))
                                 *gc-kg-clips*))
                (setq gh (mapcar '(lambda (h) (mapcar 'gc-kg-to-grid h))
@@ -2001,7 +2034,9 @@
                                  "  (одиночные осечки опроса, П31)")))
                 (princ (strcat "\n  граница          : "
                                (if *gc-kg-clips*
-                                 (strcat "ТОЧНАЯ, " *gc-kg-clip-src*)
+                                 (strcat "ТОЧНАЯ, " *gc-kg-clip-src*
+                                         (if *gc-kg-need-surf*
+                                           " + край поверхностей опросом" ""))
                                  "приближённая, опросом")))
                 (princ (strcat "\n  площадь по сетке : " (gc-kg-fmt total) " м2"))
                 ;; Контроль площади имеет смысл, только когда контур ОДИН:
@@ -2109,6 +2144,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v15 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v16 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
