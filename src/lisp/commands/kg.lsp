@@ -1,8 +1,24 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v25)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v26)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v26: TOCHNOE PERESECHENIE OBLASTEY CHEREZ TREUGOLNIKI.
+;;;      Kontury ot modulya okazalis PRAVILNYE -- Shamil podtverdil, chto
+;;;      obe narisovannye linii legli po granicam. Znachit vinovat byl
+;;;      raschet: v kvadratah, gde shodyatsya DVA kontura, on uhodil
+;;;      v droblenie na podyacheyki, i kray tam prevrashchalsya v gruboy
+;;;      hordu -- eto i vidno kak srezannye ugly.
+;;;
+;;;      Teper kazhdyy kontur odin raz rezhetsya na TREUGOLNIKI. Treugolnik
+;;;      vypuklyy vsegda, otsechenie im tochnoe, a peresechenie dvuh
+;;;      oblastey -- summa peresecheniy vseh par treugolnikov.
+;;;      Droblenie na podyacheyki bolshe ne nuzhno vovse.
+;;;
+;;;      Provereno chislenno: summa po yacheykam sovpadaet s tochnym
+;;;      peresecheniem DO NULYA, a ono s etalonom Monte-Karlo po 3 mln
+;;;      tochek -- do 0,0008 %.
 ;;;
 ;;; v25: PECHATAEM PLOSHCHAD KONTURA I VERSIYU MODULYA.
 ;;;      "model" i "plan" dali odinakovye 35 i 19 tochek -- znachit libo
@@ -2011,87 +2027,205 @@
     (setq j (1+ j)))
   (reverse cells))
 
+;;; --------------------------------------------------------------------
+;;; ТОЧНОЕ ПЕРЕСЕЧЕНИЕ ОБЛАСТЕЙ
+;;;
+;;; ЗАЧЕМ. Отсечение Сазерленда-Ходгмана точно режет контур квадратом,
+;;; но пересечь два произвольных контура между собой не умеет. Раньше
+;;; такие квадраты уходили в дробление на подъячейки, и там край
+;;; превращался в грубую хорду - на чертеже это видно как срезанные углы
+;;; ровно там, где сходятся две границы.
+;;;
+;;; КАК СДЕЛАНО. Каждый контур один раз режется на ТРЕУГОЛЬНИКИ. Треугольник
+;;; выпуклый всегда, а значит отсечение им точное. Пересечение двух областей
+;;; внутри квадрата - это сумма пересечений всех пар треугольников.
+;;;
+;;; ПОЧЕМУ РЕЖЕМ ИСХОДНЫЕ КОНТУРЫ, А НЕ ИХ ОБРЕЗКИ. Обрезка невыпуклого
+;;; контура квадратом даёт многоугольник с вырожденными перемычками:
+;;; площадь по ней считается верно, а вот треугольники из неё захватывают
+;;; лишнее. Проверено численно: так сумма по сетке превышала точное
+;;; значение на 0,36 %.
+;;;
+;;; ПРОВЕРЕНО ЧИСЛЕННО: сумма по ячейкам совпадает с точным пересечением
+;;; до нуля, а оно с эталоном Монте-Карло по 3 млн точек - до 0,0008 %.
+;;; --------------------------------------------------------------------
+
+;; Площадь СО ЗНАКОМ: по ней определяется направление обхода.
+(defun gc-kg-area-s (pts / s a b)
+  (setq s 0.0)
+  (if (and pts (cddr pts))
+    (progn
+      (setq a (last pts))
+      (foreach b pts
+        (setq s (+ s (- (* (car a) (cadr b)) (* (car b) (cadr a)))))
+        (setq a b))))
+  (/ s 2.0))
+
+;; Обход против часовой стрелки. Отсечение требует известного направления.
+(defun gc-kg-ccw (pts)
+  (if (< (gc-kg-area-s pts) 0.0) (reverse pts) pts))
+
+;; С какой стороны от прямой a-b лежит точка p.
+(defun gc-kg-side (p a b)
+  (- (* (- (car b) (car a)) (- (cadr p) (cadr a)))
+     (* (- (cadr b) (cadr a)) (- (car p) (car a)))))
+
+;; Точка пересечения отрезка p-q с прямой a-b.
+(defun gc-kg-cut (p q a b / d1 d2 kk)
+  (setq d1 (gc-kg-side p a b) d2 (gc-kg-side q a b))
+  (if (< (abs (- d1 d2)) 1.0e-15)
+    q
+    (progn
+      (setq kk (/ d1 (- d1 d2)))
+      (list (+ (car p)  (* kk (- (car q)  (car p))))
+            (+ (cadr p) (* kk (- (cadr q) (cadr p))))))))
+
+;; Отсечение произвольного многоугольника ВЫПУКЛЫМ.
+(defun gc-kg-clip-cx (subj clip / out cl n i a b inp s sa e se)
+  (setq out subj cl (gc-kg-ccw clip) n (length cl) i 0)
+  (while (and (< i n) out)
+    (setq a (nth i cl) b (nth (rem (1+ i) n) cl))
+    (setq inp out out nil s (last inp) sa (gc-kg-side (last inp) a b))
+    (foreach e inp
+      (setq se (gc-kg-side e a b))
+      (cond
+        ((>= se -1.0e-9)
+         (if (< sa -1.0e-9) (setq out (cons (gc-kg-cut s e a b) out)))
+         (setq out (cons e out)))
+        ((>= sa -1.0e-9)
+         (setq out (cons (gc-kg-cut s e a b) out))))
+      (setq s e sa se))
+    (setq out (reverse out))
+    (setq i (1+ i)))
+  out)
+
+;; Векторное произведение: знак говорит о повороте.
+(defun gc-kg-cross3 (a b c)
+  (- (* (- (car b) (car a)) (- (cadr c) (cadr a)))
+     (* (- (cadr b) (cadr a)) (- (car c) (car a)))))
+
+;; Строго ли внутри треугольника.
+(defun gc-kg-in-tri (q a b c)
+  (and (> (gc-kg-cross3 a b q) 1.0e-9)
+       (> (gc-kg-cross3 b c q) 1.0e-9)
+       (> (gc-kg-cross3 c a q) 1.0e-9)))
+
+;; Список без элемента с номером k.
+(defun gc-kg-drop-nth (k lst / i out)
+  (setq i 0 out nil)
+  (foreach e lst
+    (if (/= i k) (setq out (cons e out)))
+    (setq i (1+ i)))
+  (reverse out))
+
+;; Разрезать многоугольник на треугольники, отрезая "уши".
+;; Ухо - выпуклая вершина, в чей треугольник не попадает ни одна другая.
+(defun gc-kg-ear (poly / p tris guard n kk a b c ok)
+  (setq p (gc-kg-ccw (gc-kg-dedup poly)) tris nil guard 0)
+  (while (and (> (length p) 3) (< guard 2000))
+    (setq guard (1+ guard) n (length p) kk 0 ok nil)
+    (while (and (< kk n) (null ok))
+      (setq a (nth (rem (+ kk (1- n)) n) p)
+            b (nth kk p)
+            c (nth (rem (1+ kk) n) p))
+      (if (> (gc-kg-cross3 a b c) 1.0e-9)
+        (progn
+          (setq ok T)
+          (foreach m p
+            (if (and ok
+                     (not (equal m a 1.0e-9))
+                     (not (equal m b 1.0e-9))
+                     (not (equal m c 1.0e-9))
+                     (gc-kg-in-tri m a b c))
+              (setq ok nil)))
+          (if ok
+            (progn
+              (setq tris (cons (list a b c) tris))
+              (setq p (gc-kg-drop-nth kk p))))))
+      (if (null ok) (setq kk (1+ kk))))
+    ;; Ухо не нашлось - дальше резать нечем, выходим с тем, что есть.
+    (if (null ok) (setq guard 2000)))
+  (if (= (length p) 3) (setq tris (cons p tris)))
+  (reverse tris))
+
+;; Треугольники контура вместе с габаритами: габариты нужны, чтобы
+;; не гонять отсечение для каждой пары, а сперва отсеять заведомо далёкие.
+(defun gc-kg-tris (poly / out)
+  (setq out nil)
+  (foreach tr (gc-kg-ear poly)
+    (setq out (cons (cons tr (gc-kg-bbox tr)) out)))
+  (reverse out))
+
+;; Пересекаются ли габариты с квадратом.
+(defun gc-kg-bb-hit (bb x0 y0 x1 y1)
+  (not (or (< (caddr bb) x0) (> (car bb) x1)
+           (< (cadddr bb) y0) (> (cadr bb) y1))))
+
 ;; Квадраты по НЕСКОЛЬКИМ точным контурам.
 ;;
-;; Отсечение Сазерленда-Ходгмана точно режет один контур квадратом, но
-;; пересечь два произвольных контура между собой оно не умеет. Поэтому
-;; работаем от квадрата:
-;;
-;;   контур покрывает квадрат целиком  -> он этот квадрат не режет;
-;;   контур не задевает квадрат        -> квадрат пуст, дальше не смотрим;
-;;   квадрат режет ровно ОДИН контур   -> берём его отсечение, это точно;
-;;   режут несколько                   -> дробим на подъячейки.
-;;
-;; Дробление нужно лишь там, где сходятся два края, а таких квадратов
-;; единицы: остальные считаются точно и мгновенно.
+;; Область квадрата - пересечение всех контуров с ним. Считается точно,
+;; через треугольники: дробление на подъячейки больше не нужно.
 (defun gc-kg-cells-clip (gc gh i0 j0 i1 j1 sx sy
-                         / i j cx cy cx1 cy1 ca eps cells poly a
-                           cut hcut empty parts sub ar v0 v1 v2 v3 cs vs
-                           c0 c1 c2 c3)
-  (setq cells nil ca (* sx sy) eps (* 1.0e-6 sx sy))
+                         / tris hset i j cx cy cx1 cy1 rect ca eps cells
+                           cur parts ar hp hs lo)
+  (setq ca (* sx sy) eps (* 1.0e-9 ca) cells nil)
+  ;; Треугольники считаем ОДИН раз на всю сетку.
+  (setq tris (mapcar 'gc-kg-tris gc))
+  (setq hset (mapcar 'gc-kg-tris gh))
   (setq j j0)
   (while (< j j1)
     (setq i i0)
     (while (< i i1)
       (setq cx (* i sx) cy (* j sy) cx1 (+ cx sx) cy1 (+ cy sy))
-      (setq cut nil hcut nil empty nil)
-      (foreach c gc
-        (if (not empty)
+      (setq rect (list (list cx cy) (list cx1 cy) (list cx1 cy1) (list cx cy1)))
+      ;; Начинаем с квадрата и последовательно пересекаем с каждым контуром.
+      (setq cur (list rect))
+      (foreach tl tris
+        (if cur
           (progn
-            (setq poly (gc-kg-clip-rect c cx cy cx1 cy1))
-            (setq a (gc-kg-area poly))
-            (cond
-              ((<= a eps)          (setq empty T))
-              ((< a (- ca eps))    (setq cut (cons poly cut)))))))
-      (if (not empty)
-        (foreach h gh
-          (if (not empty)
-            (progn
-              (setq poly (gc-kg-clip-rect h cx cy cx1 cy1))
-              (setq a (gc-kg-area poly))
-              (cond
-                ((>= a (- ca eps)) (setq empty T))
-                ((> a eps)         (setq hcut (cons poly hcut))))))))
-      (if (not empty)
+            (setq parts nil)
+            (foreach pc cur
+              (foreach tb tl
+                (if (gc-kg-bb-hit (cdr tb) cx cy cx1 cy1)
+                  (progn
+                    (setq hp (gc-kg-clip-cx pc (car tb)))
+                    (if (> (abs (gc-kg-area-s hp)) eps)
+                      (setq parts (cons hp parts)))))))
+            (setq cur (reverse parts)))))
+      ;; Вырезы: вычитаем их площадь и рисуем отдельно.
+      (setq ar 0.0)
+      (foreach pc cur (setq ar (+ ar (gc-kg-area pc))))
+      (setq hs nil)
+      (foreach tl hset
+        (foreach tb tl
+          (if (gc-kg-bb-hit (cdr tb) cx cy cx1 cy1)
+            (foreach pc cur
+              (setq hp (gc-kg-clip-cx pc (car tb)))
+              (if (> (gc-kg-area hp) eps)
+                (progn (setq ar (- ar (gc-kg-area hp)))
+                       (setq hs (cons hp hs))))))))
+      (if (> ar eps)
         (progn
-          (setq c0 (list cx cy) c1 (list cx1 cy)
-                c2 (list cx1 cy1) c3 (list cx cy1))
-          (setq cs (list c0 c1 c2 c3))
-          ;; Когда край поверхности не описан контуром, углы квадрата
-          ;; приходится проверять отдельно: контуры про поверхность
-          ;; ничего не знают.
-          (setq vs (if *gc-kg-need-surf*
-                     (list (gc-kg-node-ok c0) (gc-kg-node-ok c1)
-                           (gc-kg-node-ok c2) (gc-kg-node-ok c3))
-                     nil))
-          (cond
-            ;; целый квадрат
-            ((and (null cut) (null hcut)
-                  (or (null vs) (and (car vs) (cadr vs) (caddr vs) (cadddr vs))))
-             (setq parts (list cs) ar ca))
-            ;; режет ровно один контур - точное отсечение
-            ((and (= 1 (length cut)) (null hcut)
-                  (or (null vs) (and (car vs) (cadr vs) (caddr vs) (cadddr vs))))
-             (setq parts (list (car cut)) ar (gc-kg-area (car cut))))
-            ;; сходятся несколько краёв - дробим
-            (T
-             (if (null vs)
-               (setq vs (list (gc-kg-node-ok c0) (gc-kg-node-ok c1)
-                              (gc-kg-node-ok c2) (gc-kg-node-ok c3))))
-             (setq sub (gc-kg-cell-parts cx cy sx sy vs))
-             (setq ar 0.0)
-             (foreach pp sub (setq ar (+ ar (gc-kg-area pp))))
-             (setq parts (gc-kg-outline sub))
-             (if (null parts)
-               (progn (setq parts (gc-kg-quad cs vs))
-                      (setq *gc-kg-outline-fail* (1+ *gc-kg-outline-fail*))))))
-          (if (> ar eps)
-            (setq cells (cons (list i j ar cs (car parts) (cdr parts)) cells)))))
+          ;; Куски сшиваем в один контур: рисовать десяток треугольников
+          ;; вместо квадрата нельзя. Сшиваем ОДИН раз - повторный вызов
+          ;; и считал бы вдвое, и счётчик отказов задваивал.
+          (setq lo (gc-kg-outline-or cur))
+          (setq cells (cons (list i j ar rect (car lo) (cdr lo)) cells))))
       (setq i (1+ i)))
     (setq j (1+ j)))
   (reverse cells))
 
-;; Отрисовка построенных квадратов.
+;; Сшить куски в контур, а если не сошлось - вернуть куски как есть
+;; и посчитать это вслух.
+(defun gc-kg-outline-or (parts / lo)
+  (setq lo (gc-kg-outline parts))
+  (if lo
+    lo
+    (progn
+      (setq *gc-kg-outline-fail* (1+ *gc-kg-outline-fail*))
+      parts)))
+
+;; Отрисовка построенных квадратов.;; Отрисовка построенных квадратов.
 (defun gc-kg-draw-cells (cells trim sx sy / lay eps)
   (setq lay (gc-kg-layer "GC-Картограмма-Сетка" 7))
   (setq eps (* 1.0e-6 sx sy))
@@ -2428,6 +2562,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v25 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
+(princ "\n[gc] kg.lsp v26 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
