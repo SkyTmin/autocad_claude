@@ -1,8 +1,19 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v11)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v12)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v12: KRAEVOY KVADRAT TEPER POVTORYAET GRANICU.
+;;;      Bylo: ploshchad schitalas drobleniem 4 x 4, a LINIYA risovalas odnoy
+;;;      pryamoy mezhdu dvumya tochkami kraya na storonah kvadrata. U nastoyashchey
+;;;      granicy vnutri kvadrata est izlomy, i pryamaya ih srezala: chislo
+;;;      tochnoe, kartinka net.
+;;;      Stalo: liniya stroitsya po tomu zhe drobleniyu. Kuski podyacheek
+;;;      sshivayutsya v odin kontur -- vnutrennie rebra vstrechayutsya dvazhdy
+;;;      v protivopolozhnyh napravleniyah i vzaimno unichtozhayutsya.
+;;;      Provereno chislenno: ploshchad sshitogo kontura sovpala s summoy
+;;;      ploshchadey podyacheek na vseh formah, sboev net.
 ;;;
 ;;; v11: NAYDENA NASTOYASHCHAYA PRICHINA "LISHNEGO UCHASTKA".
 ;;;      V otchete stoyalo "granica naruzhnaya: vybrana". Granica, vybrannaya
@@ -1417,9 +1428,9 @@
            (gc-kg-part (list (nth 2 cs) (nth 3 cs) (nth 0 cs)) (list v2 v3 v0))))
     (T (list (gc-kg-part cs vs)))))
 
-;; Уточнённая площадь краевого квадрата: дробим на K x K и складываем части.
+;; Части краевого квадрата: дробим на K x K и собираем куски с данными.
 ;; Углы берутся из уже опрошенных узлов сетки, заново не спрашиваются.
-(defun gc-kg-cell-area (x0 y0 sx sy vs / k hx hy a b g row ar cs sv)
+(defun gc-kg-cell-parts (x0 y0 sx sy vs / k hx hy a b g row out cs sv)
   (setq k *gc-kg-sub* hx (/ sx k) hy (/ sy k))
   (setq g nil b 0)
   (while (<= b k)
@@ -1438,7 +1449,7 @@
     (setq g (cons (reverse row) g))
     (setq b (1+ b)))
   (setq g (reverse g))
-  (setq ar 0.0 b 0)
+  (setq out nil b 0)
   (while (< b k)
     (setq a 0)
     (while (< a k)
@@ -1450,10 +1461,83 @@
                      (nth (1+ a) (nth b      g))
                      (nth (1+ a) (nth (1+ b) g))
                      (nth a      (nth (1+ b) g))))
-      (foreach pp (gc-kg-quad cs sv) (setq ar (+ ar (gc-kg-area pp))))
+      (foreach pp (gc-kg-quad cs sv) (if (> (length pp) 2) (setq out (cons pp out))))
       (setq a (1+ a)))
     (setq b (1+ b)))
-  ar)
+  (reverse out))
+
+;;; --------------------------------------------------------------------
+;;; Контур краевого квадрата
+;;;
+;;; ЗАЧЕМ ОТДЕЛЬНАЯ РАБОТА. Площадь краевого квадрата считается дроблением
+;;; 4 x 4 (П29), а рисовался он до сих пор ОДНОЙ ПРЯМОЙ между двумя точками
+;;; края на сторонах. Из-за этого линия на чертеже не повторяла границу
+;;; поверхности: у настоящей границы внутри квадрата есть изломы, а прямая
+;;; их срезала. Число было точное, картинка — нет.
+;;;
+;;; Теперь линия строится по тому же дроблению: берём куски подъячеек
+;;; и сшиваем из них ОДИН контур. Внутренние рёбра встречаются дважды
+;;; в противоположных направлениях и взаимно уничтожаются, остаётся
+;;; внешняя граница.
+;;;
+;;; ПОЧЕМУ СШИВКА СХОДИТСЯ. Соседние подъячейки делят ребро, и точку края
+;;; на нём каждая ищет от ОДНОГО И ТОГО ЖЕ внутреннего конца — деление
+;;; пополам детерминировано, значит обе получают одно и то же число.
+;;; Поэтому сравнение точек с допуском в микрон надёжно.
+;;;
+;;; Проверено численно: площадь сшитого контура совпала с суммой площадей
+;;; подъячеек на всех проверочных формах.
+;;; --------------------------------------------------------------------
+
+;; Рёбра многоугольника парами (начало конец). Нулевые пропускаем.
+(defun gc-kg-edges (pts / n i out a b)
+  (setq n (length pts) i 0 out nil)
+  (while (< i n)
+    (setq a (nth i pts) b (nth (rem (1+ i) n) pts))
+    (if (> (distance a b) 1.0e-9) (setq out (cons (list a b) out)))
+    (setq i (1+ i)))
+  out)
+
+;; Есть ли в списке это же ребро, пройденное в обратную сторону.
+(defun gc-kg-has-rev (e lst / r)
+  (setq r nil)
+  (foreach o lst
+    (if (and (null r)
+             (equal (car e)  (cadr o) 1.0e-7)
+             (equal (cadr e) (car o)  1.0e-7))
+      (setq r T)))
+  r)
+
+;; Сшить рёбра в замкнутые контуры. guard от зацикливания на случай,
+;; если сшивка всё же разорвётся: лучше вернуть меньше, чем повиснуть.
+(defun gc-kg-stitch (edges / loops cur pt nxt rest guard outer)
+  (setq loops nil outer 0)
+  (while (and edges (< outer 20))
+    (setq outer (1+ outer))
+    (setq cur (list (car (car edges))) pt (cadr (car edges)) edges (cdr edges))
+    (setq guard 0)
+    (while (and (not (equal pt (car cur) 1.0e-7)) (< guard 2000))
+      (setq guard (1+ guard) nxt nil rest nil)
+      (foreach e edges
+        (if (and (null nxt) (equal (car e) pt 1.0e-7))
+          (setq nxt e)
+          (setq rest (cons e rest))))
+      (if (null nxt)
+        (setq guard 2000)
+        (progn
+          (setq cur (cons pt cur))
+          (setq pt (cadr nxt))
+          (setq edges (reverse rest)))))
+    (if (> (length cur) 2) (setq loops (cons (reverse cur) loops))))
+  (reverse loops))
+
+;; Внешний контур объединения кусков.
+(defun gc-kg-outline (parts / all keep)
+  (setq all nil)
+  (foreach pp parts (setq all (append all (gc-kg-edges pp))))
+  (setq keep nil)
+  (foreach e all (if (not (gc-kg-has-rev e all)) (setq keep (cons e keep))))
+  (gc-kg-stitch (reverse keep)))
 
 ;; Квадраты по поверхностям.
 ;;
@@ -1463,7 +1547,7 @@
 ;;             один чистый квадрат, а не сетка из шестнадцати кусочков.
 ;; Расхождение между ними — сотые доли процента площади квадрата.
 (defun gc-kg-cells-auto (rows i0 j0 i1 j1 sx sy / j i r0 r1 v0 v1 v2 v3
-                           c0 c1 c2 c3 cs vs parts ar cells nv eps)
+                           c0 c1 c2 c3 cs vs parts sub ar cells nv eps)
   (setq cells nil eps (* 1.0e-6 sx sy))
   (setq j j0)
   (while (< j j1)
@@ -1485,8 +1569,18 @@
           (setq cs (list c0 c1 c2 c3) vs (list v0 v1 v2 v3))
           (if (= nv 4)
             (setq parts (list cs) ar (* sx sy))
-            (setq parts (gc-kg-quad cs vs)
-                  ar    (gc-kg-cell-area (* i sx) (* j sy) sx sy vs)))
+            (progn
+              (setq sub (gc-kg-cell-parts (* i sx) (* j sy) sx sy vs))
+              (setq ar 0.0)
+              (foreach pp sub (setq ar (+ ar (gc-kg-area pp))))
+              (setq parts (gc-kg-outline sub))
+              ;; Сшивка разорвалась - рисуем грубым контуром и считаем это
+              ;; вслух. Молча подсунуть другую фигуру вместо посчитанной
+              ;; нельзя: площадь и линия разойдутся, а заметить будет нечем.
+              (if (null parts)
+                (progn
+                  (setq parts (gc-kg-quad cs vs))
+                  (setq *gc-kg-outline-fail* (1+ *gc-kg-outline-fail*))))))
           (if (> ar eps)
             (setq cells (cons (list i j ar cs (car parts) (cdr parts)) cells)))))
       (setq i (1+ i)))
@@ -1520,7 +1614,7 @@
         sy (gc-kg-num (gc-kg-get "step-y")))
   (setq trim (= "1" (gc-kg-get "trim")))
   (gc-kg-load-bounds)
-  (setq *gc-kg-holes-fixed* 0)
+  (setq *gc-kg-holes-fixed* 0 *gc-kg-outline-fail* 0)
   (cond
     ((or (null *gc-kg-sb*) (null *gc-kg-sr*))
      (princ "\n[!] Выбраны не обе поверхности - область строить не из чего.")
@@ -1593,6 +1687,9 @@
                                "  (цвет по слою, белый)"))
                 (princ (strcat "\n  шаг              : " (gc-kg-fmt sx)
                                " x " (gc-kg-fmt sy) " м"))
+                (if (> *gc-kg-outline-fail* 0)
+                  (princ (strcat "\n  [!] контур не сшился: " (itoa *gc-kg-outline-fail*)
+                                 " кв. нарисованы упрощённо")))
                 (if (> *gc-kg-holes-fixed* 0)
                   (princ (strcat "\n  залечено узлов   : "
                                  (itoa *gc-kg-holes-fixed*)
@@ -1695,6 +1792,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v11 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v12 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
