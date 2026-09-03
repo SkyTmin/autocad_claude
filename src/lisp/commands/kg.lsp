@@ -1,8 +1,29 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v14)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v15)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v15: OBLAST -- PERESECHENIE VSEH KONTUROV, A NE ODIN IZ NIH.
+;;;      v14 vernula staruyu oshibku: vybrannaya polilinya ZAMENYALA
+;;;      poverhnosti, i setka uhodila tuda, gde vtoroy poverhnosti net.
+;;;      Eto P33 drugim putem.
+;;;
+;;;      Do etogo iz konturov vybiralsya odin -- tot, chto lezhit vnutri
+;;;      ostalnyh. Eto neverno, kogda kontury peresekayutsya krayami:
+;;;      u Shamilya krasnaya poverhnost mestami vyhodit za zelenuyu,
+;;;      i "vlozhennogo" kontura ne sushchestvuet vovse.
+;;;
+;;;      Teper oblast -- PERESECHENIE vseh: granicy oboih poverhnostey
+;;;      i vybrannaya polilinya. Ni odin iz nih ne glavnee drugih.
+;;;
+;;;      Kak eto schitaetsya. Otsechenie Sazerlenda-Hodgmana tochno rezhet
+;;;      odin kontur kvadratom, no peresech dva proizvolnyh kontura mezhdu
+;;;      soboy ne umeet. Poetomu rabotaem ot kvadrata: kontur pokryvaet ego
+;;;      celikom -- ne rezhet; ne zadevaet -- kvadrat pust; rezhet rovno
+;;;      odin -- beryom ego otsechenie, eto tochno; rezhut neskolko --
+;;;      drobim na podyacheyki. Drobit prihoditsya lish tam, gde shodyatsya
+;;;      dva kraya, a takih kvadratov edinicy.
 ;;;
 ;;; v14: VYBRANNAYA POLILINIYA TOZHE SCHITAETSYA TOCHNOY GRANICEY.
 ;;;      Ranshe ona rabotala filtrom poverh priblizhennogo oprosa, i kontur
@@ -1242,79 +1263,49 @@
         (mapcar '(lambda (lp) (mapcar 'gc-kg-2d lp)) r)))
     nil))
 
-;; Лежит ли контур a целиком внутри контура b.
-(defun gc-kg-poly-in-poly (a b / ok)
-  (setq ok T)
-  (foreach p a (if (and ok (not (gc-kg-in-poly p b))) (setq ok nil)))
-  ok)
-
-;; Из нескольких контуров выбрать тот, что лежит внутри всех остальных:
-;; он и задаёт общую область.
+;; Собрать ВСЕ точные контуры области и все вырезы.
 ;;
-;; ОХРАННОЕ УСЛОВИЕ (docs/pitfalls.md -> П17). Если такого контура нет,
-;; значит контуры пересекаются краями, и одним многоугольником область
-;; не описать. Честно возвращаем nil и уходим на приближённый путь,
-;; а не выдаём похожий на правду, но неверный контур.
-(defun gc-kg-pick-inner (lst / res)
-  (foreach a lst
-    (if (null res)
-      (if (vl-every '(lambda (b) (or (eq a b) (gc-kg-poly-in-poly a b))) lst)
-        (setq res a))))
-  res)
-
-;; Собрать точную область: наружный контур и вырезы.
-;; Возвращает T, если получилось.
-(defun gc-kg-load-exact (sbn srn / bl rl outs)
-  (setq *gc-kg-exact* nil *gc-kg-exact-holes* nil
-        *gc-kg-exact-why* nil *gc-kg-exact-src* nil)
-  (cond
-    ((not (gc-kg-net-p))
-     ;; Модуля нет - но если человек выбрал границу полилинией, она и есть
-     ;; точный контур. Резать по ней точно лучше, чем нащупывать край
-     ;; опросом: у полилинии вершины известны, у опроса - нет.
-     ;;
-     ;; Это НЕ повторение П33: там граница молча ЗАМЕНЯЛА поверхности,
-     ;; здесь она берётся осознанно и о ней сказано в отчёте отдельной
-     ;; строкой, а сбросить её можно кнопкой в окне.
-     (cond
-       (*gc-kg-outer*
-        (setq *gc-kg-exact* *gc-kg-outer*
-              *gc-kg-exact-holes* *gc-kg-holes*
-              *gc-kg-exact-src* "выбранная полилиния")
-        T)
-       (T
-        (setq *gc-kg-exact-why* "модуль .NET не загружен, граница не выбрана")
-        nil)))
-    (T
-     (setq bl (gc-kg-net-border sbn)
-           rl (gc-kg-net-border srn))
-     (cond
-       ((or (null bl) (null rl))
-        (setq *gc-kg-exact-why* "модуль не отдал границу одной из поверхностей")
-        (if *gc-kg-outer*
-          (progn (setq *gc-kg-exact* *gc-kg-outer*
-                       *gc-kg-exact-holes* *gc-kg-holes*
-                       *gc-kg-exact-src* "выбранная полилиния")
-                 T)
-          nil))
-       (T
-        (setq outs (list (car bl) (car rl)))
-        (if *gc-kg-outer* (setq outs (cons *gc-kg-outer* outs)))
-        (setq *gc-kg-exact* (gc-kg-pick-inner outs))
-        (cond
-          ((null *gc-kg-exact*)
-           (setq *gc-kg-exact-why*
-             "границы пересекаются краями - одним контуром область не описать")
-           nil)
-          (T
-           ;; Вырезы обеих поверхностей и выбранные внутренние границы
-           ;; действуют вместе: дырка есть дырка, чья бы она ни была.
-           (setq *gc-kg-exact-holes*
-             (append (cdr bl) (cdr rl) *gc-kg-holes*))
-           (setq *gc-kg-exact-src* "границы поверхностей")
-           T))))))) 
+;; ГЛАВНОЕ ЗДЕСЬ. Раньше из контуров выбирался один - тот, что лежит внутри
+;; остальных, - и он объявлялся областью. Это неверно, когда контуры
+;; пересекаются краями: у Шамиля красная поверхность местами выходит
+;; за зелёную, и "вложенного" контура не существует вовсе.
+;;
+;; Хуже того, выбранная полилиния так ЗАМЕНЯЛА поверхности, и сетка уходила
+;; туда, где второй поверхности нет. Ровно П33, только другим путём.
+;;
+;; Область - ПЕРЕСЕЧЕНИЕ всех контуров, и ни один из них не главнее других.
+;; Возвращает T, если хоть один точный контур есть.
+(defun gc-kg-load-clips (sbn srn / bl rl)
+  (setq *gc-kg-clips* nil *gc-kg-hcuts* nil
+        *gc-kg-clip-src* nil *gc-kg-exact-why* nil)
+  ;; Границы поверхностей - если модуль .NET их отдал.
+  (if (gc-kg-net-p)
+    (progn
+      (setq bl (gc-kg-net-border sbn)
+            rl (gc-kg-net-border srn))
+      (if (car bl)
+        (setq *gc-kg-clips* (cons (car bl) *gc-kg-clips*)
+              *gc-kg-hcuts* (append (cdr bl) *gc-kg-hcuts*)))
+      (if (car rl)
+        (setq *gc-kg-clips* (cons (car rl) *gc-kg-clips*)
+              *gc-kg-hcuts* (append (cdr rl) *gc-kg-hcuts*)))
+      (if *gc-kg-clips*
+        (setq *gc-kg-clip-src* "границы поверхностей")
+        (setq *gc-kg-exact-why* "модуль не отдал границы поверхностей")))
+    (setq *gc-kg-exact-why* "модуль .NET не загружен"))
+  ;; Выбранная полилиния - ещё одно условие, а не замена предыдущих.
+  (if *gc-kg-outer*
+    (progn
+      (setq *gc-kg-clips* (cons *gc-kg-outer* *gc-kg-clips*))
+      (setq *gc-kg-clip-src*
+        (if *gc-kg-clip-src*
+          (strcat *gc-kg-clip-src* " + выбранная полилиния")
+          "выбранная полилиния"))))
+  (setq *gc-kg-hcuts* (append *gc-kg-hcuts* *gc-kg-holes*))
+  (if *gc-kg-clips* T nil))
 
 ;;; --------------------------------------------------------------------
+;;; Рисование;;; --------------------------------------------------------------------
 ;;; Рисование
 ;;; --------------------------------------------------------------------
 
@@ -1456,13 +1447,16 @@
 ;; и каждый их ответ стоит обращения к CAD. Проверка контура своя, дешёвая.
 (defun gc-kg-node-ok (p / w x y ok)
   (setq w (gc-kg-to-wcs p) x (car w) y (cadr w))
-  ;; Есть точный контур - проверка чисто вычислительная, к CAD не ходим.
-  ;; Это и точнее, и быстрее на порядок.
-  (if *gc-kg-exact*
+  ;; Есть точные контуры - проверка чисто вычислительная, к CAD не ходим.
+  ;; Точка годна, только если она внутри КАЖДОГО контура: область - это
+  ;; их пересечение, а не любой из них.
+  (if *gc-kg-clips*
     (progn
-      (setq ok (gc-kg-in-poly w *gc-kg-exact*))
+      (setq ok T)
+      (foreach c *gc-kg-clips*
+        (if (and ok (not (gc-kg-in-poly w c))) (setq ok nil)))
       (if ok
-        (foreach h *gc-kg-exact-holes*
+        (foreach h *gc-kg-hcuts*
           (if (and ok (gc-kg-in-poly w h)) (setq ok nil))))
       (setq w nil))
     (setq ok (and (gc-kg-elev *gc-kg-sb* x y)
@@ -1785,29 +1779,72 @@
     (setq j (1+ j)))
   (reverse cells))
 
-;; Квадраты по выбранной полилинии.
-(defun gc-kg-cells-poly (gp gh i0 j0 i1 j1 sx sy
-                         / i j cx cy cx1 cy1 poly ar hr hps ce cells eps)
-  (setq cells nil eps (* 1.0e-6 sx sy))
+;; Квадраты по НЕСКОЛЬКИМ точным контурам.
+;;
+;; Отсечение Сазерленда-Ходгмана точно режет один контур квадратом, но
+;; пересечь два произвольных контура между собой оно не умеет. Поэтому
+;; работаем от квадрата:
+;;
+;;   контур покрывает квадрат целиком  -> он этот квадрат не режет;
+;;   контур не задевает квадрат        -> квадрат пуст, дальше не смотрим;
+;;   квадрат режет ровно ОДИН контур   -> берём его отсечение, это точно;
+;;   режут несколько                   -> дробим на подъячейки.
+;;
+;; Дробление нужно лишь там, где сходятся два края, а таких квадратов
+;; единицы: остальные считаются точно и мгновенно.
+(defun gc-kg-cells-clip (gc gh i0 j0 i1 j1 sx sy
+                         / i j cx cy cx1 cy1 ca eps cells poly a
+                           cut hcut empty parts sub ar v0 v1 v2 v3 cs vs
+                           c0 c1 c2 c3)
+  (setq cells nil ca (* sx sy) eps (* 1.0e-6 sx sy))
   (setq j j0)
   (while (< j j1)
     (setq i i0)
     (while (< i i1)
       (setq cx (* i sx) cy (* j sy) cx1 (+ cx sx) cy1 (+ cy sy))
-      (setq poly (gc-kg-clip-rect gp cx cy cx1 cy1))
-      (setq ar (gc-kg-area poly) hr 0.0 hps nil)
-      (foreach h gh
-        (setq ce (gc-kg-clip-rect h cx cy cx1 cy1))
-        (if (> (gc-kg-area ce) eps)
-          (progn (setq hr (+ hr (gc-kg-area ce)))
-                 (setq hps (cons ce hps)))))
-      (setq ar (- ar hr))
-      (if (> ar eps)
-        (setq cells (cons (list i j ar
-                                (list (list cx cy) (list cx1 cy)
-                                      (list cx1 cy1) (list cx cy1))
-                                poly hps)
-                          cells)))
+      (setq cut nil hcut nil empty nil)
+      (foreach c gc
+        (if (not empty)
+          (progn
+            (setq poly (gc-kg-clip-rect c cx cy cx1 cy1))
+            (setq a (gc-kg-area poly))
+            (cond
+              ((<= a eps)          (setq empty T))
+              ((< a (- ca eps))    (setq cut (cons poly cut)))))))
+      (if (not empty)
+        (foreach h gh
+          (if (not empty)
+            (progn
+              (setq poly (gc-kg-clip-rect h cx cy cx1 cy1))
+              (setq a (gc-kg-area poly))
+              (cond
+                ((>= a (- ca eps)) (setq empty T))
+                ((> a eps)         (setq hcut (cons poly hcut))))))))
+      (if (not empty)
+        (progn
+          (setq c0 (list cx cy) c1 (list cx1 cy)
+                c2 (list cx1 cy1) c3 (list cx cy1))
+          (setq cs (list c0 c1 c2 c3))
+          (cond
+            ;; целый квадрат
+            ((and (null cut) (null hcut))
+             (setq parts (list cs) ar ca))
+            ;; режет ровно один контур - точное отсечение
+            ((and (= 1 (length cut)) (null hcut))
+             (setq parts (list (car cut)) ar (gc-kg-area (car cut))))
+            ;; сходятся несколько краёв - дробим
+            (T
+             (setq vs (list (gc-kg-node-ok c0) (gc-kg-node-ok c1)
+                            (gc-kg-node-ok c2) (gc-kg-node-ok c3)))
+             (setq sub (gc-kg-cell-parts cx cy sx sy vs))
+             (setq ar 0.0)
+             (foreach pp sub (setq ar (+ ar (gc-kg-area pp))))
+             (setq parts (gc-kg-outline sub))
+             (if (null parts)
+               (progn (setq parts (gc-kg-quad cs vs))
+                      (setq *gc-kg-outline-fail* (1+ *gc-kg-outline-fail*))))))
+          (if (> ar eps)
+            (setq cells (cons (list i j ar cs (car parts) (cdr parts)) cells)))))
       (setq i (1+ i)))
     (setq j (1+ j)))
   (reverse cells))
@@ -1841,7 +1878,7 @@
   (setq *gc-kg-holes-fixed* 0 *gc-kg-outline-fail* 0)
   ;; Точная граница, если модуль .NET её отдал. Тогда весь дальнейший
   ;; счёт идёт по многоугольнику, а не по опросу отметок.
-  (gc-kg-load-exact sbn srn)
+  (gc-kg-load-clips sbn srn)
   (cond
     ((or (null *gc-kg-sb*) (null *gc-kg-sr*))
      (princ "\n[!] Выбраны не обе поверхности - область строить не из чего.")
@@ -1853,8 +1890,11 @@
      ;; Лог чистим: иначе в отчёт попадут записи от подключения к Civil 3D,
      ;; сделанные при открытии окна, и причина утонет среди них.
      (setq *gc-kg-try-log* nil)
-     (if *gc-kg-exact*
-       (setq bb (gc-kg-bbox *gc-kg-exact*))
+     (if *gc-kg-clips*
+       ;; Габариты - пересечение габаритов всех контуров: за пределами
+       ;; любого из них области нет по определению.
+       (foreach c *gc-kg-clips*
+         (setq bb (gc-kg-bb-and bb (gc-kg-bbox c))))
        (progn
          (setq bb (gc-kg-bb-and (gc-kg-surf-bb sbn *gc-kg-sb*)
                                 (gc-kg-surf-bb srn *gc-kg-sr*)))
@@ -1907,13 +1947,15 @@
           (progn
             (cond
               ;; --- точный путь: область задана многоугольником
-              (*gc-kg-exact*
+              (*gc-kg-clips*
                (princ (strcat "\n[i] Граница: ТОЧНАЯ, источник - "
-                              (if *gc-kg-exact-src* *gc-kg-exact-src* "?")))
-               (setq gp (mapcar 'gc-kg-to-grid *gc-kg-exact*))
+                              (if *gc-kg-clip-src* *gc-kg-clip-src* "?")
+                              " (контуров: " (itoa (length *gc-kg-clips*)) ")"))
+               (setq gp (mapcar '(lambda (c) (mapcar 'gc-kg-to-grid c))
+                                *gc-kg-clips*))
                (setq gh (mapcar '(lambda (h) (mapcar 'gc-kg-to-grid h))
-                                *gc-kg-exact-holes*))
-               (setq cells (gc-kg-cells-poly gp gh i0 j0 i1 j1 sx sy)))
+                                *gc-kg-hcuts*))
+               (setq cells (gc-kg-cells-clip gp gh i0 j0 i1 j1 sx sy)))
               ;; --- приближённый: край ищем опросом отметок
               (T
                (princ "\n[i] Граница: приближённая, опросом отметок.")
@@ -1958,25 +2000,22 @@
                                  (itoa *gc-kg-holes-fixed*)
                                  "  (одиночные осечки опроса, П31)")))
                 (princ (strcat "\n  граница          : "
-                               (if *gc-kg-exact*
-                                 (strcat "ТОЧНАЯ, " *gc-kg-exact-src*)
+                               (if *gc-kg-clips*
+                                 (strcat "ТОЧНАЯ, " *gc-kg-clip-src*)
                                  "приближённая, опросом")))
                 (princ (strcat "\n  площадь по сетке : " (gc-kg-fmt total) " м2"))
-                (if *gc-kg-exact*
+                ;; Контроль площади имеет смысл, только когда контур ОДИН:
+                ;; площадь пересечения нескольких контуров заранее неизвестна,
+                ;; и сравнивать сетку было бы не с чем.
+                (if (and *gc-kg-clips* (= 1 (length *gc-kg-clips*)))
                   (progn
-                    (setq aout (gc-kg-area *gc-kg-exact*))
-                    (foreach h *gc-kg-exact-holes* (setq aout (- aout (gc-kg-area h))))
+                    (setq aout (gc-kg-area (car *gc-kg-clips*)))
+                    (foreach h *gc-kg-hcuts* (setq aout (- aout (gc-kg-area h))))
                     (princ (strcat "\n  площадь границы  : " (gc-kg-fmt aout) " м2"))
-                    ;; Контроль: при обрезке площади обязаны сойтись.
-                    ;; Разошлись - ошибка в отсечении, и её видно сразу числом.
                     (if (and trim (> aout 1.0e-9))
                       (princ (strcat "\n  расхождение      : "
                                      (gc-kg-fmt (* 100.0 (/ (abs (- total aout)) aout)))
                                      " %  (должно быть около нуля)")))))
-                (if *gc-kg-outer*
-                  (progn
-                    (princ "\n  [!] Наружная граница ВЫБРАНА и сужает область.")
-                    (princ "\n      Не нужна - кнопка «Сброс границ» в окне.")))
                 (princ "\n[i] Один Ctrl+Z убирает всю сетку целиком.")
                 T))))))
 
@@ -2070,6 +2109,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v14 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v15 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
