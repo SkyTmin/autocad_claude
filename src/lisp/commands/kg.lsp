@@ -1,8 +1,26 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v29)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v30)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v30: OTDELNOE OKNO "OTMETKI".
+;;;      Vosem nastroek podpisi zhili v obshchem okne kartogrammy sredi
+;;;      tridcati drugih i tam tonuli. Teper u nih svoyo okno, razbitoe
+;;;      kak v obrazce: "Podpisi" (stil, tochnost, vysota, razdelitel)
+;;;      i "Cvet" dvumya stolbcami. Otkryvaetsya punktom menyu "Otmetki"
+;;;      pered samoy podpisyu i knopkoy "Nastroit..." v glavnom okne.
+;;;
+;;;      Razdelitel drobnoy chasti stal spiskom "Zapyataya/Tochka"
+;;;      vmesto tumblera "tochka vmesto zapyatoy": v obrazce spisok,
+;;;      i chitaetsya on odnoznachno.
+;;;
+;;;      Novoe: "Skryvat zadniy plan". Uzly stoyat NA liniyah setki,
+;;;      i chislo lozhitsya pryamo na liniyu. S podlozhkoy podpis
+;;;      stavitsya MTEXT-om s neprozrachnym fonom. Po umolchaniyu
+;;;      VYKLYUCHENO: obychnyy TEXT proveren na chertezhe, MTEXT net.
+;;;
+;;;      Chego v okne net i pochemu -- napisano nad gc-kg-dialog-marks.
 ;;;
 ;;; v29: PODPISI PRIVEDENY K OBRAZCU.
 ;;;      Shamil prislal zoom obrazca, i po nemu vsyo soshlos:
@@ -347,6 +365,9 @@
 ;; Имя диалога внутри DCL.
 (setq *gc-kg-dlg* "gc_kg")
 
+;; Имя окна подписей внутри того же DCL.
+(setq *gc-kg-dlg-m* "gc_kg_m")
+
 ;; Значения при первом запуске. Дальше живут между вызовами до закрытия
 ;; чертежа: намеренно НЕ сбрасываются при повторной загрузке файла, иначе
 ;; каждый APPLOAD стирал бы настройки.
@@ -367,7 +388,6 @@
     ;; по знаку можно в окне - настройки для этого есть.
     (cons "c-black"  5)           ; существующая (чёрная поверхность), синий
     (cons "c-red"    3)           ; проектная (красная поверхность), зелёный
-    (cons "c-work"   3)           ; цвет рабочей отметки (общий, запасной)
     ;; У рабочей отметки ТРИ цвета по знаку: знак виден цветом, без чтения
     ;; самого числа (specs/009 §5Б.5). Это не украшение - на картограмме
     ;; узлов сотни, и глазами их не перебрать.
@@ -386,6 +406,11 @@
     ;; поэтому это тумблер, а не жёстко зашитое правило.
     (cons "wsign"    "1")
     (cons "style"    "Standard")  ; стиль текста подписей
+    ;; Подложка под подписью. Узлы сетки стоят на её линиях, и число
+    ;; ложится прямо на линию - читать тяжело. С подложкой текст ставится
+    ;; MTEXT-ом с непрозрачным фоном и линию под собой закрывает.
+    ;; По умолчанию ВЫКЛЮЧЕНО: обычный TEXT проверен на чертеже, MTEXT нет.
+    (cons "mask"     "0")
     (cons "c-plus"   5)           ; цвет насыпи  (+)
     (cons "c-minus"  1)           ; цвет выемки  (-)
     (cons "c-zero"   7)))         ; цвет нулевой зоны
@@ -758,33 +783,9 @@
 "      : button { key = \"clr_bnd\"; label = \"Сброс границ\"; }"
 "      : text { label = \"без границ область = общая\"; }"
 "      : text { label = \"часть двух поверхностей\"; } } }"
-"  : boxed_column { label = \" Подписи отметок в узлах \";"
-"    : row {"
-"      : popup_list { key = \"t_style\"; label = \"Стиль текста \"; width = 22; fixed_width = true; }"
-"      : edit_box   { key = \"h_mark\";  label = \" Высота, м \"; edit_width = 6; }"
-"      : popup_list { key = \"p_mark\";  label = \" Точность \"; width = 7; fixed_width = true; } }"
-"    : row {"
-"      : text { label = \"Цвет:\"; }"
-"      : text { label = \" существ.\"; }"
-"      : image_button { key = \"c_black\"; width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
-"      : text { label = \" проектной\"; }"
-"      : image_button { key = \"c_red\";   width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
-"      : text { label = \" рабочей\"; }"
-"      : image_button { key = \"c_work\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } }"
-"    : row {"
-"      : text { label = \"Рабочая по знаку:\"; }"
-"      : text { label = \" выемка\"; }"
-"      : image_button { key = \"c_wminus\"; width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
-"      : text { label = \" ноль\"; }"
-"      : image_button { key = \"c_wzero\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
-"      : text { label = \" насыпь\"; }"
-"      : image_button { key = \"c_wplus\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } }"
-"    : row {"
-"      : text   { label = \"Разделитель дробной части:\"; }"
-"      : toggle { key = \"sep\"; label = \"точка вместо запятой\"; } }"
-"    : row {"
-"      : text   { label = \"Знак рабочей отметки:\"; }"
-"      : toggle { key = \"wsign\"; label = \"плюс = выемка (иначе плюс = насыпь)\"; } } }"
+"  : boxed_row { label = \" Подписи отметок в узлах \";"
+"    : button { key = \"marks\"; label = \"Настроить...\"; fixed_width = true; }"
+"    : text   { key = \"m_note\"; } }"
 "  : boxed_column { label = \" Объёмы \";"
 "    : row {"
 "      : edit_box   { key = \"h_vol\"; label = \"Высота текста, м \"; edit_width = 6; }"
@@ -802,6 +803,52 @@
 "      : text { label = \" ноль\"; }"
 "      : image_button { key = \"c_zero\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } } }"
 "  : text { key = \"err\"; }"
+"  : row {"
+"    : ok_button { }"
+"    : cancel_button { } }"
+"}"
+;; --- второе окно: «Отметки» --------------------------------------
+;; Отдельное окно, а не строка в главном: у подписей своих восемь
+;; настроек, и в общем окне они тонули. Разбивка на «Подписи» и «Цвет»
+;; повторяет окно образца — Шамиль сверяется с ним, и одинаковое
+;; расположение он находит без чтения.
+"gc_kg_m : dialog { label = \"Отметки\";"
+"  : boxed_column { label = \" Подписи \";"
+"    : row {"
+"      : column {"
+"        : text { label = \"Стиль\"; }"
+"        : text { label = \"Точность\"; }"
+"        : text { label = \"Высота, м\"; }"
+"        : text { label = \"Десятичный разделитель\"; } }"
+"      : column {"
+"        : popup_list { key = \"m_style\"; width = 20; fixed_width = true; }"
+"        : popup_list { key = \"m_prec\";  width = 20; fixed_width = true; }"
+"        : edit_box   { key = \"m_h\";     edit_width = 8; }"
+"        : popup_list { key = \"m_sep\";   width = 20; fixed_width = true; } } } }"
+"  : boxed_column { label = \" Цвет \";"
+"    : row {"
+"      : column {"
+"        : row {"
+"          : text { label = \"Чёрная (существующая) \"; }"
+"          : image_button { key = \"c_black\"; width = 6; height = 1.4; fixed_width = true; fixed_height = true; } }"
+"        : row {"
+"          : text { label = \"Красная (проектная)   \"; }"
+"          : image_button { key = \"c_red\";   width = 6; height = 1.4; fixed_width = true; fixed_height = true; } } }"
+"      : column {"
+"        : row {"
+"          : text { label = \"Рабочая  -  \"; }"
+"          : image_button { key = \"c_wminus\"; width = 6; height = 1.4; fixed_width = true; fixed_height = true; } }"
+"        : row {"
+"          : text { label = \"Рабочая  0  \"; }"
+"          : image_button { key = \"c_wzero\";  width = 6; height = 1.4; fixed_width = true; fixed_height = true; } }"
+"        : row {"
+"          : text { label = \"Рабочая  +  \"; }"
+"          : image_button { key = \"c_wplus\";  width = 6; height = 1.4; fixed_width = true; fixed_height = true; } } } } }"
+"  : toggle { key = \"m_mask\"; label = \"Скрывать задний план\"; }"
+"  : row {"
+"    : text   { label = \"Знак рабочей отметки:\"; }"
+"    : toggle { key = \"m_wsign\"; label = \"плюс = выемка (иначе плюс = насыпь)\"; } }"
+"  : text { key = \"m_err\"; width = 42; }"
 "  : row {"
 "    : ok_button { }"
 "    : cancel_button { } }"
@@ -925,7 +972,6 @@
   (setq bad nil)
   (foreach pair '(("step_x" . "Шаг вдоль X")
                   ("step_y" . "Шаг вдоль Y")
-                  ("h_mark" . "Высота текста отметок")
                   ("h_vol"  . "Высота текста объёмов"))
     (if (null bad)
       (progn
@@ -947,15 +993,11 @@
 
 ;; Забрать значения полей в настройки.
 (defun gc-kg-read-tiles ( / )
-  (foreach k '("step_x" "step_y" "angle" "h_mark" "h_vol" "min_vol")
+  (foreach k '("step_x" "step_y" "angle" "h_vol" "min_vol")
     (gc-kg-set (gc-kg-key k) (get_tile k)))
   (gc-kg-set "trim"    (get_tile "trim"))
   (gc-kg-set "use-min" (get_tile "use_min"))
-  (gc-kg-set "sep"     (get_tile "sep"))
-  (gc-kg-set "wsign"   (get_tile "wsign"))
-  (gc-kg-set "p-mark"  (atoi (get_tile "p_mark")))
   (gc-kg-set "p-vol"   (atoi (get_tile "p_vol")))
-  (gc-kg-set "style"   (nth (atoi (get_tile "t_style")) *gc-kg-styles*))
   (if *gc-kg-surf-list*
     (progn
       (gc-kg-set "s-black" (nth (atoi (get_tile "s_black")) *gc-kg-surf-list*))
@@ -1022,20 +1064,16 @@
                  "  [!] Поверхности не найдены — расчёт будет недоступен"))))) nil)
          ;; --- сетка и подписи. Каждое поле отдельно: одно испорченное
          ;; значение не уносит с собой остальные девятнадцать.
-         (foreach k '("step_x" "step_y" "angle" "h_mark" "h_vol" "min_vol"
-                      "trim" "use_min" "sep" "wsign")
+         (foreach k '("step_x" "step_y" "angle" "h_vol" "min_vol"
+                      "trim" "use_min")
            (gc-kg-try k 'set_tile (list k (gc-kg-get (gc-kg-key k)))))
-         (gc-kg-try "p_mark" 'gc-kg-fill-list
-           (list "p_mark" *gc-kg-prec* (gc-kg-get "p-mark")))
          (gc-kg-try "p_vol" 'gc-kg-fill-list
            (list "p_vol" *gc-kg-prec* (gc-kg-get "p-vol")))
-         (gc-kg-try "t_style" 'gc-kg-fill-list
-           (list "t_style" *gc-kg-styles*
-                 (gc-kg-index-of (gc-kg-get "style") *gc-kg-styles*)))
+         ;; Настройки подписей живут в своём окне, здесь - только строка
+         ;; о том, что в них сейчас выбрано.
+         (gc-kg-try "m_note" 'set_tile (list "m_note" (gc-kg-marks-note)))
          ;; --- цвета
-         (foreach k '("c_black" "c_red" "c_work"
-                      "c_wminus" "c_wzero" "c_wplus"
-                      "c_plus" "c_minus" "c_zero")
+         (foreach k '("c_plus" "c_minus" "c_zero")
            (gc-kg-try k 'gc-kg-show-color (list k (gc-kg-get (gc-kg-key k)))))
          ;; --- выбранные объекты
          (gc-kg-try "выбранные объекты" '(lambda ( / )
@@ -1045,9 +1083,7 @@
            (set_tile "lines_txt" (gc-kg-ss-txt (gc-kg-get "lines") "  нет")))
            nil)
          ;; --- действия
-         (foreach k '("c_black" "c_red" "c_work"
-                      "c_wminus" "c_wzero" "c_wplus"
-                      "c_plus" "c_minus" "c_zero")
+         (foreach k '("c_plus" "c_minus" "c_zero")
            (action_tile k (strcat "(gc-kg-pick-color \"" k "\")")))
          ;; ПОЧЕМУ перед закрытием читаем поля: тыкать по чертежу при открытом
          ;; окне DCL нельзя, окно приходится закрывать. Без этой строки всё
@@ -1058,6 +1094,7 @@
          (action_tile "pick_inner" "(progn (gc-kg-read-tiles) (done_dialog 13))")
          (action_tile "pick_lines" "(progn (gc-kg-read-tiles) (done_dialog 14))")
          (action_tile "clr_bnd"    "(progn (gc-kg-read-tiles) (done_dialog 15))")
+         (action_tile "marks"      "(progn (gc-kg-read-tiles) (done_dialog 16))")
          ;; ОК: сначала проверяем, при ошибке окно не закрываем.
          (action_tile "accept" "(if (gc-kg-validate) (progn (gc-kg-read-tiles) (done_dialog 1)))")
          (action_tile "cancel" "(done_dialog 0)")
@@ -1071,6 +1108,109 @@
          (unload_dialog id)
          (if (findfile path) (vl-file-delete path))
          res)))))
+
+;;; --------------------------------------------------------------------
+;;; ОКНО «ОТМЕТКИ»
+;;;
+;;; У подписей своих восемь настроек, и в общем окне картограммы они
+;;; тонули среди тридцати. Отдельное окно повторяет окно образца, с
+;;; которым Шамиль сверяет чертёж: «Подписи» слева-сверху, «Цвет» ниже
+;;; двумя столбцами.
+;;;
+;;; ЧЕГО В ЭТОМ ОКНЕ НАМЕРЕННО НЕТ (это не забывчивость, см. R1):
+;;;   «Использовать существующий блок» — подписи блоком, specs/009 §5Б.6,
+;;;      отложено до этапа оформления, записано в status/BACKLOG.md;
+;;;   «Аннотативный» — через entmake флаг аннотативности не ставится,
+;;;      способ не проверен, гадать нельзя (R5). Записано в status/ISSUES.md;
+;;;   «Дополн.» — у образца это цвет ЧЕТВЁРТОГО числа в узле, которого
+;;;      у нас нет. Пустая настройка хуже отсутствующей (R2).
+;;; --------------------------------------------------------------------
+
+;; Строка из списка по номеру, с защитой от испорченного номера:
+;; (nth 7 списка-из-четырёх) вернёт nil, а strcat на nil роняет окно.
+(defun gc-kg-nth-s (i lst dflt / r)
+  (if (and (numberp i) (>= i 0) (< i (length lst)))
+    (progn (setq r (nth i lst)) (if r r dflt))
+    dflt))
+
+;; Что сейчас выбрано в подписях — одной строкой для главного окна.
+(defun gc-kg-marks-note ( / )
+  (strcat "  " (gc-kg-nth-s 0 (list (gc-kg-get "style")) "Standard")
+          ", высота " (gc-kg-get "h-mark") " м"
+          ", точность " (gc-kg-nth-s (gc-kg-get "p-mark") *gc-kg-prec* "0,00")
+          ", " (if (= "1" (gc-kg-get "sep")) "точка" "запятая")
+          (if (= "1" (gc-kg-get "wsign")) ", плюс = выемка" ", плюс = насыпь")
+          (if (= "1" (gc-kg-get "mask")) ", с подложкой" "")))
+
+;; Разделитель дробной части. Порядок в списке = значение настройки:
+;; 0 запятая, 1 точка. Менять порядок нельзя — настройка хранится числом.
+(setq *gc-kg-sep-list* '("Запятая" "Точка"))
+
+;; Проверка полей окна подписей. Возвращает T, если всё разобрано.
+(defun gc-kg-validate-marks ( / v)
+  (setq v (gc-kg-num (get_tile "m_h")))
+  (cond
+    ((null v)      (set_tile "m_err" "[!] Высота: нужно число") nil)
+    ((<= v 1.0e-9) (set_tile "m_err" "[!] Высота: должна быть больше нуля") nil)
+    (T T)))
+
+;; Забрать поля окна подписей в настройки.
+(defun gc-kg-read-marks ( / )
+  (gc-kg-set "h-mark" (get_tile "m_h"))
+  (gc-kg-set "p-mark" (atoi (get_tile "m_prec")))
+  (gc-kg-set "sep"    (itoa (atoi (get_tile "m_sep"))))
+  (gc-kg-set "mask"   (get_tile "m_mask"))
+  (gc-kg-set "wsign"  (get_tile "m_wsign"))
+  (if *gc-kg-styles*
+    (gc-kg-set "style" (gc-kg-nth-s (atoi (get_tile "m_style"))
+                                    *gc-kg-styles* "Standard")))
+  T)
+
+;; Открыть окно подписей. Возвращает T, если нажали ОК.
+(defun gc-kg-dialog-marks ( / path id res)
+  (gc-kg-defaults)
+  (setq *gc-kg-styles* (gc-kg-styles))
+  (setq path (gc-kg-dcl-file))
+  (if (null path)
+    nil
+    (progn
+      (setq id (load_dialog path))
+      (cond
+        ((or (null id) (not (numberp id)) (< id 0))
+         (princ "\n[ОШИБКА] Не удалось загрузить диалог подписей.")
+         nil)
+        ((not (new_dialog *gc-kg-dlg-m* id))
+         (princ "\n[ОШИБКА] Окно «Отметки» не открылось.")
+         (unload_dialog id)
+         nil)
+        (T
+         (setq *gc-kg-dlg-err* nil)
+         (gc-kg-try "m_h" 'set_tile (list "m_h" (gc-kg-get "h-mark")))
+         (gc-kg-try "m_mask"  'set_tile (list "m_mask"  (gc-kg-get "mask")))
+         (gc-kg-try "m_wsign" 'set_tile (list "m_wsign" (gc-kg-get "wsign")))
+         (gc-kg-try "m_prec" 'gc-kg-fill-list
+           (list "m_prec" *gc-kg-prec* (gc-kg-get "p-mark")))
+         (gc-kg-try "m_sep" 'gc-kg-fill-list
+           (list "m_sep" *gc-kg-sep-list* (atoi (gc-kg-get "sep"))))
+         (gc-kg-try "m_style" 'gc-kg-fill-list
+           (list "m_style" *gc-kg-styles*
+                 (gc-kg-index-of (gc-kg-get "style") *gc-kg-styles*)))
+         (foreach k '("c_black" "c_red" "c_wminus" "c_wzero" "c_wplus")
+           (gc-kg-try k 'gc-kg-show-color (list k (gc-kg-get (gc-kg-key k)))))
+         (foreach k '("c_black" "c_red" "c_wminus" "c_wzero" "c_wplus")
+           (action_tile k (strcat "(gc-kg-pick-color \"" k "\")")))
+         (action_tile "accept"
+           "(if (gc-kg-validate-marks) (progn (gc-kg-read-marks) (done_dialog 1)))")
+         (action_tile "cancel" "(done_dialog 0)")
+         (if *gc-kg-dlg-err*
+           (progn
+             (princ "\n[!] Часть полей окна подписей не заполнилась:")
+             (foreach e (reverse *gc-kg-dlg-err*) (princ (strcat "\n    " e)))))
+         (setq res (start_dialog))
+         (unload_dialog id)
+         (if (findfile path) (vl-file-delete path))
+         (= res 1))))))
+
 
 ;; Указание объектов идёт ВНЕ окна: DCL не умеет тыкать по чертежу, пока
 ;; окно открыто. Поэтому окно закрывается с кодом, мы делаем выбор
@@ -1098,6 +1238,10 @@
       ((= res 15)
        (gc-kg-set "outer" nil) (gc-kg-set "inner" nil) (gc-kg-set "lines" nil)
        (princ "\n[i] Границы сброшены. Область теперь задают только поверхности."))
+      ;; Окно подписей открывается ПОВЕРХ закрытого главного, а не внутри
+      ;; него: вложенные окна DCL ведут себя по-разному в разных сборках,
+      ;; а закрыть-открыть здесь уже проверено на кнопках «Указать».
+      ((= res 16) (gc-kg-dialog-marks))
       (T (setq done T))))
   ok)
 
@@ -1136,7 +1280,8 @@
                  ", разделитель "
                  (if (= "1" (gc-kg-get "sep")) "точка" "запятая")
                  (if (= "1" (gc-kg-get "wsign"))
-                   ", плюс = ВЫЕМКА" ", плюс = насыпь")))
+                   ", плюс = ВЫЕМКА" ", плюс = насыпь")
+                 (if (= "1" (gc-kg-get "mask")) ", с подложкой" "")))
   (princ (strcat "\n  объёмы              : высота " (gc-kg-get "h-vol") " м"
                  ", точность " (nth (gc-kg-get "p-vol") *gc-kg-prec*)))
   (if (= "1" (gc-kg-get "use-min"))
@@ -1181,6 +1326,45 @@
                 (cons 72 (cond ((= just 1) 1) ((= just 2) 2) (T 0)))
                 '(73 . 0)))
   (entmake d))
+
+;; Сколько раз не удалось включить подложку. Считаем, а не молчим и не
+;; кричим на каждый текст: узлов сотни, и сообщение нужно ОДНО, зато
+;; честное (R3 - ловить ошибку и ничего с ней не делать нельзя).
+(setq *gc-kg-mask-fail* 0)
+
+;; Текст с подложкой. MTEXT, а не TEXT: непрозрачный фон есть только
+;; у MTEXT. Нужен он потому, что узлы стоят НА линиях сетки, и число
+;; ложится прямо на линию.
+;;
+;; Точка привязки: у TEXT это база строки (группа 72/73), у MTEXT -
+;; группа 71. Низ-влево 7, низ-вправо 9 - то же место, что 72=0/73=0
+;; и 72=2/73=0 у TEXT.
+;;
+;; Фон включаем свойством, а не группой DXF: номера групп фона
+;; (90/63/45) в разных версиях писались по-разному, а свойство
+;; BackgroundFill одно и то же начиная с 2004.
+(defun gc-kg-mtext (p txt h col lay stl just / d o r)
+  (setq d (list '(0 . "MTEXT") '(100 . "AcDbEntity")
+                (cons 8 lay) (cons 62 col)
+                '(100 . "AcDbMText")
+                (cons 10 p) (cons 40 h) (cons 41 0.0)
+                (cons 71 (if (= just 2) 9 7)) '(72 . 5)
+                (cons 1 txt)
+                (cons 7 (if stl stl "Standard"))))
+  (if (null (entmake d))
+    nil
+    (progn
+      (setq o (vlax-ename->vla-object (entlast)))
+      (setq r (vl-catch-all-apply 'vla-put-backgroundfill (list o :vlax-true)))
+      (if (vl-catch-all-error-p r)
+        (setq *gc-kg-mask-fail* (1+ *gc-kg-mask-fail*)))
+      T)))
+
+;; Один вход для обоих способов: подложка включена или нет.
+(defun gc-kg-put (p txt h col lay stl just mask / )
+  (if (= mask "1")
+    (gc-kg-mtext p txt h col lay stl just)
+    (gc-kg-text  p txt h col lay stl just)))
 
 ;; Точки подписи: узлы сетки И вершины краевых контуров.
 ;;
@@ -1241,7 +1425,7 @@
 ;; 13,23 - 8,00 = +5,23: плюс означает выемку, землю срезают.
 ;; Все три числа одной высоты - так в образце.
 (defun gc-kg-label ( / cells par base ang sx sy pts lay stl h prec sep
-                       wsg p w zb zr hw col cnt skip cls hx)
+                       wsg msk p w zb zr hw col cnt skip cls hx)
   (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
   (cond
     ((or (null cells) (null par))
@@ -1259,13 +1443,14 @@
            h    (gc-kg-num (gc-kg-get "h-mark"))
            prec (gc-kg-get "p-mark")
            sep  (gc-kg-get "sep")
-           wsg  (gc-kg-get "wsign"))
+           wsg  (gc-kg-get "wsign")
+           msk  (gc-kg-get "mask"))
      (if (or (null h) (<= h 0.0)) (setq h 0.5))
      (if (not (numberp prec)) (setq prec 2))
      (setq hx h)                   ; все три числа одной высоты
      (princ (strcat "\n[i] Точек для подписи: " (itoa (length pts))
                     ". Считаю отметки..."))
-     (setq cnt 0 skip 0)
+     (setq cnt 0 skip 0 *gc-kg-mask-fail* 0)
      (setvar "CMDECHO" 0)
      (command "_.UNDO" "_BEGIN")
      (foreach w pts
@@ -1282,16 +1467,16 @@
                        ((= cls "CUT")  (gc-kg-get "c-wminus"))
                        (T              (gc-kg-get "c-wplus"))))
            ;; рабочая - слева от точки, прижата к ней правым краем
-           (gc-kg-text (list (- (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
-                       (strcat (if (= cls "FILL") "+" "") (gc-kg-fmt-p hw prec sep))
-                       h col lay stl 2)
+           (gc-kg-put (list (- (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
+                      (strcat (if (= cls "FILL") "+" "") (gc-kg-fmt-p hw prec sep))
+                      h col lay stl 2 msk)
            ;; справа сверху СУЩЕСТВУЮЩАЯ, справа снизу ПРОЕКТНАЯ
-           (gc-kg-text (list (+ (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
-                       (gc-kg-fmt-p zb prec sep) hx
-                       (gc-kg-get "c-black") lay stl 0)
-           (gc-kg-text (list (+ (car p) (* 0.15 h)) (- (cadr p) (* 1.05 h)))
-                       (gc-kg-fmt-p zr prec sep) hx
-                       (gc-kg-get "c-red") lay stl 0)
+           (gc-kg-put (list (+ (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
+                      (gc-kg-fmt-p zb prec sep) hx
+                      (gc-kg-get "c-black") lay stl 0 msk)
+           (gc-kg-put (list (+ (car p) (* 0.15 h)) (- (cadr p) (* 1.05 h)))
+                      (gc-kg-fmt-p zr prec sep) hx
+                      (gc-kg-get "c-red") lay stl 0 msk)
            (setq cnt (1+ cnt)))
          (setq skip (1+ skip))))
      (command "_.UNDO" "_END")
@@ -1305,6 +1490,12 @@
                     ", точность " (itoa prec) " знака"))
      (princ (strcat "\n  разделитель      : "
                     (if (= sep "1") "точка" "запятая")))
+     (princ (strcat "\n  задний план      : "
+                    (if (= msk "1") "закрыт подложкой (MTEXT)"
+                                    "виден (обычный текст)")))
+     (if (> *gc-kg-mask-fail* 0)
+       (princ (strcat "\n  [!] подложка не включилась у " (itoa *gc-kg-mask-fail*)
+                      " подписей - текст стоит, фон прозрачный")))
      (princ (strcat "\n  знак рабочей     : "
                     (if (= wsg "1")
                       "плюс = ВЫЕМКА (существующая минус проектная)"
@@ -2674,7 +2865,11 @@
     (if (null k) (setq k dflt))
     (cond
       ((= k "Сетка")    (gc-kg-build) (setq dflt "Отметки"))
-      ((= k "Отметки")  (gc-kg-label) (setq dflt "Выход"))
+      ;; Сначала окно, потом подписи: настройки подписи спрашиваются
+      ;; ровно там, где ими собираются пользоваться.
+      ((= k "Отметки")  (if (gc-kg-dialog-marks) (gc-kg-label)
+                          (princ "\n[i] Отмена, ничего не подписано."))
+                        (setq dflt "Выход"))
       ((= k "Проверка") (gc-kg-probe) (setq dflt "Выход"))
       (T (setq done T))))
   (princ))
@@ -2755,6 +2950,8 @@
   (princ "\nлиния нулевых работ и ведомость.")
   (princ "\n")
   (princ "\n[i] ЭТАП 3 ИЗ 5: сетка квадратов и подписи отметок в узлах.")
+  (princ "\n    Настройки подписи — в своём окне: пункт «Отметки» или")
+  (princ "\n    кнопка «Настроить...» в главном окне.")
   (princ "\n    Выберите в окне две поверхности и нажмите ОК — сетка ляжет")
   (princ "\n    на их общую область сама. Границу выбирать не нужно: рабочая")
   (princ "\n    отметка есть только там, где отметку дают обе поверхности.")
@@ -2815,6 +3012,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v29 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
+(princ "\n[gc] kg.lsp v30 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
 (princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
 (princ)
