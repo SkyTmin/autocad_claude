@@ -1,8 +1,29 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v27)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v29)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v29: PODPISI PRIVEDENY K OBRAZCU.
+;;;      Shamil prislal zoom obrazca, i po nemu vsyo soshlos:
+;;;        +5,23  13,23     sleva rabochaya, sprava sverhu SUSHCHESTVUYUSHCHAYA
+;;;                8,00     sprava snizu PROEKTNAYA
+;;;      13,23 - 8,00 = +5,23: plyus oznachaet VYEMKU.
+;;;      Cveta: sushchestvuyushchaya sinyaya, proektnaya zelenaya,
+;;;      rabochaya purpurnaya. Vse tri odnoy vysoty.
+;;;      U menya bylo naoborot i po raspolozheniyu, i po znaku.
+;;;
+;;; v28: PODPISI V KRAEVYH KUSOCHKAH, RASPOLOZHENIE I ZNAK.
+;;;      1. Podpisyvalis tolko uzly setki, popavshie vnutr oblasti.
+;;;         U kraevogo kvadrata ugly lezhat SNARUZHI granicy, i "malenkie
+;;;         kusochki" ostavalis pustymi -- a v nih tozhe schitaetsya obem.
+;;;         Teper beryom eshche i vershiny obrezannogo kontura: eto tochki,
+;;;         gde granica peresekaet linii setki.
+;;;      2. Raspolozhenie: rabochaya SLEVA i krupnee, krasnaya sprava sverhu,
+;;;         chernaya sprava snizu. Rabochuyu chitayut pervoy.
+;;;      3. Znak rabochey stal tumblerom: plyus = nasyp libo plyus = vyemka.
+;;;         Zerkalnyy znak vyglyadit pravdopodobno i molcha portit vedomost,
+;;;         poetomu vybor yavnyy i napechatan v otchete.
 ;;;
 ;;; v27: ETAP 3 -- PODPISI OTMETOK V UZLAH.
 ;;;      V kazhdom uzle setki tri chisla: krasnaya sverhu, chernaya snizu,
@@ -341,16 +362,29 @@
     (cons "p-vol"    1)           ; знаков после запятой у объёмов
     (cons "min-vol"  "0")         ; порог: объём ниже не подписывается, м3
     (cons "use-min"  "0")         ; включён ли порог
-    (cons "c-black"  8)           ; цвет чёрной (существующей) отметки
-    (cons "c-red"    1)           ; цвет красной (проектной) отметки
+    ;; Цвета по образцу, к которому Шамиль привык: существующая синяя,
+    ;; проектная зелёная, рабочая пурпурная. Развести цвета рабочей
+    ;; по знаку можно в окне - настройки для этого есть.
+    (cons "c-black"  5)           ; существующая (чёрная поверхность), синий
+    (cons "c-red"    3)           ; проектная (красная поверхность), зелёный
     (cons "c-work"   3)           ; цвет рабочей отметки (общий, запасной)
     ;; У рабочей отметки ТРИ цвета по знаку: знак виден цветом, без чтения
     ;; самого числа (specs/009 §5Б.5). Это не украшение - на картограмме
     ;; узлов сотни, и глазами их не перебрать.
-    (cons "c-wminus" 1)           ; рабочая: выемка (-)
-    (cons "c-wzero"  7)           ; рабочая: ноль
-    (cons "c-wplus"  3)           ; рабочая: насыпь (+)
+    (cons "c-wminus" 6)           ; рабочая: один знак
+    (cons "c-wzero"  6)           ; рабочая: ноль
+    (cons "c-wplus"  6)           ; рабочая: другой знак
     (cons "sep"      "0")         ; разделитель: 0 запятая, 1 точка
+    ;; Знак рабочей отметки. 0: плюс = насыпь (проект выше земли),
+    ;; как в docs/formulas.md. 1: плюс = выемка, обратная конвенция.
+    ;; Тумблер, а не жёстко: контора конторе рознь, а зеркальный знак
+    ;; выглядит правдоподобно и молча портит всю ведомость.
+    ;; По умолчанию ПЛЮС = ВЫЕМКА: так в образце, по которому Шамиль
+    ;; сверяется. Рабочая считается как существующая минус проектная:
+    ;; земля 13,23, проект 8,00 -> +5,23, срезать пять с лишним метров.
+    ;; В docs/formulas.md записана обратная конвенция - обе встречаются,
+    ;; поэтому это тумблер, а не жёстко зашитое правило.
+    (cons "wsign"    "1")
     (cons "style"    "Standard")  ; стиль текста подписей
     (cons "c-plus"   5)           ; цвет насыпи  (+)
     (cons "c-minus"  1)           ; цвет выемки  (-)
@@ -731,9 +765,9 @@
 "      : popup_list { key = \"p_mark\";  label = \" Точность \"; width = 7; fixed_width = true; } }"
 "    : row {"
 "      : text { label = \"Цвет:\"; }"
-"      : text { label = \" чёрной\"; }"
+"      : text { label = \" существ.\"; }"
 "      : image_button { key = \"c_black\"; width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
-"      : text { label = \" красной\"; }"
+"      : text { label = \" проектной\"; }"
 "      : image_button { key = \"c_red\";   width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
 "      : text { label = \" рабочей\"; }"
 "      : image_button { key = \"c_work\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } }"
@@ -747,7 +781,10 @@
 "      : image_button { key = \"c_wplus\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } }"
 "    : row {"
 "      : text   { label = \"Разделитель дробной части:\"; }"
-"      : toggle { key = \"sep\"; label = \"точка вместо запятой\"; } } }"
+"      : toggle { key = \"sep\"; label = \"точка вместо запятой\"; } }"
+"    : row {"
+"      : text   { label = \"Знак рабочей отметки:\"; }"
+"      : toggle { key = \"wsign\"; label = \"плюс = выемка (иначе плюс = насыпь)\"; } } }"
 "  : boxed_column { label = \" Объёмы \";"
 "    : row {"
 "      : edit_box   { key = \"h_vol\"; label = \"Высота текста, м \"; edit_width = 6; }"
@@ -915,6 +952,7 @@
   (gc-kg-set "trim"    (get_tile "trim"))
   (gc-kg-set "use-min" (get_tile "use_min"))
   (gc-kg-set "sep"     (get_tile "sep"))
+  (gc-kg-set "wsign"   (get_tile "wsign"))
   (gc-kg-set "p-mark"  (atoi (get_tile "p_mark")))
   (gc-kg-set "p-vol"   (atoi (get_tile "p_vol")))
   (gc-kg-set "style"   (nth (atoi (get_tile "t_style")) *gc-kg-styles*))
@@ -985,7 +1023,7 @@
          ;; --- сетка и подписи. Каждое поле отдельно: одно испорченное
          ;; значение не уносит с собой остальные девятнадцать.
          (foreach k '("step_x" "step_y" "angle" "h_mark" "h_vol" "min_vol"
-                      "trim" "use_min" "sep")
+                      "trim" "use_min" "sep" "wsign")
            (gc-kg-try k 'set_tile (list k (gc-kg-get (gc-kg-key k)))))
          (gc-kg-try "p_mark" 'gc-kg-fill-list
            (list "p_mark" *gc-kg-prec* (gc-kg-get "p-mark")))
@@ -1096,7 +1134,9 @@
                  ", высота " (gc-kg-get "h-mark") " м"
                  ", точность " (nth (gc-kg-get "p-mark") *gc-kg-prec*)
                  ", разделитель "
-                 (if (= "1" (gc-kg-get "sep")) "точка" "запятая")))
+                 (if (= "1" (gc-kg-get "sep")) "точка" "запятая")
+                 (if (= "1" (gc-kg-get "wsign"))
+                   ", плюс = ВЫЕМКА" ", плюс = насыпь")))
   (princ (strcat "\n  объёмы              : высота " (gc-kg-get "h-vol") " м"
                  ", точность " (nth (gc-kg-get "p-vol") *gc-kg-prec*)))
   (if (= "1" (gc-kg-get "use-min"))
@@ -1127,7 +1167,7 @@
     (setq i (1+ i)))
   out)
 
-;; Текст в точке. Выравнивание: 0 влево, 1 по центру.
+;; Текст в точке. Выравнивание: 0 влево, 1 по центру, 2 вправо.
 ;; Группа 72/73 и точка 11 - выравнивание идёт по ней, а не по 10
 ;; (docs/pitfalls.md -> П2: со стилем фиксированной высоты и аннотативным
 ;; текст ведёт себя иначе, поэтому высоту задаём явно).
@@ -1138,9 +1178,42 @@
                 (cons 10 p) (cons 11 p)
                 (cons 40 h) (cons 1 txt)
                 (cons 7 (if stl stl "Standard"))
-                (cons 72 (if (= just 1) 1 0))
+                (cons 72 (cond ((= just 1) 1) ((= just 2) 2) (T 0)))
                 '(73 . 0)))
   (entmake d))
+
+;; Точки подписи: узлы сетки И вершины краевых контуров.
+;;
+;; Одних узлов сетки мало. У краевого квадрата углы лежат СНАРУЖИ границы,
+;; отметок там нет, и "маленькие кусочки" оставались неподписанными -
+;; а в них тоже считается объём. Поэтому берём ещё и вершины обрезанного
+;; контура: это те самые точки, где граница пересекает линии сетки.
+;;
+;; Возвращает список точек в системе сетки, без повторов.
+(defun gc-kg-label-pts (cells sx sy / out key seen c i j ar full p k)
+  (setq out nil seen nil)
+  (foreach c cells
+    (setq i (car c) j (cadr c) ar (nth 2 c))
+    (setq full (> ar (- (* sx sy) (* 1.0e-6 sx sy))))
+    ;; углы квадрата - для целых квадратов их достаточно
+    (foreach nd (list (cons i j) (cons (1+ i) j)
+                      (cons (1+ i) (1+ j)) (cons i (1+ j)))
+      (setq p (list (* (car nd) sx) (* (cdr nd) sy)))
+      (setq key (strcat (rtos (car p) 2 4) "|" (rtos (cadr p) 2 4)))
+      (if (not (member key seen))
+        (progn (setq seen (cons key seen)) (setq out (cons p out)))))
+    ;; у краевого квадрата - ещё и вершины его обрезанного контура
+    (if (not full)
+      (foreach lp (cons (nth 4 c) (nth 5 c))
+        (if (listp lp)
+          (foreach p lp
+            (if (and (listp p) (numberp (car p)))
+              (progn
+                (setq key (strcat (rtos (car p) 2 4) "|" (rtos (cadr p) 2 4)))
+                (if (not (member key seen))
+                  (progn (setq seen (cons key seen))
+                         (setq out (cons p out)))))))))))
+  (reverse out))
 
 ;; Уникальные узлы построенной сетки: список пар (i . j).
 ;; Ячейка (i j) владеет четырьмя узлами, соседние ячейки их делят -
@@ -1159,8 +1232,16 @@
   (reverse out))
 
 ;; Подписать отметки в узлах построенной сетки.
-(defun gc-kg-label ( / cells par base ang sx sy nodes lay stl h prec sep
-                       n p w zb zr hw col cnt skip cls)
+;;
+;; РАСПОЛОЖЕНИЕ по образцу:
+;;
+;;     +5,23  13,23      <- слева рабочая, справа сверху СУЩЕСТВУЮЩАЯ
+;;             8,00      <- справа снизу ПРОЕКТНАЯ
+;;
+;; 13,23 - 8,00 = +5,23: плюс означает выемку, землю срезают.
+;; Все три числа одной высоты - так в образце.
+(defun gc-kg-label ( / cells par base ang sx sy pts lay stl h prec sep
+                       wsg p w zb zr hw col cnt skip cls hx)
   (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
   (cond
     ((or (null cells) (null par))
@@ -1172,45 +1253,50 @@
     (T
      (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
      (gc-kg-set-frame base ang)
-     (setq nodes (gc-kg-nodes cells))
+     (setq pts (gc-kg-label-pts cells sx sy))
      (setq lay  (gc-kg-layer "GC-Картограмма-Отметки" 7)
            stl  (gc-kg-get "style")
            h    (gc-kg-num (gc-kg-get "h-mark"))
            prec (gc-kg-get "p-mark")
-           sep  (gc-kg-get "sep"))
+           sep  (gc-kg-get "sep")
+           wsg  (gc-kg-get "wsign"))
      (if (or (null h) (<= h 0.0)) (setq h 0.5))
      (if (not (numberp prec)) (setq prec 2))
-     (princ (strcat "\n[i] Узлов сетки: " (itoa (length nodes)) ". Считаю отметки..."))
+     (setq hx h)                   ; все три числа одной высоты
+     (princ (strcat "\n[i] Точек для подписи: " (itoa (length pts))
+                    ". Считаю отметки..."))
      (setq cnt 0 skip 0)
      (setvar "CMDECHO" 0)
      (command "_.UNDO" "_BEGIN")
-     (foreach n nodes
-       (setq p (gc-kg-to-wcs (list (* (car n) sx) (* (cdr n) sy))))
+     (foreach w pts
+       (setq p (gc-kg-to-wcs w))
        (setq zb (gc-kg-elev *gc-kg-sb* (car p) (cadr p)))
        (setq zr (gc-kg-elev *gc-kg-sr* (car p) (cadr p)))
        (if (and zb zr)
          (progn
-           (setq hw (- zr zb))
+           ;; Знак по выбранной конвенции.
+           (setq hw (if (= wsg "1") (- zb zr) (- zr zb)))
            (setq cls (gc-kg-work-class hw))
            (setq col (cond
                        ((= cls "ZERO") (gc-kg-get "c-wzero"))
                        ((= cls "CUT")  (gc-kg-get "c-wminus"))
                        (T              (gc-kg-get "c-wplus"))))
-           ;; красная сверху, чёрная снизу, рабочая справа
-           (gc-kg-text (list (car p) (+ (cadr p) (* 0.35 h)))
-                       (gc-kg-fmt-p zr prec sep) h
-                       (gc-kg-get "c-red") lay stl 1)
-           (gc-kg-text (list (car p) (- (cadr p) (* 1.35 h)))
-                       (gc-kg-fmt-p zb prec sep) h
-                       (gc-kg-get "c-black") lay stl 1)
-           (gc-kg-text (list (+ (car p) (* 0.6 h)) (- (cadr p) (* 0.5 h)))
-                       (strcat (if (= cls "FILL") "+" "") (gc-kg-fmt-p hw prec sep)) h
-                       col lay stl 0)
+           ;; рабочая - слева от точки, прижата к ней правым краем
+           (gc-kg-text (list (- (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
+                       (strcat (if (= cls "FILL") "+" "") (gc-kg-fmt-p hw prec sep))
+                       h col lay stl 2)
+           ;; справа сверху СУЩЕСТВУЮЩАЯ, справа снизу ПРОЕКТНАЯ
+           (gc-kg-text (list (+ (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
+                       (gc-kg-fmt-p zb prec sep) hx
+                       (gc-kg-get "c-black") lay stl 0)
+           (gc-kg-text (list (+ (car p) (* 0.15 h)) (- (cadr p) (* 1.05 h)))
+                       (gc-kg-fmt-p zr prec sep) hx
+                       (gc-kg-get "c-red") lay stl 0)
            (setq cnt (1+ cnt)))
          (setq skip (1+ skip))))
      (command "_.UNDO" "_END")
-     (princ (strcat "\n\n--- ОТМЕТКИ ПОДПИСАНЫ ---"))
-     (princ (strcat "\n  узлов подписано  : " (itoa cnt)))
+     (princ "\n\n--- ОТМЕТКИ ПОДПИСАНЫ ---")
+     (princ (strcat "\n  точек подписано  : " (itoa cnt)))
      (if (> skip 0)
        (princ (strcat "\n  пропущено        : " (itoa skip)
                       "  (одна из поверхностей не дала отметку)")))
@@ -1219,7 +1305,12 @@
                     ", точность " (itoa prec) " знака"))
      (princ (strcat "\n  разделитель      : "
                     (if (= sep "1") "точка" "запятая")))
-     (princ "\n  цвет рабочей     : по знаку — выемка, ноль, насыпь")
+     (princ (strcat "\n  знак рабочей     : "
+                    (if (= wsg "1")
+                      "плюс = ВЫЕМКА (существующая минус проектная)"
+                      "плюс = насыпь (проектная минус существующая)")))
+     (princ "\n  расположение     : слева рабочая, справа сверху существующая,")
+     (princ "\n                     справа снизу проектная")
      (princ "\n[i] Один Ctrl+Z убирает все подписи.")
      T)))
 
@@ -2724,6 +2815,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v27 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
+(princ "\n[gc] kg.lsp v29 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
 (princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
 (princ)
