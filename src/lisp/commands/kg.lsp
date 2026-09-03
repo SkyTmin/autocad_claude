@@ -1,8 +1,23 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v12)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v13)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v13: TOCHNAYA GRANICA IZ MODULYA .NET.
+;;;      Modul zagruzhen -- granica poverhnosti beretsya u nee samoy,
+;;;      i setka rezhetsya TOCHNO: kontur sovpadaet s liniey poverhnosti
+;;;      odin v odin. Opros otmetok pri etom ne nuzhen vovse -- proverka
+;;;      "tochka vnutri" stanovitsya chisto vychislitelnoy, bez obrashcheniy
+;;;      k CAD, i schet uskoryaetsya na poryadok.
+;;;
+;;;      Oblast -- tot iz konturov, kotoryy lezhit VNUTRI vseh ostalnyh:
+;;;      granica chernoy, granica krasnoy, vybrannaya naruzhnaya granica.
+;;;      Takogo net -- znachit oni peresekayutsya krayami, odnim
+;;;      mnogougolnikom oblast ne opisat: uhodim na priblizhennyy put
+;;;      i govorim pochemu.
+;;;
+;;;      Modul neobyazatelen (ADR-0008): bez nego vse rabotaet kak v v12.
 ;;;
 ;;; v12: KRAEVOY KVADRAT TEPER POVTORYAET GRANICU.
 ;;;      Bylo: ploshchad schitalas drobleniem 4 x 4, a LINIYA risovalas odnoy
@@ -1031,6 +1046,46 @@
     (setq i (1+ i)))
   res)
 
+;; С нужной ли стороны прямой лежит точка. axis: 0 = X, 1 = Y.
+(defun gc-kg-inside (p axis val keep / c)
+  (setq c (if (= axis 0) (car p) (cadr p)))
+  (if keep (>= c val) (<= c val)))
+
+;; Точка пересечения отрезка a-b с прямой axis = val.
+(defun gc-kg-isect (a b axis val / ca cb k)
+  (setq ca (if (= axis 0) (car a) (cadr a))
+        cb (if (= axis 0) (car b) (cadr b)))
+  (if (equal ca cb 1.0e-12)
+    b
+    (progn
+      (setq k (/ (- val ca) (- cb ca)))
+      (list (+ (car a)  (* k (- (car b)  (car a))))
+            (+ (cadr a) (* k (- (cadr b) (cadr a))))))))
+
+;; Отсечение многоугольника одной полуплоскостью.
+(defun gc-kg-clip-half (pts axis val keep / out a b ia ib)
+  (setq out nil)
+  (if pts
+    (progn
+      (setq a (last pts))
+      (setq ia (gc-kg-inside a axis val keep))
+      (foreach b pts
+        (setq ib (gc-kg-inside b axis val keep))
+        (cond
+          ((and ia ib) (setq out (cons b out)))
+          (ia          (setq out (cons (gc-kg-isect a b axis val) out)))
+          (ib          (setq out (cons b (cons (gc-kg-isect a b axis val) out)))))
+        (setq a b ia ib))))
+  (reverse out))
+
+;; Отсечение прямоугольником. Четыре полуплоскости подряд.
+(defun gc-kg-clip-rect (pts x0 y0 x1 y1)
+  (setq pts (gc-kg-clip-half pts 0 x0 T))
+  (setq pts (gc-kg-clip-half pts 0 x1 nil))
+  (setq pts (gc-kg-clip-half pts 1 y0 T))
+  (setq pts (gc-kg-clip-half pts 1 y1 nil))
+  pts)
+
 ;; Выбросить совпадающие подряд точки. Отсечение их плодит, а полилиния
 ;; с нулевыми рёбрами потом мешает при штриховке.
 (defun gc-kg-dedup (pts / out prev)
@@ -1153,6 +1208,81 @@
         (if (and pts (> (length pts) 2)) (setq out (cons pts out)))
         (setq i (1+ i)))))
   (reverse out))
+
+;;; --------------------------------------------------------------------
+;;; Точная граница из модуля .NET
+;;;
+;;; Опрос отметок даёт КРАЙ ПРИБЛИЖЁННО: ломаную по своим точкам, а не
+;;; настоящее ребро триангуляции. Модуль .NET отдаёт границу поверхности
+;;; как есть, и тогда сетка режется точно (ADR-0008).
+;;;
+;;; Модуль необязателен. Нет его - идём прежним путём и говорим об этом.
+;;; --------------------------------------------------------------------
+
+(defun gc-kg-net-p ( / )
+  (if (member "gc_surface_border" (atoms-family 1)) T nil))
+
+;; Контуры границы поверхности: список списков 2D-точек, либо nil.
+;; Первый контур наружный, остальные - внутренние вырезы.
+(defun gc-kg-net-border (name / r)
+  (if (and (gc-kg-net-p) name)
+    (progn
+      (setq r (vl-catch-all-apply 'gc_surface_border (list name)))
+      (if (or (vl-catch-all-error-p r) (null r) (not (listp r)))
+        nil
+        (mapcar '(lambda (lp) (mapcar 'gc-kg-2d lp)) r)))
+    nil))
+
+;; Лежит ли контур a целиком внутри контура b.
+(defun gc-kg-poly-in-poly (a b / ok)
+  (setq ok T)
+  (foreach p a (if (and ok (not (gc-kg-in-poly p b))) (setq ok nil)))
+  ok)
+
+;; Из нескольких контуров выбрать тот, что лежит внутри всех остальных:
+;; он и задаёт общую область.
+;;
+;; ОХРАННОЕ УСЛОВИЕ (docs/pitfalls.md -> П17). Если такого контура нет,
+;; значит контуры пересекаются краями, и одним многоугольником область
+;; не описать. Честно возвращаем nil и уходим на приближённый путь,
+;; а не выдаём похожий на правду, но неверный контур.
+(defun gc-kg-pick-inner (lst / res)
+  (foreach a lst
+    (if (null res)
+      (if (vl-every '(lambda (b) (or (eq a b) (gc-kg-poly-in-poly a b))) lst)
+        (setq res a))))
+  res)
+
+;; Собрать точную область: наружный контур и вырезы.
+;; Возвращает T, если получилось.
+(defun gc-kg-load-exact (sbn srn / bl rl outs)
+  (setq *gc-kg-exact* nil *gc-kg-exact-holes* nil *gc-kg-exact-why* nil)
+  (cond
+    ((not (gc-kg-net-p))
+     (setq *gc-kg-exact-why* "модуль .NET не загружен")
+     nil)
+    (T
+     (setq bl (gc-kg-net-border sbn)
+           rl (gc-kg-net-border srn))
+     (cond
+       ((or (null bl) (null rl))
+        (setq *gc-kg-exact-why* "модуль не отдал границу одной из поверхностей")
+        nil)
+       (T
+        (setq outs (list (car bl) (car rl)))
+        (if *gc-kg-outer* (setq outs (cons *gc-kg-outer* outs)))
+        (setq *gc-kg-exact* (gc-kg-pick-inner outs))
+        (cond
+          ((null *gc-kg-exact*)
+           (setq *gc-kg-exact-why*
+             "границы пересекаются краями - одним контуром область не описать")
+           nil)
+          (T
+           ;; Вырезы обеих поверхностей и выбранные внутренние границы
+           ;; действуют вместе: дырка есть дырка, чья бы она ни была.
+           (setq *gc-kg-exact-holes*
+             (append (cdr bl) (cdr rl) *gc-kg-holes*))
+           T))))))) 
 
 ;;; --------------------------------------------------------------------
 ;;; Рисование
@@ -1289,14 +1419,24 @@
 ;; и каждый их ответ стоит обращения к CAD. Проверка контура своя, дешёвая.
 (defun gc-kg-node-ok (p / w x y ok)
   (setq w (gc-kg-to-wcs p) x (car w) y (cadr w))
-  (setq ok (and (gc-kg-elev *gc-kg-sb* x y)
-                (gc-kg-elev *gc-kg-sr* x y)))
+  ;; Есть точный контур - проверка чисто вычислительная, к CAD не ходим.
+  ;; Это и точнее, и быстрее на порядок.
+  (if *gc-kg-exact*
+    (progn
+      (setq ok (gc-kg-in-poly w *gc-kg-exact*))
+      (if ok
+        (foreach h *gc-kg-exact-holes*
+          (if (and ok (gc-kg-in-poly w h)) (setq ok nil))))
+      (setq w nil))
+    (setq ok (and (gc-kg-elev *gc-kg-sb* x y)
+                  (gc-kg-elev *gc-kg-sr* x y))))
+  (if (null w) (if ok T nil) (progn
   (if (and ok *gc-kg-outer*)
     (setq ok (gc-kg-in-poly w *gc-kg-outer*)))
   (if ok
     (foreach h *gc-kg-holes*
       (if (and ok (gc-kg-in-poly w h)) (setq ok nil))))
-  (if ok T nil))
+  (if ok T nil))))
 
 ;; Допуск на поиск края, м. Мельче не нужно: сама съёмка грубее.
 (setq *gc-kg-edge-tol* 0.05)
@@ -1587,6 +1727,33 @@
     (setq j (1+ j)))
   (reverse cells))
 
+;; Квадраты по выбранной полилинии.
+(defun gc-kg-cells-poly (gp gh i0 j0 i1 j1 sx sy
+                         / i j cx cy cx1 cy1 poly ar hr hps ce cells eps)
+  (setq cells nil eps (* 1.0e-6 sx sy))
+  (setq j j0)
+  (while (< j j1)
+    (setq i i0)
+    (while (< i i1)
+      (setq cx (* i sx) cy (* j sy) cx1 (+ cx sx) cy1 (+ cy sy))
+      (setq poly (gc-kg-clip-rect gp cx cy cx1 cy1))
+      (setq ar (gc-kg-area poly) hr 0.0 hps nil)
+      (foreach h gh
+        (setq ce (gc-kg-clip-rect h cx cy cx1 cy1))
+        (if (> (gc-kg-area ce) eps)
+          (progn (setq hr (+ hr (gc-kg-area ce)))
+                 (setq hps (cons ce hps)))))
+      (setq ar (- ar hr))
+      (if (> ar eps)
+        (setq cells (cons (list i j ar
+                                (list (list cx cy) (list cx1 cy)
+                                      (list cx1 cy1) (list cx cy1))
+                                poly hps)
+                          cells)))
+      (setq i (1+ i)))
+    (setq j (1+ j)))
+  (reverse cells))
+
 ;; Отрисовка построенных квадратов.
 (defun gc-kg-draw-cells (cells trim sx sy / lay eps)
   (setq lay (gc-kg-layer "GC-Картограмма-Сетка" 7))
@@ -1602,7 +1769,7 @@
   (command "_.UNDO" "_END")
   lay)
 
-(defun gc-kg-build ( / sbn srn ang sx sy base trim
+(defun gc-kg-build ( / sbn srn ang sx sy base trim gp gh aout
                        bb ext gbb i0 j0 i1 j1 nc cells total lay rows nnodes)
   (setq sbn (gc-kg-get "s-black") srn (gc-kg-get "s-red"))
   (setq *gc-kg-sb* (gc-kg-surf-obj sbn)
@@ -1615,6 +1782,9 @@
   (setq trim (= "1" (gc-kg-get "trim")))
   (gc-kg-load-bounds)
   (setq *gc-kg-holes-fixed* 0 *gc-kg-outline-fail* 0)
+  ;; Точная граница, если модуль .NET её отдал. Тогда весь дальнейший
+  ;; счёт идёт по многоугольнику, а не по опросу отметок.
+  (gc-kg-load-exact sbn srn)
   (cond
     ((or (null *gc-kg-sb*) (null *gc-kg-sr*))
      (princ "\n[!] Выбраны не обе поверхности - область строить не из чего.")
@@ -1622,10 +1792,13 @@
      (princ "\n    где отметку дают обе. Выберите чёрную и красную в окне.")
      nil)
     (T
-     ;; --- габариты: пересечение габаритов поверхностей и границы
-     (setq bb (gc-kg-bb-and (gc-kg-surf-bb sbn *gc-kg-sb*)
-                            (gc-kg-surf-bb srn *gc-kg-sr*)))
-     (if *gc-kg-outer* (setq bb (gc-kg-bb-and bb (gc-kg-bbox *gc-kg-outer*))))
+     ;; --- габариты области
+     (if *gc-kg-exact*
+       (setq bb (gc-kg-bbox *gc-kg-exact*))
+       (progn
+         (setq bb (gc-kg-bb-and (gc-kg-surf-bb sbn *gc-kg-sb*)
+                                (gc-kg-surf-bb srn *gc-kg-sr*)))
+         (if *gc-kg-outer* (setq bb (gc-kg-bb-and bb (gc-kg-bbox *gc-kg-outer*))))))
      (cond
        ((null bb)
         (princ "\n[!] Габариты поверхностей не читаются либо они не пересекаются.")
@@ -1656,17 +1829,30 @@
                            ". Увеличьте шаг."))
             nil)
           (progn
-            (princ (strcat "\n[i] Область: обе поверхности"
-                           (if *gc-kg-outer* " + выбранная наружная граница" "")
-                           (if *gc-kg-holes*
-                             (strcat " минус внутренние границы ("
-                                     (itoa (length *gc-kg-holes*)) ")")
-                             "")))
-            (setq nnodes (* (1+ (- i1 i0)) (1+ (- j1 j0))))
-            (princ (strcat "\n[i] Опрашиваю: " (itoa nnodes) " узлов. "))
-            (setq rows (gc-kg-rows i0 j0 i1 j1 sx sy))
-            (setq rows (gc-kg-fix-holes rows))
-            (setq cells (gc-kg-cells-auto rows i0 j0 i1 j1 sx sy))
+            (cond
+              ;; --- точный путь: область задана многоугольником
+              (*gc-kg-exact*
+               (princ "\n[i] Граница: ТОЧНАЯ, взята у поверхности.")
+               (setq gp (mapcar 'gc-kg-to-grid *gc-kg-exact*))
+               (setq gh (mapcar '(lambda (h) (mapcar 'gc-kg-to-grid h))
+                                *gc-kg-exact-holes*))
+               (setq cells (gc-kg-cells-poly gp gh i0 j0 i1 j1 sx sy)))
+              ;; --- приближённый: край ищем опросом отметок
+              (T
+               (princ "\n[i] Граница: приближённая, опросом отметок.")
+               (if *gc-kg-exact-why*
+                 (princ (strcat "\n    Точную взять не вышло: " *gc-kg-exact-why*)))
+               (princ (strcat "\n[i] Область: обе поверхности"
+                              (if *gc-kg-outer* " + выбранная наружная граница" "")
+                              (if *gc-kg-holes*
+                                (strcat " минус внутренние границы ("
+                                        (itoa (length *gc-kg-holes*)) ")")
+                                "")))
+               (setq nnodes (* (1+ (- i1 i0)) (1+ (- j1 j0))))
+               (princ (strcat "\n[i] Опрашиваю: " (itoa nnodes) " узлов. "))
+               (setq rows (gc-kg-rows i0 j0 i1 j1 sx sy))
+               (setq rows (gc-kg-fix-holes rows))
+               (setq cells (gc-kg-cells-auto rows i0 j0 i1 j1 sx sy))))
             (if (null cells)
               (progn
                 (princ "\n[!] Ни один квадрат не попал в область.")
@@ -1694,7 +1880,22 @@
                   (princ (strcat "\n  залечено узлов   : "
                                  (itoa *gc-kg-holes-fixed*)
                                  "  (одиночные осечки опроса, П31)")))
+                (princ (strcat "\n  граница          : "
+                               (if *gc-kg-exact*
+                                 "ТОЧНАЯ, из поверхности"
+                                 "приближённая, опросом")))
                 (princ (strcat "\n  площадь по сетке : " (gc-kg-fmt total) " м2"))
+                (if *gc-kg-exact*
+                  (progn
+                    (setq aout (gc-kg-area *gc-kg-exact*))
+                    (foreach h *gc-kg-exact-holes* (setq aout (- aout (gc-kg-area h))))
+                    (princ (strcat "\n  площадь границы  : " (gc-kg-fmt aout) " м2"))
+                    ;; Контроль: при обрезке площади обязаны сойтись.
+                    ;; Разошлись - ошибка в отсечении, и её видно сразу числом.
+                    (if (and trim (> aout 1.0e-9))
+                      (princ (strcat "\n  расхождение      : "
+                                     (gc-kg-fmt (* 100.0 (/ (abs (- total aout)) aout)))
+                                     " %  (должно быть около нуля)")))))
                 (if *gc-kg-outer*
                   (progn
                     (princ "\n  [!] Наружная граница ВЫБРАНА и сужает область.")
@@ -1792,6 +1993,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v12 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v13 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)

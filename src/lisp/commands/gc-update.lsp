@@ -1,4 +1,9 @@
-;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v1)
+;;; gc-update.lsp -- obnovlenie komand pryamo iz Civil 3D (v2)
+;;;
+;;; v2: zakachka cherez curl. WinHttp v etom CAD ne sozdaetsya vovse -
+;;;     komanda padala na kazhdom fayle s "set: WinHttp.WinHttpRequest".
+;;;     curl vhodit v sostav Windows, ne keshiruet i sam hodit cherez
+;;;     sistemnyy proksi. WinHttp ostavlen zapasnym putem.
 ;;;
 ;;; Komandy:
 ;;;   GCU   -- skachat svezhie .lsp s GitHub i perezagruzit ih.
@@ -103,8 +108,46 @@
     (strcat (vl-filename-directory (substr d 1 (1- (strlen d)))) "\\net\\")
     nil))
 
+;; Путь к curl. Входит в состав Windows с 2018 года.
+(defun gc-upd-curl ( / p)
+  (setq p (strcat (getenv "SystemRoot") "\\System32\\curl.exe"))
+  (if (findfile p) p nil))
+
+;; Скачать через curl. Он не кэширует и ходит через системный прокси -
+;; ровно то, чего не хватало WinHttp, который в этом CAD вообще
+;; не создаётся.
+;;
+;; Окно скрыто (0), ждём завершения (:vlax-true): без ожидания команда
+;; пошла бы дальше и грузила ещё не скачанный файл.
+(defun gc-upd-get-curl (url path / exe sh cmd r)
+  (setq exe (gc-upd-curl))
+  (if (null exe)
+    (cons nil "curl не найден в Windows")
+    (progn
+      (setq r (vl-catch-all-apply 'vlax-create-object (list "WScript.Shell")))
+      (if (vl-catch-all-error-p r)
+        (cons nil "нет WScript.Shell")
+        (progn
+          (setq sh r)
+          (setq cmd (strcat "\"" exe "\" -s -f -L --retry 2 -o \"" path "\" \"" url "\""))
+          (setq r (vl-catch-all-apply 'vlax-invoke (list sh 'Run cmd 0 :vlax-true)))
+          (vlax-release-object sh)
+          (cond
+            ((vl-catch-all-error-p r) (cons nil (vl-catch-all-error-message r)))
+            ((and (numberp r) (/= r 0))
+             (cons nil (strcat "curl вернул " (itoa r)
+                               (if (= r 22) " (нет такого файла на сервере)" ""))))
+            ((null (findfile path)) (cons nil "файл не появился"))
+            (T (cons T "ok"))))))))
+
 ;; Скачать один файл. Возвращает (T . "ok") либо (nil . причина).
-(defun gc-upd-get (url path / http st r body)
+;; Сначала curl, потом WinHttp: первый надёжнее, но есть не везде.
+(defun gc-upd-get (url path / r)
+  (setq r (gc-upd-get-curl url path))
+  (if (car r) r (gc-upd-get-http url path)))
+
+;; Запасной путь через WinHttp.
+(defun gc-upd-get-http (url path / http st r body)
   (setq r (vl-catch-all-apply 'vlax-create-object (list "WinHttp.WinHttpRequest.5.1")))
   (if (vl-catch-all-error-p r)
     (cons nil "нет WinHttp: закачка из Windows недоступна")
@@ -225,7 +268,12 @@
         (progn
           (princ "\n[i] Если файл не скачался, причины по частоте:")
           (princ "\n    нет интернета; закрыт доступ к сети;")
-          (princ "\n    ветка или имя файла переименованы."))))))
+          (princ "\n    ветка или имя файла переименованы.")))))
+  ;; Завершаем (princ) без аргументов: иначе команда вернёт строку,
+  ;; и AutoCAD напечатает её ещё раз, уже как значение - с кавычками
+  ;; и видимым \n. Выглядит как испорченный файл, хотя это просто
+  ;; забытая точка в конце.
+  (princ))
 
 (defun c:gcv ( / dir n path r)
   (setq dir (gc-upd-dir))
@@ -275,5 +323,5 @@
 (defun c:пег ( / ) (c:gcu))
 (defun c:пем ( / ) (c:gcv))
 
-(princ "\n[gc] gc-update.lsp v1 загружен. Команды: GCU обновить | GCV версии | GCDIR папка")
+(princ "\n[gc] gc-update.lsp v2 загружен. Команды: GCU обновить | GCV версии | GCDIR папка")
 (princ)
