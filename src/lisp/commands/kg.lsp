@@ -1,8 +1,18 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v16)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v17)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v17: NARUZHNYH GRANIC MOZHNO VYBRAT NESKOLKO.
+;;;      Odna polilinya opisyvaet kray odnoy poverhnosti i nichego ne govorit
+;;;      pro vtoruyu, poetomu k ney prihodilos dobavlyat opros otmetok --
+;;;      a on otkazyvaet u samogo kraya poverhnosti, i po krayam teryalis
+;;;      kusochki (ploshchad 1104 vmesto 1110).
+;;;      Teper mozhno ukazat OBA kontura -- chernoy i krasnoy. Togda oblast
+;;;      opisana polnostyu, opros ne nuzhen, i schet snova tochnyy.
+;;;      Tak i zapisano v specs/009 §5B.5: naruzhnyh granic mozhno neskolko,
+;;;      beretsya obshchaya oblast.
 ;;;
 ;;; v16: VYBRANNAYA POLILINIYA NE OTMENYAET PROVERKU POVERHNOSTEY.
 ;;;      Bez modulya .NET granic poverhnostey net, i v peresechenii ostavalas
@@ -873,7 +883,7 @@
       ((= res 11)
        (setq p (getangle "\nУкажите направление сетки: "))
        (if p (gc-kg-set "angle" (gc-kg-fmt (/ (* 180.0 p) pi)))))
-      ((= res 12) (gc-kg-set "outer" (gc-kg-pick-curves "Наружная граница участка: " T)))
+      ((= res 12) (gc-kg-set "outer" (gc-kg-pick-curves "Наружные границы, можно НЕСКОЛЬКО: " nil)))
       ((= res 13) (gc-kg-set "inner" (gc-kg-pick-curves "Внутренние границы (исключения): " nil)))
       ((= res 14) (gc-kg-set "lines" (gc-kg-pick-curves "Характерные линии рельефа: " nil)))
       ;; Сброс границ отдельной кнопкой. Без неё выбранная однажды граница
@@ -901,7 +911,9 @@
                  (if (= "1" (gc-kg-get "trim")) "обрезать границей" "оставлять целыми")))
   (princ (strcat "\n  граница наружная    : "
                  (if (gc-kg-get "outer")
-                   "ВЫБРАНА - дополнительно сужает область"
+                   (strcat "ВЫБРАНО контуров: "
+                           (itoa (sslength (gc-kg-get "outer")))
+                           " - каждый сужает область")
                    "не выбрана - область по поверхностям")))
   (princ (strcat "\n  границы внутренние  : "
                  (if (gc-kg-get "inner")
@@ -956,7 +968,9 @@
   (setq zb (gc-kg-elev s-blk (car p) (cadr p)))
   (setq zr (gc-kg-elev s-red (car p) (cadr p)))
   (setq ins (and zb zr))
-  (if (and ins *gc-kg-outer*) (setq ins (gc-kg-in-poly p *gc-kg-outer*)))
+  (if ins
+    (foreach c *gc-kg-outer*
+      (if (and ins (not (gc-kg-in-poly p c))) (setq ins nil))))
   (if ins
     (foreach hh *gc-kg-holes*
       (if (and ins (gc-kg-in-poly p hh)) (setq ins nil))))
@@ -965,8 +979,9 @@
   ;; Границу печатаем отдельной строкой: когда область выходит не той,
   ;; виновата чаще всего забытая с прошлого запуска граница, а не поверхности.
   (if *gc-kg-outer*
-    (princ (strcat "\n  наружная граница: точка "
-                   (if (gc-kg-in-poly p *gc-kg-outer*) "внутри" "СНАРУЖИ"))))
+    (princ (strcat "\n  наружные границы (" (itoa (length *gc-kg-outer*)) "): точка "
+                   (if (vl-every '(lambda (c) (gc-kg-in-poly p c)) *gc-kg-outer*)
+                     "внутри всех" "СНАРУЖИ хотя бы одной"))))
   (princ (strcat "\n  -> " (if ins "ВНУТРИ области" "ВНЕ области")))
   (cond
     ((and zb zr)
@@ -1218,16 +1233,18 @@
 
 ;; Контур площадки, если он выбран в окне вручную. nil, если не выбран —
 ;; тогда область берётся по поверхностям, спрашивать нечего.
-(defun gc-kg-outer-pts ( / ss pts)
-  (setq ss (gc-kg-get "outer"))
-  (if (and ss (> (sslength ss) 0))
+(defun gc-kg-outer-pts ( / ss i out pts)
+  (setq ss (gc-kg-get "outer") out nil)
+  (if ss
     (progn
-      (setq pts (gc-kg-ent-pts (ssname ss 0)))
-      (if (or (null pts) (< (length pts) 3))
-        (progn (princ "\n[!] Выбранная граница не читается как замкнутый контур.")
-               nil)
-        pts))
-    nil))
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq pts (gc-kg-ent-pts (ssname ss i)))
+        (if (and pts (> (length pts) 2))
+          (setq out (cons pts out))
+          (princ "\n[!] Одна из выбранных границ не читается как замкнутый контур."))
+        (setq i (1+ i)))))
+  (reverse out))
 
 ;; Внутренние границы-исключения списком контуров.
 (defun gc-kg-load-bounds ( / )
@@ -1306,14 +1323,20 @@
               *gc-kg-need-surf* nil)
         (setq *gc-kg-exact-why* "модуль не отдал границы обеих поверхностей")))
     (setq *gc-kg-exact-why* "модуль .NET не загружен"))
-  ;; Выбранная полилиния - ещё одно условие, а не замена предыдущих.
+  ;; Выбранные полилинии - ещё условия, а не замена предыдущих.
   (if *gc-kg-outer*
     (progn
-      (setq *gc-kg-clips* (cons *gc-kg-outer* *gc-kg-clips*))
+      (foreach c *gc-kg-outer* (setq *gc-kg-clips* (cons c *gc-kg-clips*)))
       (setq *gc-kg-clip-src*
-        (if *gc-kg-clip-src*
-          (strcat *gc-kg-clip-src* " + выбранная полилиния")
-          "выбранная полилиния"))))
+        (strcat (if *gc-kg-clip-src* (strcat *gc-kg-clip-src* " + ") "")
+                "выбранные полилинии (" (itoa (length *gc-kg-outer*)) ")"))
+      ;; Границы ОБЕИХ поверхностей заменить может только НЕСКОЛЬКО контуров:
+      ;; одна полилиния описывает край одной поверхности и ничего не говорит
+      ;; про вторую (docs/pitfalls.md -> П45). Две и больше - пользователь
+      ;; описал область сам, и опрос отметок только портит края: он
+      ;; отказывает у самой границы поверхности.
+      (if (> (length *gc-kg-outer*) 1)
+        (setq *gc-kg-need-surf* nil))))
   (setq *gc-kg-hcuts* (append *gc-kg-hcuts* *gc-kg-holes*))
   (if *gc-kg-clips* T nil))
 
@@ -1480,8 +1503,9 @@
     (setq ok (and (gc-kg-elev *gc-kg-sb* x y)
                   (gc-kg-elev *gc-kg-sr* x y))))
   (if (null w) (if ok T nil) (progn
-  (if (and ok *gc-kg-outer*)
-    (setq ok (gc-kg-in-poly w *gc-kg-outer*)))
+  (if ok
+    (foreach c *gc-kg-outer*
+      (if (and ok (not (gc-kg-in-poly w c))) (setq ok nil))))
   (if ok
     (foreach h *gc-kg-holes*
       (if (and ok (gc-kg-in-poly w h)) (setq ok nil))))
@@ -1926,7 +1950,8 @@
        (progn
          (setq bb (gc-kg-bb-and (gc-kg-surf-bb sbn *gc-kg-sb*)
                                 (gc-kg-surf-bb srn *gc-kg-sr*)))
-         (if *gc-kg-outer* (setq bb (gc-kg-bb-and bb (gc-kg-bbox *gc-kg-outer*))))))
+         (foreach c *gc-kg-outer*
+           (setq bb (gc-kg-bb-and bb (gc-kg-bbox c))))))
      (cond
        ((null bb)
         ;; Габариты нужны только чтобы очертить рамку перебора: внутри неё
@@ -1983,7 +2008,10 @@
                  (progn
                    (princ "\n[!] Границ поверхностей нет - их край ищется опросом.")
                    (if *gc-kg-exact-why*
-                     (princ (strcat "\n    " *gc-kg-exact-why*)))))
+                     (princ (strcat "\n    " *gc-kg-exact-why*)))
+                   (princ "\n    Опрос отказывает у самого края поверхности, и по краям")
+                   (princ "\n    теряются кусочки. Чтобы считать точно, укажите наружными")
+                   (princ "\n    границами ОБА контура - и чёрной, и красной поверхности.")))
                (setq gp (mapcar '(lambda (c) (mapcar 'gc-kg-to-grid c))
                                 *gc-kg-clips*))
                (setq gh (mapcar '(lambda (h) (mapcar 'gc-kg-to-grid h))
@@ -2144,6 +2172,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v16 загружен. Команда: KG | рус. раскладка: ЛП")
+(princ "\n[gc] kg.lsp v17 загружен. Команда: KG | рус. раскладка: ЛП")
 (princ "\n     Этап 2 из 5: сетка строится по общей области поверхностей.")
 (princ)
