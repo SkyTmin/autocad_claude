@@ -7,39 +7,42 @@
 // настоящее ребро триангуляции, и на чертеже она с границей не совпадает.
 //
 // В .NET-интерфейсе Civil 3D есть прямой ответ: поверхность умеет отдать
-// свою границу набором кривых. Одна функция -- и приближение больше
-// не нужно, сетка режется точно.
+// свою границу. Одна функция -- и приближение больше не нужно.
 //
 // ПОЧЕМУ ЭТО НЕ ЛОМАЕТ ADR-0003 (один файл на команду).
 // Модуль НЕОБЯЗАТЕЛЕН. Нет его -- команда работает как раньше, приближённо,
 // и говорит об этом вслух. Есть -- переходит на точную границу.
-// Проверка одна: есть ли функция среди загруженных.
 //
-// СОБИРАЕТСЯ БЕЗ Visual Studio и без SDK от Autodesk: компилятор C# входит
-// в состав Windows, а библиотеки берутся из папки установленного Civil 3D.
-// Всё это делает build.bat рядом.
+// ПОЧЕМУ ВЕЗДЕ ПОЛНЫЕ ИМЕНА ТИПОВ, А НЕ using.
+// У AutoCAD и Civil 3D совпадают имена в разных пространствах: DBObject,
+// Surface, Polyline и другие есть и там, и там. С обычными using компилятор
+// не может выбрать и останавливается на первой же строке. Псевдонимы
+// AcDb/CivDb снимают это раз и навсегда, а не по одному типу за проход.
+//
+// Собирается без Visual Studio и без SDK от Autodesk: это делает build.bat
+// рядом, компилятор входит в состав Windows.
 
 using System;
 using System.Collections.Generic;
-using Autodesk.AutoCAD.ApplicationServices;
-using Autodesk.AutoCAD.DatabaseServices;
-using Autodesk.AutoCAD.Geometry;
-using Autodesk.AutoCAD.Runtime;
-using Autodesk.Civil.ApplicationServices;
-using Autodesk.Civil.DatabaseServices;
+using AcApp = Autodesk.AutoCAD.ApplicationServices;
+using AcDb = Autodesk.AutoCAD.DatabaseServices;
+using AcGe = Autodesk.AutoCAD.Geometry;
+using AcRx = Autodesk.AutoCAD.Runtime;
+using CivApp = Autodesk.Civil.ApplicationServices;
+using CivDb = Autodesk.Civil.DatabaseServices;
 
-[assembly: CommandClass(typeof(GeoClaude.GcSurface))]
+[assembly: AcRx.CommandClass(typeof(GeoClaude.GcSurface))]
 
 namespace GeoClaude
 {
     public class GcSurface
     {
-        // Версия печатается при загрузке: чтобы не гадать, тот ли файл
+        // Версия печатается по запросу: чтобы не гадать, тот ли файл
         // подгрузился, когда поведение вдруг стало другим.
         private const string Version = "1.0";
 
-        [LispFunction("GC_NET_VERSION")]
-        public object GcNetVersion(ResultBuffer args)
+        [AcRx.LispFunction("GC_NET_VERSION")]
+        public object GcNetVersion(AcDb.ResultBuffer args)
         {
             return Version;
         }
@@ -48,16 +51,16 @@ namespace GeoClaude
         //
         // Возвращает список замкнутых контуров границы поверхности:
         //     ( ((x y) (x y) ...) ((x y) ...) ... )
-        // Первый контур -- наружный, остальные (если есть) -- внутренние
-        // вырезы. Возвращает nil, если поверхность не найдена.
+        // Первый -- наружный, остальные (если есть) -- внутренние вырезы.
+        // nil, если поверхность не найдена или граница не читается.
         //
-        // Точки отдаются двумерными: картограмма считается в плане, а лишняя
-        // координата в LISP только мешает -- её пришлось бы отбрасывать
+        // Точки отдаются двумерными: картограмма считается в плане, и лишняя
+        // координата в LISP только мешала бы -- её пришлось бы отбрасывать
         // на каждом шаге.
-        [LispFunction("GC_SURFACE_BORDER")]
-        public object GcSurfaceBorder(ResultBuffer args)
+        [AcRx.LispFunction("GC_SURFACE_BORDER")]
+        public object GcSurfaceBorder(AcDb.ResultBuffer args)
         {
-            Document doc = Application.DocumentManager.MdiActiveDocument;
+            AcApp.Document doc = AcApp.Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return null;
 
             string name = FirstString(args);
@@ -67,31 +70,38 @@ namespace GeoClaude
                 return null;
             }
 
-            ObjectId surfId = FindSurface(doc, name);
+            AcDb.ObjectId surfId = FindSurface(doc, name);
             if (surfId.IsNull)
             {
                 doc.Editor.WriteMessage("\nGC_SURFACE_BORDER: поверхность \"" + name + "\" не найдена.");
                 return null;
             }
 
-            List<List<Point2d>> loops = new List<List<Point2d>>();
+            List<List<AcGe.Point2d>> loops = new List<List<AcGe.Point2d>>();
             try
             {
-                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+                using (doc.LockDocument())
+                using (AcDb.Transaction tr = doc.Database.TransactionManager.StartTransaction())
                 {
-                    // Model -- граница такая, какой поверхность является,
-                    // а не такая, какой её рисует стиль. Именно она нам нужна:
+                    CivDb.Surface surf = (CivDb.Surface)tr.GetObject(surfId, AcDb.OpenMode.ForRead);
+
+                    // Model -- граница такая, какой поверхность ЯВЛЯЕТСЯ,
+                    // а не такая, какой её рисует стиль. Нужна именно она:
                     // отметки поверхность даёт ровно внутри неё.
-                    Surface surf = (Surface)tr.GetObject(surfId, OpenMode.ForRead);
-                    using (DBObjectCollection curves =
-                               surf.ExtractBorder(SurfaceExtractionSettingsType.Model))
+                    AcDb.ObjectIdCollection ids =
+                        surf.ExtractBorder(Autodesk.Civil.SurfaceExtractionSettingsType.Model);
+
+                    foreach (AcDb.ObjectId id in ids)
                     {
-                        foreach (DBObject o in curves)
-                        {
-                            List<Point2d> pts = CurveToPoints(o);
-                            if (pts != null && pts.Count > 2) loops.Add(pts);
-                            o.Dispose();
-                        }
+                        AcDb.DBObject o = tr.GetObject(id, AcDb.OpenMode.ForWrite);
+                        List<AcGe.Point2d> pts = CurveToPoints(tr, o);
+                        if (pts != null && pts.Count > 2) loops.Add(pts);
+
+                        // ExtractBorder кладёт созданные объекты В ЧЕРТЁЖ.
+                        // Точки мы уже забрали, поэтому убираем за собой:
+                        // иначе каждый запуск оставлял бы пользователю
+                        // лишнюю полилинию поверх его работы.
+                        o.Erase();
                     }
                     tr.Commit();
                 }
@@ -105,42 +115,42 @@ namespace GeoClaude
             if (loops.Count == 0) return null;
 
             // Наружный контур -- самый большой по площади. У поверхности
-            // с вырезами их несколько, и порядок Civil 3D не обещает.
-            loops.Sort(delegate(List<Point2d> a, List<Point2d> b)
+            // с вырезами контуров несколько, и порядок Civil 3D не обещает.
+            loops.Sort(delegate(List<AcGe.Point2d> a, List<AcGe.Point2d> b)
             {
                 return Math.Abs(Area(b)).CompareTo(Math.Abs(Area(a)));
             });
 
-            ResultBuffer rb = new ResultBuffer();
-            foreach (List<Point2d> loop in loops)
+            AcDb.ResultBuffer rb = new AcDb.ResultBuffer();
+            foreach (List<AcGe.Point2d> loop in loops)
             {
-                rb.Add(new TypedValue((int)LispDataType.ListBegin));
-                foreach (Point2d p in loop)
-                    rb.Add(new TypedValue((int)LispDataType.Point2d, p));
-                rb.Add(new TypedValue((int)LispDataType.ListEnd));
+                rb.Add(new AcDb.TypedValue((int)AcRx.LispDataType.ListBegin));
+                foreach (AcGe.Point2d p in loop)
+                    rb.Add(new AcDb.TypedValue((int)AcRx.LispDataType.Point2d, p));
+                rb.Add(new AcDb.TypedValue((int)AcRx.LispDataType.ListEnd));
             }
             return rb;
         }
 
         // ---------- вспомогательное ----------
 
-        private static string FirstString(ResultBuffer args)
+        private static string FirstString(AcDb.ResultBuffer args)
         {
             if (args == null) return null;
-            foreach (TypedValue tv in args.AsArray())
-                if (tv.TypeCode == (int)LispDataType.Text) return (string)tv.Value;
+            foreach (AcDb.TypedValue tv in args.AsArray())
+                if (tv.TypeCode == (int)AcRx.LispDataType.Text) return (string)tv.Value;
             return null;
         }
 
-        private static ObjectId FindSurface(Document doc, string name)
+        private static AcDb.ObjectId FindSurface(AcApp.Document doc, string name)
         {
-            CivilDocument civil = CivilApplication.ActiveDocument;
-            ObjectIdCollection ids = civil.GetSurfaceIds();
-            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+            CivApp.CivilDocument civil = CivApp.CivilApplication.ActiveDocument;
+            AcDb.ObjectIdCollection ids = civil.GetSurfaceIds();
+            using (AcDb.Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
-                foreach (ObjectId id in ids)
+                foreach (AcDb.ObjectId id in ids)
                 {
-                    Surface s = tr.GetObject(id, OpenMode.ForRead) as Surface;
+                    CivDb.Surface s = tr.GetObject(id, AcDb.OpenMode.ForRead) as CivDb.Surface;
                     if (s != null && string.Equals(s.Name, name, StringComparison.Ordinal))
                     {
                         tr.Commit();
@@ -149,65 +159,73 @@ namespace GeoClaude
                 }
                 tr.Commit();
             }
-            return ObjectId.Null;
+            return AcDb.ObjectId.Null;
         }
 
         // Границу Civil 3D отдаёт трёхмерной полилинией. Дуг в ней не бывает
         // (это рёбра треугольников), поэтому хватает вершин.
-        private static List<Point2d> CurveToPoints(DBObject o)
+        private static List<AcGe.Point2d> CurveToPoints(AcDb.Transaction tr, AcDb.DBObject o)
         {
-            List<Point2d> pts = new List<Point2d>();
+            List<AcGe.Point2d> pts = new List<AcGe.Point2d>();
 
-            Polyline3d p3 = o as Polyline3d;
+            AcDb.Polyline3d p3 = o as AcDb.Polyline3d;
             if (p3 != null)
             {
-                using (Transaction tr = p3.Database.TransactionManager.StartTransaction())
+                foreach (AcDb.ObjectId vid in p3)
                 {
-                    foreach (ObjectId vid in p3)
-                    {
-                        PolylineVertex3d v = tr.GetObject(vid, OpenMode.ForRead) as PolylineVertex3d;
-                        if (v != null) pts.Add(new Point2d(v.Position.X, v.Position.Y));
-                    }
-                    tr.Commit();
+                    AcDb.PolylineVertex3d v =
+                        tr.GetObject(vid, AcDb.OpenMode.ForRead) as AcDb.PolylineVertex3d;
+                    if (v != null) pts.Add(new AcGe.Point2d(v.Position.X, v.Position.Y));
                 }
                 return pts;
             }
 
-            Polyline pl = o as Polyline;
+            AcDb.Polyline pl = o as AcDb.Polyline;
             if (pl != null)
             {
                 for (int i = 0; i < pl.NumberOfVertices; i++)
                 {
-                    Point3d q = pl.GetPoint3dAt(i);
-                    pts.Add(new Point2d(q.X, q.Y));
+                    AcGe.Point3d q = pl.GetPoint3dAt(i);
+                    pts.Add(new AcGe.Point2d(q.X, q.Y));
                 }
                 return pts;
             }
 
-            // Прочие кривые -- снимаем точками по длине. Запасной путь:
+            AcDb.Polyline2d p2 = o as AcDb.Polyline2d;
+            if (p2 != null)
+            {
+                foreach (AcDb.ObjectId vid in p2)
+                {
+                    AcDb.Vertex2d v = tr.GetObject(vid, AcDb.OpenMode.ForRead) as AcDb.Vertex2d;
+                    if (v != null) pts.Add(new AcGe.Point2d(v.Position.X, v.Position.Y));
+                }
+                return pts;
+            }
+
+            // Прочие кривые -- снимаем точками по параметру. Запасной путь:
             // граница приходит полилинией, но падать на неожиданном типе
-            // нельзя, лучше отдать приближение и сказать об этом числом точек.
-            Curve c = o as Curve;
+            // нельзя, лучше отдать приближение.
+            AcDb.Curve c = o as AcDb.Curve;
             if (c != null)
             {
                 double s = c.StartParam, e = c.EndParam;
                 int n = 128;
                 for (int i = 0; i <= n; i++)
                 {
-                    Point3d q = c.GetPointAtParameter(s + (e - s) * i / n);
-                    pts.Add(new Point2d(q.X, q.Y));
+                    AcGe.Point3d q = c.GetPointAtParameter(s + (e - s) * i / n);
+                    pts.Add(new AcGe.Point2d(q.X, q.Y));
                 }
                 return pts;
             }
             return null;
         }
 
-        private static double Area(List<Point2d> p)
+        private static double Area(List<AcGe.Point2d> p)
         {
             double s = 0.0;
             for (int i = 0; i < p.Count; i++)
             {
-                Point2d a = p[i], b = p[(i + 1) % p.Count];
+                AcGe.Point2d a = p[i], b = p[(i + 1) % p.Count];
                 s += a.X * b.Y - b.X * a.Y;
             }
             return s / 2.0;
