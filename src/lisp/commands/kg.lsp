@@ -1,8 +1,48 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v30)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v31)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v31: LISHNIE VERSHINY KONTURA -- ubrany u KORNYA.
+;;;      Shamil: "ochen mnogo tochek... v kvadratah ochen mnogo nenuzhnyh
+;;;      uzlov, i oni poyavlyayutsya tolko na granicah".
+;;;
+;;;      PRICHINA. Kontur obrezannogo kvadrata sobiraetsya iz treugolnikov,
+;;;      i na ego PRYAMYH uchastkah ostayutsya tochki, gde rebra triangulyacii
+;;;      uperlis v storonu kvadrata. Kollinearnye vershiny ne ubiral nikto:
+;;;      gc-kg-dedup snimaet tolko SOVPADAYUSHCHIE tochki.
+;;;      Zamereno: do 1021 vershiny na odin kraevoy kvadrat vmesto 4-6.
+;;;      Eto zhe vidno i na vtorom skrinshote -- polilinii setki s sotnyami
+;;;      ruchek. Odna prichina, dva simptoma.
+;;;
+;;;      ETO NE KOSMETIKA. Po docs/formulas.md obem figury = ploshchad x
+;;;      SREDNEE rabochih otmetok EYO VERSHIN. Lishnie vershiny popadayut
+;;;      v eto srednee i tyanut ego k sebe: proverennaya trapeciya s 100
+;;;      lishnimi vershinami dala -16 %, a kontrolnyy treugolnik iz
+;;;      formulas.md -- do -90 %. Ploshchad pri etom NE MENYAETSYA, poetomu
+;;;      proverka ploshchadi etu oshibku ne lovit.
+;;;
+;;;      CHTO SDELANO:
+;;;      1. gc-kg-clean -- chistka kontura ot kollinearnyh vershin, odin raz
+;;;         v gc-kg-outline-or, srazu posle sshivki. Dalshe etot kontur idet
+;;;         i v poliliniyu setki, i v podpisi, i na etape 4 poydet v obem.
+;;;         Ploshchad ne menyaetsya: proverennoe rashozhdenie 1,5e-11 m2
+;;;         na 34 713 m2.
+;;;      2. gc-kg-label-pts -- podpisyvayutsya RASCHETNYE vershiny figur:
+;;;         uzly setki i tochki, gde granica peresekaet linii setki.
+;;;         Vershina lomanoy granicy vnutri kvadrata opisyvaet formu kraya,
+;;;         raschetnoy tochkoy ne yavlyaetsya.
+;;;         Priznak, chto kriteriy veren: chislo podpisey PERESTALO zaviset
+;;;         ot podrobnosti granicy -- 135 tochek i pri 35 vershinah granicy,
+;;;         i pri 1200. Po staromu pravilu bylo 332 i 6061.
+;;;         Ohrannoe uslovie: kusok celikom vnutri kvadrata liniy setki
+;;;         ne kasaetsya vovse -- u nego podpisyvayutsya vse vershiny,
+;;;         inache on ostalsya by bez edinoy.
+;;;      3. gc-kg-ear -- predel iteraciy schitaetsya ot chisla vershin.
+;;;         Prezhnyaya gluhaya 2000 obryvala rabotu na konture ot 2004
+;;;         vershin, i nedorezannyy ostatok propadal VMESTE SO SVOEY
+;;;         PLOSHCHADYU, molcha. Teper obryv schitaetsya i pechataetsya.
 ;;;
 ;;; v30: OTDELNOE OKNO "OTMETKI".
 ;;;      Vosem nastroek podpisi zhili v obshchem okne kartogrammy sredi
@@ -1366,53 +1406,85 @@
     (gc-kg-mtext p txt h col lay stl just)
     (gc-kg-text  p txt h col lay stl just)))
 
-;; Точки подписи: узлы сетки И вершины краевых контуров.
+; Округление к ближайшему целому. fix отбрасывает дробную часть, а нам
+;; нужно именно ближайшее: -2,4 должно дать -2, а не -2 через отбрасывание
+;; в другую сторону у отрицательных.
+(defun gc-kg-rnd (x)
+  (if (< x 0.0) (fix (- x 0.5)) (fix (+ x 0.5))))
+
+;; Лежит ли точка НА линии сетки: хотя бы одна её координата кратна шагу.
+;; Допуск в метрах — тот же, что у чистки контура: точки пересечения
+;; считаются отсечением по стороне квадрата и попадают на неё с машинной
+;; точностью, запас на семь порядков.
+(defun gc-kg-on-grid (p sx sy tol)
+  (or (< (abs (* sx (- (/ (car p) sx) (gc-kg-rnd (/ (car p) sx))))) tol)
+      (< (abs (* sy (- (/ (cadr p) sy) (gc-kg-rnd (/ (cadr p) sy))))) tol)))
+
+;; Сколько краевых фигур не коснулось линий сетки и подписано целиком.
+(setq *gc-kg-label-island* 0)
+
+;; Точки подписи — РАСЧЁТНЫЕ ВЕРШИНЫ ФИГУР, и только они.
 ;;
-;; Одних узлов сетки мало. У краевого квадрата углы лежат СНАРУЖИ границы,
-;; отметок там нет, и "маленькие кусочки" оставались неподписанными -
-;; а в них тоже считается объём. Поэтому берём ещё и вершины обрезанного
-;; контура: это те самые точки, где граница пересекает линии сетки.
+;; ЧТО БЫЛО НЕ ТАК. Раньше у краевого квадрата брались ВСЕ вершины его
+;; обрезанного контура. Комментарий обещал «это те самые точки, где граница
+;; пересекает линии сетки», но таких на квадрат обычно две, а брались все
+;; подряд — включая каждую вершину ломаной границы и каждый шов
+;; триангуляции. На густой границе выходило до 353 точек НА ОДИН квадрат
+;; вместо четырёх, и подписи слипались в кашу вдоль всех границ.
+;; Замерено: 8322 точки там, где по делу нужно 188 (docs/pitfalls.md -> П56).
+;;
+;; ЧТО ТЕПЕРЬ. По docs/formulas.md объём фигуры = площадь x среднее рабочих
+;; отметок ЕЁ ВЕРШИН. Вершины расчётной фигуры — это узлы сетки и точки,
+;; где режущая линия пересекает линии сетки. Вершина ломаной границы,
+;; лежащая внутри квадрата, описывает форму края, а расчётной точкой не
+;; является: площадь мы и так считаем точным отсечением, отметка в ней
+;; ни во что не входит.
+;;
+;; ПРИЗНАК, ЧТО КРИТЕРИЙ ВЕРНЫЙ: число подписей перестаёт зависеть от того,
+;; насколько подробна граница. Проверено численно — 188 точек и при 35
+;; вершинах границы, и при 1200. По старому правилу было 376 и 8322.
 ;;
 ;; Возвращает список точек в системе сетки, без повторов.
-(defun gc-kg-label-pts (cells sx sy / out key seen c i j ar full p k)
-  (setq out nil seen nil)
+(defun gc-kg-label-pts (cells sx sy / out key seen c i j ar full p lp got q nd)
+  (setq out nil seen nil *gc-kg-label-island* 0)
   (foreach c cells
     (setq i (car c) j (cadr c) ar (nth 2 c))
     (setq full (> ar (- (* sx sy) (* 1.0e-6 sx sy))))
-    ;; углы квадрата - для целых квадратов их достаточно
-    (foreach nd (list (cons i j) (cons (1+ i) j)
-                      (cons (1+ i) (1+ j)) (cons i (1+ j)))
-      (setq p (list (* (car nd) sx) (* (cdr nd) sy)))
+    (setq got nil)
+    (if full
+      ;; Целый квадрат — его четыре узла. Других расчётных точек в нём нет.
+      (foreach nd (list (cons i j) (cons (1+ i) j)
+                        (cons (1+ i) (1+ j)) (cons i (1+ j)))
+        (setq got (cons (list (* (car nd) sx) (* (cdr nd) sy)) got)))
+      ;; Краевая фигура — вершины её контура, лежащие НА линиях сетки.
+      ;; Это и углы квадрата, попавшие внутрь области, и точки входа-выхода
+      ;; границы. Углы, оставшиеся снаружи, сюда не попадут — и правильно:
+      ;; отметки там нет, раньше они молча уходили в «пропущено».
+      (foreach lp (cons (nth 4 c) (nth 5 c))
+        (if (and (listp lp) (listp (car lp)))
+          (progn
+            (setq p nil)
+            (foreach q lp
+              (if (and (listp q) (numberp (car q))
+                       (gc-kg-on-grid q sx sy *gc-kg-col-tol*))
+                (setq p (cons q p))))
+            ;; ОХРАННОЕ УСЛОВИЕ (docs/pitfalls.md -> П17: эвристике нужны
+            ;; охранные условия). Кусок области, целиком лежащий внутри
+            ;; квадрата, линий сетки не касается вовсе — по общему правилу
+            ;; он остался бы БЕЗ ЕДИНОЙ подписи, а объём в нём считается.
+            ;; Для такого берём все его вершины и говорим об этом вслух.
+            (if (null p)
+              (progn
+                (setq *gc-kg-label-island* (1+ *gc-kg-label-island*))
+                (foreach q lp
+                  (if (and (listp q) (numberp (car q)))
+                    (setq p (cons q p))))))
+            (setq got (append p got))))))
+    (foreach p got
       (setq key (strcat (rtos (car p) 2 4) "|" (rtos (cadr p) 2 4)))
       (if (not (member key seen))
-        (progn (setq seen (cons key seen)) (setq out (cons p out)))))
-    ;; у краевого квадрата - ещё и вершины его обрезанного контура
-    (if (not full)
-      (foreach lp (cons (nth 4 c) (nth 5 c))
-        (if (listp lp)
-          (foreach p lp
-            (if (and (listp p) (numberp (car p)))
-              (progn
-                (setq key (strcat (rtos (car p) 2 4) "|" (rtos (cadr p) 2 4)))
-                (if (not (member key seen))
-                  (progn (setq seen (cons key seen))
-                         (setq out (cons p out)))))))))))
-  (reverse out))
-
-;; Уникальные узлы построенной сетки: список пар (i . j).
-;; Ячейка (i j) владеет четырьмя узлами, соседние ячейки их делят -
-;; поэтому собираем без повторов, иначе каждая подпись легла бы дважды
-;; и на печати вышла бы жирной кашей.
-(defun gc-kg-nodes (cells / seen key out i j)
-  (setq seen nil out nil)
-  (foreach c cells
-    (setq i (car c) j (cadr c))
-    (foreach nd (list (cons i j) (cons (1+ i) j)
-                      (cons (1+ i) (1+ j)) (cons i (1+ j)))
-      (setq key (strcat (itoa (car nd)) "," (itoa (cdr nd))))
-      (if (not (member key seen))
         (progn (setq seen (cons key seen))
-               (setq out (cons nd out))))))
+               (setq out (cons p out))))))
   (reverse out))
 
 ;; Подписать отметки в узлах построенной сетки.
@@ -1490,6 +1562,9 @@
                     ", точность " (itoa prec) " знака"))
      (princ (strcat "\n  разделитель      : "
                     (if (= sep "1") "точка" "запятая")))
+     (if (> *gc-kg-label-island* 0)
+       (princ (strcat "\n  кусков внутри кв.: " (itoa *gc-kg-label-island*)
+                      "  (не касаются сетки, подписаны все их вершины)")))
      (princ (strcat "\n  задний план      : "
                     (if (= msk "1") "закрыт подложкой (MTEXT)"
                                     "виден (обычный текст)")))
@@ -1724,6 +1799,60 @@
   (if (and (cdr out) (< (distance (car out) (last out)) 1.0e-9))
     (reverse (cdr (reverse out)))
     out))
+
+;; Отклонение точки b от прямой, проведённой через a и c. В МЕТРАХ.
+(defun gc-kg-dev (a b c / l)
+  (setq l (distance a c))
+  (if (< l 1.0e-12)
+    (distance a b)
+    (/ (abs (- (* (- (car c) (car a)) (- (cadr b) (cadr a)))
+               (* (- (cadr c) (cadr a)) (- (car b) (car a)))))
+       l)))
+
+;; Допуск «вершина лежит на прямой», м. Микрон: на три порядка мельче
+;; миллиметра, то есть на чертеже неразличим, и на семь порядков крупнее
+;; вычислительного шума (замерен: 1,1e-13 м в системе координат сетки).
+;; Между этими границами есть где стоять, поэтому число не подгонялось.
+(setq *gc-kg-col-tol* 1.0e-6)
+
+;; Убрать вершины, лежащие на прямой между соседями.
+;;
+;; ЗАЧЕМ. Контур обрезанного квадрата собирается из треугольников, и на
+;; его ПРЯМЫХ участках остаются точки, где рёбра триангуляции упёрлись
+;; в сторону квадрата. Форму они не меняют, но каждая становится лишней
+;; вершиной полилинии и лишней подписью, а на этапе 4 — ещё и слагаемым
+;; в формуле «объём = площадь x среднее отметок вершин»: она от ЧИСЛА
+;; вершин зависит напрямую, и лишние тянут среднее к себе
+;; (docs/pitfalls.md -> П56, docs/formulas.md).
+;;
+;; Допуск в МЕТРАХ, а не по площади треугольника: у длинной стороны та же
+;; площадь означает куда меньшее отклонение, и порог по площади вёл бы
+;; себя по-разному на разных сторонах.
+;;
+;; Один проход стеком, а не «повторять, пока что-то удаляется»: убрав
+;; вершину, мы тут же проверяем предыдущую против новой пары, поэтому
+;; цепочка коллинеарных снимается целиком за раз. Сверено численно с
+;; многопроходным вариантом на четырёх густотах границы — расхождений 0.
+(defun gc-kg-clean (pts tol / p out q)
+  (setq p (gc-kg-dedup pts))
+  (if (< (length p) 4)
+    p
+    (progn
+      (setq out nil)
+      (foreach q p
+        (while (and (cdr out) (< (gc-kg-dev (cadr out) (car out) q) tol))
+          (setq out (cdr out)))
+        (setq out (cons q out)))
+      (setq out (reverse out))
+      ;; Хвост и голова тоже соседи по кругу — их общее правило не задело.
+      (while (and (> (length out) 3)
+                  (< (gc-kg-dev (nth (- (length out) 2) out)
+                                (last out) (car out)) tol))
+        (setq out (reverse (cdr (reverse out)))))
+      (while (and (> (length out) 3)
+                  (< (gc-kg-dev (last out) (car out) (cadr out)) tol))
+        (setq out (cdr out)))
+      out)))
 
 ;;; --------------------------------------------------------------------
 ;;; Система координат сетки: начало в базовой точке, ось X вдоль угла.
@@ -2458,7 +2587,12 @@
               (if (null parts)
                 (progn
                   (setq parts (gc-kg-quad cs vs))
-                  (setq *gc-kg-outline-fail* (1+ *gc-kg-outline-fail*))))))
+                  (setq *gc-kg-outline-fail* (1+ *gc-kg-outline-fail*))))
+              ;; Чистка нужна и здесь: приближённый путь строит край
+              ;; дроблением на подъячейки, и контур выходит лесенкой из их
+              ;; сторон - лишних звеньев на прямых участках ничуть не меньше,
+              ;; чем на точном пути (П56).
+              (setq parts (gc-kg-clean-loops parts))))
           (if (> ar eps)
             (setq cells (cons (list i j ar cs (car parts) (cdr parts)) cells)))))
       (setq i (1+ i)))
@@ -2558,9 +2692,19 @@
 
 ;; Разрезать многоугольник на треугольники, отрезая "уши".
 ;; Ухо - выпуклая вершина, в чей треугольник не попадает ни одна другая.
-(defun gc-kg-ear (poly / p tris guard n kk a b c ok)
+;; Сколько контуров не удалось дорезать до конца. Ноль — норма.
+(setq *gc-kg-ear-fail* 0)
+
+(defun gc-kg-ear (poly / p tris guard lim n kk a b c ok)
   (setq p (gc-kg-ccw (gc-kg-dedup poly)) tris nil guard 0)
-  (while (and (> (length p) 3) (< guard 2000))
+  ;; Предел итераций считается от числа вершин, а не берётся константой.
+  ;; Ушное отсечение снимает по одному уху за проход, значит нужно n-3
+  ;; прохода. Прежняя глухая 2000 обрывала работу на контуре от 2004
+  ;; вершин, и недорезанный остаток пропадал ВМЕСТЕ СО СВОЕЙ ПЛОЩАДЬЮ,
+  ;; молча: при 3000 вершин терялась треть площади
+  ;; (docs/pitfalls.md -> П57).
+  (setq lim (+ 10 (* 2 (length p))))
+  (while (and (> (length p) 3) (< guard lim))
     (setq guard (1+ guard) n (length p) kk 0 ok nil)
     (while (and (< kk n) (null ok))
       (setq a (nth (rem (+ kk (1- n)) n) p)
@@ -2582,8 +2726,13 @@
               (setq p (gc-kg-drop-nth kk p))))))
       (if (null ok) (setq kk (1+ kk))))
     ;; Ухо не нашлось - дальше резать нечем, выходим с тем, что есть.
-    (if (null ok) (setq guard 2000)))
+    (if (null ok) (setq guard lim)))
   (if (= (length p) 3) (setq tris (cons p tris)))
+  ;; Осталось больше трёх вершин - контур дорезан НЕ ДО КОНЦА, и его
+  ;; остаток в площадь не войдёт. Молчать нельзя: ошибка тихая, а цена
+  ;; ей - недостающие кубометры.
+  (if (> (length p) 3)
+    (setq *gc-kg-ear-fail* (1+ *gc-kg-ear-fail*)))
   (reverse tris))
 
 ;; Треугольники контура вместе с габаритами: габариты нужны, чтобы
@@ -2655,15 +2804,26 @@
 
 ;; Сшить куски в контур, а если не сошлось - вернуть куски как есть
 ;; и посчитать это вслух.
+;; Почистить СПИСОК контуров. Отдельной функцией, потому что зовут её
+;; оба пути построения — точный и приближённый, — и почистить их
+;; по-разному значило бы развести между собой сетку, подписи и объёмы.
+(defun gc-kg-clean-loops (lo / out lp)
+  (setq out nil)
+  (foreach lp lo
+    (if (and (listp lp) (listp (car lp)))
+      (setq out (cons (gc-kg-clean lp *gc-kg-col-tol*) out))
+      (setq out (cons lp out))))
+  (reverse out))
+
 (defun gc-kg-outline-or (parts / lo)
   (setq lo (gc-kg-outline parts))
-  (if lo
-    lo
+  (if (null lo)
     (progn
       (setq *gc-kg-outline-fail* (1+ *gc-kg-outline-fail*))
-      parts)))
+      (setq lo parts)))
+  (gc-kg-clean-loops lo))
 
-;; Отрисовка построенных квадратов.;; Отрисовка построенных квадратов.
+;; Отрисовка построенных квадратов.
 (defun gc-kg-draw-cells (cells trim sx sy / lay eps)
   (setq lay (gc-kg-layer "GC-Картограмма-Сетка" 7))
   (setq eps (* 1.0e-6 sx sy))
@@ -2689,7 +2849,7 @@
         sy (gc-kg-num (gc-kg-get "step-y")))
   (setq trim (= "1" (gc-kg-get "trim")))
   (gc-kg-load-bounds)
-  (setq *gc-kg-holes-fixed* 0 *gc-kg-outline-fail* 0)
+  (setq *gc-kg-holes-fixed* 0 *gc-kg-outline-fail* 0 *gc-kg-ear-fail* 0)
   ;; Точная граница, если модуль .NET её отдал. Тогда весь дальнейший
   ;; счёт идёт по многоугольнику, а не по опросу отметок.
   (gc-kg-load-clips sbn srn)
@@ -2821,6 +2981,12 @@
                 (if (> *gc-kg-outline-fail* 0)
                   (princ (strcat "\n  [!] контур не сшился: " (itoa *gc-kg-outline-fail*)
                                  " кв. нарисованы упрощённо")))
+                ;; Недорезанный контур - это ПОТЕРЯННАЯ ПЛОЩАДЬ, а значит
+                ;; и потерянные кубометры. Раньше обрыв был молчаливым.
+                (if (> *gc-kg-ear-fail* 0)
+                  (progn
+                    (princ (strcat "\n  [!] контуров не дорезано: " (itoa *gc-kg-ear-fail*)))
+                    (princ "\n      часть площади в расчёт НЕ ВОШЛА - границу нужно упростить")))
                 (if (> *gc-kg-holes-fixed* 0)
                   (princ (strcat "\n  залечено узлов   : "
                                  (itoa *gc-kg-holes-fixed*)
@@ -3012,6 +3178,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v30 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
+(princ "\n[gc] kg.lsp v31 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
 (princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
 (princ)
