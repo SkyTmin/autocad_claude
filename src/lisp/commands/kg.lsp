@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v39)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v40)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -13,6 +13,33 @@
 ;;;   KGV / ЛПМ   -- VYNOSKA: otodvinut podpis, ostaviv liniyu k uzlu.
 ;;;   KGW / ЛПЦ   -- perestroit vynoski posle ruchnogo peremeshcheniya.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v40: ZHIVAYA VYNOSKA PRI PERETASKIVANII, SIMMETRICHNYY KRESTIK.
+;;;
+;;;      1. LINIYA VIDNA, POKA TYANESH PODPIS. MOVE pokazyvaet tolko sam
+;;;         blok - i inache ne mozhet: vynoska ne pereezzhaet vmeste
+;;;         s podpisyu, ona PERESTRAIVAETSYA, odin ee konec ostaetsya na
+;;;         uzle. Poetomu svoy cikl grread: blok dvigaetsya po-nastoyashchemu
+;;;         na kazhdom shage (vidno ego i vse tri chisla), a vynoska
+;;;         risuetsya rezinkoy poverh. grdraw s cvetom -1 - rezhim XOR:
+;;;         povtornyy vyzov s temi zhe tochkami stiraet liniyu.
+;;;
+;;;         Bez ActiveX otkatyvaemsya na shtatnuyu MOVE - tam hotya by
+;;;         blok vidno.
+;;;
+;;;      2. POCHEMU LINIYA NE CHAST BLOKA, kak prosil Shamil. Vnutri bloka
+;;;         lezhit ODNA geometriya na vse vstavki: sdelav liniyu ego
+;;;         chastyu, my poluchili by odinakovuyu vynosku u vseh podpisey
+;;;         srazu, a ona u kazhdoy svoya. Svoya geometriya u kazhdoy
+;;;         vstavki byvaet tolko u dinamicheskogo bloka, a on sobiraetsya
+;;;         rukami v redaktore blokov i programmno ne sozdaetsya.
+;;;         Vynoska - otdelnye linii, no zhivut oni kak chast podpisi:
+;;;         stroyatsya, perestraivayutsya i stirayutsya tolko vmeste s ney.
+;;;
+;;;      3. KRESTIK SIMMETRICHEN. Gorizontal odinakovoy dliny po obe
+;;;         storony ot vertikali: podpis vlevo i vpravo zanimaet raznoe
+;;;         mesto, no krestik - eto znak, a ne ramka, i raznaya dlina
+;;;         plechey chitaetsya kak nebrezhnost.
 ;;;
 ;;; v39: KRESTIK - CHAST VYNOSKI, A NE PODPISI. CHETYRE PRAVKI KGV.
 ;;;
@@ -622,7 +649,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v39")
+(setq *gc-kg-ver* "v40")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -4262,37 +4289,54 @@
                  (cons 10 (list (car a) (cadr a) 0.0))
                  (cons 11 (list (car b) (cadr b) 0.0)))))
 
+;; Геометрия выноски: список отрезков ((от до) ...) в мировых координатах.
+;;
+;; Отдельно от рисования, потому что одни и те же отрезки нужны дважды:
+;; настоящими линиями - когда подпись поставлена, и резинкой на экране -
+;; пока её тянут. Считай мы их в двух местах, резинка и результат
+;; разошлись бы, и это заметил бы пользователь, а не мы.
+;;
+;; КУДА ПРИХОДИТ ЛИНИЯ. Не в точку вставки (она внутри цифр, и линия
+;; перечёркивала бы их), а в КРАЙ подписи - с той стороны, откуда идёт:
+;; узел слева - к левому краю, справа - к правому, ровно сверху или
+;; снизу - в середину.
+;;
+;; КРЕСТИК СИММЕТРИЧЕН. Горизонталь одинаковой длины по обе стороны от
+;; вертикали: подпись влево и вправо занимает разное место, но крестик -
+;; это знак, а не рамка, и разная длина плечей читается как небрежность.
+(defun gc-kg-lead-geom (a p h prec / w wl wr wm dx att out)
+  (setq w (gc-kg-mark-wid h prec) wl (car w) wr (cdr w))
+  (setq wm (if (> wl wr) wl wr))          ; полудлина крестика
+  (setq dx (- (car a) (car p)))
+  (setq att (cond
+              ((< dx (* -0.2 h)) (list (- (car p) wl) (cadr p)))
+              ((> dx (*  0.2 h)) (list (+ (car p) wr) (cadr p)))
+              (T                 (list (car p) (cadr p)))))
+  (setq out
+    (list
+      ;; вертикальная чёрточка крестика - во всю высоту подписи
+      (list (list (car p) (- (cadr p) (* 1.15 h)))
+            (list (car p) (+ (cadr p) (* 1.20 h))))
+      ;; горизонталь крестика - симметрично в обе стороны
+      (list (list (- (car p) wm) (cadr p))
+            (list (+ (car p) wm) (cadr p)))))
+  ;; сама выноска - от узла к краю подписи
+  (if (> (distance a att) (* 0.3 h))
+    (setq out (cons (list a att) out)))
+  out)
+
 ;; Нарисовать выноску от узла к отодвинутой подписи, вместе с крестиком.
 ;;
 ;; ПОЧЕМУ КРЕСТИК ЗДЕСЬ, А НЕ ВНУТРИ БЛОКА. Пока подпись стоит на своём
 ;; узле, крестик не нужен - и его быть не должно. Он появляется ровно
 ;; тогда, когда подпись отодвинули: это его смысл - показать, куда
 ;; приходит выноска и где кончается подпись.
-;;
-;; КУДА ПРИХОДИТ ЛИНИЯ. Не в точку вставки (она внутри цифр, и линия
-;; перечёркивала бы их), а в КРАЙ подписи - с той стороны, откуда идёт:
-;; узел слева - к левому краю, справа - к правому. Если подпись отодвинули
-;; ровно вверх или вниз, приходит в середину. Дальше от края до середины
-;; идёт короткий хвост, и на пересечении с вертикальной чёрточкой
-;; получается тот самый крестик.
-(defun gc-kg-leader-draw (a p h prec / w wl wr dx att)
+(defun gc-kg-leader-draw (a p h prec / )
   (if (< (distance a p) (* 0.3 h))
     nil                                  ; подпись на своём узле
     (progn
-      (setq w (gc-kg-mark-wid h prec) wl (car w) wr (cdr w))
-      (setq dx (- (car a) (car p)))
-      (setq att (cond
-                  ((< dx (* -0.2 h)) (list (- (car p) wl) (cadr p)))
-                  ((> dx (*  0.2 h)) (list (+ (car p) wr) (cadr p)))
-                  (T                 (list (car p) (cadr p)))))
-      ;; вертикальная чёрточка крестика - во всю высоту подписи
-      (gc-kg-lead-line (list (car p) (- (cadr p) (* 1.15 h)))
-                       (list (car p) (+ (cadr p) (* 1.20 h))))
-      ;; хвост от края подписи до середины
-      (if (> (abs (- (car att) (car p))) 1.0e-9)
-        (gc-kg-lead-line att (list (car p) (cadr p))))
-      ;; сама выноска
-      (gc-kg-lead-line a att)
+      (foreach l (gc-kg-lead-geom a p h prec)
+        (gc-kg-lead-line (car l) (cadr l)))
       T)))
 
 ;; Стереть все выноски.
@@ -4328,6 +4372,58 @@
         (setq i (1+ i)))))
   cnt)
 
+;; Резинка: те же отрезки, что станут настоящими линиями.
+;;
+;; Цвет -1 у grdraw - режим «дополняющий» (XOR): повторный вызов с теми
+;; же точками СТИРАЕТ линию, не трогая чертёж. Так и делается резинка -
+;; иначе следы оставались бы на экране до перерисовки.
+(defun gc-kg-rubber (lines / l)
+  (foreach l lines
+    (grdraw (trans (car l) 0 1) (trans (cadr l) 0 1) -1 1)))
+
+;; Перетаскивание подписи с ЖИВОЙ выноской.
+;;
+;; ЗАЧЕМ СВОЙ ЦИКЛ, А НЕ КОМАНДА MOVE. MOVE показывает перетаскиваемый
+;; блок - и только его. Выноска же не переезжает вместе с подписью, она
+;; ПЕРЕСТРАИВАЕТСЯ: один её конец остаётся на узле. Показать такое MOVE
+;; не может в принципе, и линия появлялась лишь после установки.
+;;
+;; Здесь блок двигается по-настоящему на каждом шаге - поэтому видно и
+;; его, и все три числа, - а выноска рисуется резинкой поверх. Оба
+;; требования выполняются разом.
+;;
+;; ПОЧЕМУ ЛИНИЯ НЕ ЧАСТЬ БЛОКА, как просил Шамиль. Внутри блока лежит
+;; ОДНА геометрия на все вставки: сделав линию его частью, мы получили бы
+;; одинаковую выноску у всех подписей сразу, а она у каждой своя. Своя
+;; геометрия у каждой вставки бывает только у динамического блока, а он
+;; собирается руками в редакторе блоков и программно не создаётся.
+;; Поэтому выноска - отдельные линии, но живут они как часть подписи:
+;; строятся, перестраиваются и стираются только вместе с ней.
+;;
+;; Возвращает T, если подпись поставлена, и nil, если бросили.
+(defun gc-kg-drag (e a h prec / obj last g cur prev ok)
+  (setq obj (vlax-ename->vla-object e))
+  (setq last (gc-kg-blk-pt e) prev nil ok nil)
+  (setq g (grread T 12 0))
+  (while (and g (= 5 (car g)))
+    (setq cur (trans (cadr g) 1 0))
+    ;; Порядок важен: сначала стереть прежнюю резинку, потом двигать
+    ;; блок, потом рисовать новую. Иначе стирать пришлось бы уже поверх
+    ;; перерисованного экрана, и следы копились бы.
+    (if prev (gc-kg-rubber prev))
+    (vla-move obj (vlax-3d-point last) (vlax-3d-point cur))
+    (setq last cur)
+    (setq prev (gc-kg-lead-geom a cur h prec))
+    (gc-kg-rubber prev)
+    (setq g (grread T 12 0)))
+  (if prev (gc-kg-rubber prev))
+  (if (and g (= 3 (car g)))
+    (progn
+      (setq cur (trans (cadr g) 1 0))
+      (vla-move obj (vlax-3d-point last) (vlax-3d-point cur))
+      (setq ok T)))
+  ok)
+
 ;;; --------------------------------------------------------------------
 ;;; KGV - выноска подписей: отодвинуть подпись, оставив линию к узлу
 ;;;
@@ -4358,13 +4454,14 @@
         e
         nil))))
 
-(defun c:kgv ( / sel e p a cnt one lead done dm err)
+(defun c:kgv ( / sel e p a cnt one lead done dm err env)
   (princ "\n\n=== KGV - выноска подписей ===")
   (if (null (gc-kg-blk-ss))
     (gc-kg-no-marks)
     (progn
       (princ "\n[i] Щёлкните по подписи - она поедет за курсором. Поставьте щелчком.")
       (princ "\n    Дальше сразу следующая. Enter - закончить.")
+      (setq env (gc-kg-mark-env))
       (setq cnt 0 done nil)
       (setvar "CMDECHO" 0)
       ;; DRAGMODE=2 («авто») - от него зависит, ВИДЕН ли перетаскиваемый
@@ -4392,12 +4489,15 @@
                ;; Считаем узлом её нынешнее место: она пока не двигалась.
                (if (null a)
                  (progn (gc-kg-node-put e p) (setq a p)))
-               (setq one (ssadd))
-               (ssadd e one)
-               ;; Базовая точка - там, где щёлкнули: подпись не прыгает
-               ;; под курсор, а едет ровно за ним. pause отдаёт
-               ;; перетаскивание пользователю.
-               (command "_.MOVE" one "" (cadr sel) pause)
+               ;; Свой цикл перетаскивания: только он показывает и блок,
+               ;; и выноску одновременно. Без ActiveX откатываемся на
+               ;; штатную MOVE - там хотя бы блок видно.
+               (if (gc-kg-com-ok)
+                 (gc-kg-drag e a (nth 2 env) (nth 3 env))
+                 (progn
+                   (setq one (ssadd))
+                   (ssadd e one)
+                   (command "_.MOVE" one "" (cadr sel) pause)))
                (setq cnt (1+ cnt))
                ;; Выноску перестраиваем сразу: видно результат до того,
                ;; как возьмёшься за следующую подпись.
