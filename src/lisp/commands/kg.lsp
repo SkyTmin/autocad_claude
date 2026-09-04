@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v33)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v34)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -10,6 +10,26 @@
 ;;;   KGP / ЛПЗ   -- proryadit otmetki, ubrat stoyashchie gusto.
 ;;;   KGZ / ЛПЯ   -- obnulit rabochuyu otmetku.
 ;;;   KGD / ЛПВ   -- udalit vse otmetki.
+;;;
+;;; v34: POVERHNOSTI MESTAMI I PODMENYU PRAVKI.
+;;;      1. Shamil nastoyal: raz polya pereimenovany, to i poverhnosti
+;;;         v nih vybirayutsya drugie. Dobavlen tumbler "Pomenyat
+;;;         poverhnosti mestami", PO UMOLCHANIYU VKLYUCHEN: verhnee pole
+;;;         okna idet v rol "stalo", nizhnee - v rol "bylo". Chisla
+;;;         v podpisi menyayutsya mestami, znak rabochey perevorachivaetsya.
+;;;
+;;;         Tumblerom, a ne namertvo: do v33 bylo naoborot, i ta raskladka
+;;;         shodilas s chislami obrazca (12,47 - 9,46 = +3,01). Esli novaya
+;;;         okazhetsya ne toy, vozvrat - odin shchelchok, a ne novaya versiya.
+;;;
+;;;         VSE mesta, gde imya poverhnosti prevrashchaetsya v obekt, hodyat
+;;;         cherez gc-kg-name-b / gc-kg-name-r. Inache perestanovka
+;;;         srabotala by v postroenii setki i ne srabotala by v podpisyah,
+;;;         i razoshlis by oni molcha.
+;;;
+;;;      2. Punkt "pRavka" otkryvaet PODMENYU, a ne pechataet spisok komand.
+;;;         Predlagat nabrat imya komandy rukami - perekladyvat rabotu na
+;;;         polzovatelya. Pyat punktov vybirayutsya odnoy bukvoy.
 ;;;
 ;;; v33: PODPIS BLOKOM I PYAT KOMAND PRAVKI.
 ;;;      Podpisi rasstavlyayutsya odin raz, a zhivut dolgo: proekt pravyat,
@@ -517,6 +537,15 @@
     ;; они работать не могут - непонятно, какие три числа образуют одну
     ;; подпись. Текстом остаётся запасной путь.
     (cons "use-blk"  "1")
+    ;; Поверхности местами. Шамиль сверяет с образцом и просил поменять:
+    ;; поверхность из ВЕРХНЕГО поля идёт в роль «стало», из нижнего —
+    ;; в роль «было». Числа в подписи при этом меняются местами, и знак
+    ;; рабочей переворачивается — это ожидаемо, а не побочный эффект.
+    ;;
+    ;; Тумблером, а не намертво: до v33 было наоборот, и та раскладка
+    ;; сходилась с числами образца (12,47 - 9,46 = +3,01). Если новая
+    ;; окажется не той, возврат — один щелчок, а не новая версия.
+    (cons "swap"     "1")
     (cons "c-plus"   5)           ; цвет насыпи  (+)
     (cons "c-minus"  1)           ; цвет выемки  (-)
     (cons "c-zero"   7)))         ; цвет нулевой зоны
@@ -604,6 +633,17 @@
     (setq out (cons (cdr (assoc 2 e)) out))
     (setq e (tblnext "STYLE")))
   (reverse out))
+
+;; Имя поверхности в роли «было» (чёрная) и в роли «стало» (красная).
+;;
+;; ВСЕ места, где имя превращается в объект поверхности, ходят через эти
+;; две функции. Иначе перестановка сработала бы в построении сетки и не
+;; сработала бы в подписях — и разошлись бы они молча.
+(defun gc-kg-name-b ( / )
+  (if (= "1" (gc-kg-get "swap")) (gc-kg-get "s-red") (gc-kg-get "s-black")))
+
+(defun gc-kg-name-r ( / )
+  (if (= "1" (gc-kg-get "swap")) (gc-kg-get "s-black") (gc-kg-get "s-red")))
 
 ;; Список имён поверхностей Civil 3D.
 ;;
@@ -860,6 +900,7 @@
 "      : column {"
 "        : popup_list { key = \"s_black\"; width = 34; fixed_width = true; }"
 "        : popup_list { key = \"s_red\";   width = 34; fixed_width = true; } } }"
+"    : toggle { key = \"swap\"; label = \"Поменять поверхности местами\"; }"
 "    : text { key = \"s_note\"; } }"
 "  : row {"
 "    : boxed_column { label = \" Сетка \";"
@@ -1104,6 +1145,7 @@
     (gc-kg-set (gc-kg-key k) (get_tile k)))
   (gc-kg-set "trim"    (get_tile "trim"))
   (gc-kg-set "use-min" (get_tile "use_min"))
+  (gc-kg-set "swap"    (get_tile "swap"))
   (gc-kg-set "p-vol"   (atoi (get_tile "p_vol")))
   (if *gc-kg-surf-list*
     (progn
@@ -1172,7 +1214,7 @@
          ;; --- сетка и подписи. Каждое поле отдельно: одно испорченное
          ;; значение не уносит с собой остальные девятнадцать.
          (foreach k '("step_x" "step_y" "angle" "h_vol" "min_vol"
-                      "trim" "use_min")
+                      "trim" "use_min" "swap")
            (gc-kg-try k 'set_tile (list k (gc-kg-get (gc-kg-key k)))))
          (gc-kg-try "p_vol" 'gc-kg-fill-list
            (list "p_vol" *gc-kg-prec* (gc-kg-get "p-vol")))
@@ -1361,10 +1403,12 @@
 
 (defun gc-kg-report ( / )
   (princ "\n\n--- ПРИНЯТЫЕ НАСТРОЙКИ ---")
-  (princ (strcat "\n  поверхность чёрная  : "
-                 (if (gc-kg-get "s-black") (gc-kg-get "s-black") "не выбрана")))
-  (princ (strcat "\n  поверхность красная : "
-                 (if (gc-kg-get "s-red") (gc-kg-get "s-red") "не выбрана")))
+  (princ (strcat "\n  «было»  (чёрная)    : "
+                 (if (gc-kg-name-b) (gc-kg-name-b) "не выбрана")))
+  (princ (strcat "\n  «стало» (красная)   : "
+                 (if (gc-kg-name-r) (gc-kg-name-r) "не выбрана")))
+  (if (= "1" (gc-kg-get "swap"))
+    (princ "\n  поверхности местами : ДА (верхнее поле окна = «стало»)"))
   (princ (strcat "\n  сетка               : "
                  (gc-kg-get "step-x") " x " (gc-kg-get "step-y") " м"
                  ", угол " (gc-kg-get "angle") " град"))
@@ -1890,15 +1934,16 @@
      (if (> cnt 0)
        (progn
          (princ (strcat "\n  средняя «было»   : " (gc-kg-fmt (/ sb cnt)) " м"
-                        "  (" (if (gc-kg-get "s-black") (gc-kg-get "s-black") "?") ")"))
+                        "  (" (if (gc-kg-name-b) (gc-kg-name-b) "?") ")"))
          (princ (strcat "\n  средняя «стало»  : " (gc-kg-fmt (/ sr cnt)) " м"
-                        "  (" (if (gc-kg-get "s-red") (gc-kg-get "s-red") "?") ")"))
+                        "  (" (if (gc-kg-name-r) (gc-kg-name-r) "?") ")"))
          (if (< sb sr)
            (progn
              (princ "\n  [!] «Было» в среднем НИЖЕ, чем «стало» - вся площадка в насыпи.")
              (princ "\n      Так бывает, но чаще это поверхности, выбранные местами.")
              (princ "\n      Проверьте в окне: чёрная - земля, красная - проект.")))))
      (princ "\n[i] Один Ctrl+Z убирает все подписи.")
+     (princ "\n[i] Дальше - «Правка»: обновить, добавить, прорядить, обнулить, удалить.")
      T)))
 
 ;;; ====================================================================
@@ -1965,8 +2010,8 @@
 
 ;; Цикл проверки. Возвращает T, если хоть одна точка прочиталась.
 (defun gc-kg-probe ( / s-blk s-red p ok any why)
-  (setq s-blk (gc-kg-surf-obj (gc-kg-get "s-black"))
-        s-red (gc-kg-surf-obj (gc-kg-get "s-red")))
+  (setq s-blk (gc-kg-surf-obj (gc-kg-name-b))
+        s-red (gc-kg-surf-obj (gc-kg-name-r)))
   (gc-kg-load-bounds)
   (princ "\n\n--- ПРОВЕРКА ОТМЕТОК ---")
   (princ "\nТыкайте по чертежу — покажу, что вернула каждая поверхность.")
@@ -3160,7 +3205,7 @@
   lay)
 
 (defun gc-kg-build ( / sbn srn ang sx sy base trim bb)
-  (setq sbn (gc-kg-get "s-black") srn (gc-kg-get "s-red"))
+  (setq sbn (gc-kg-name-b) srn (gc-kg-name-r))
   (setq *gc-kg-sb* (gc-kg-surf-obj sbn)
         *gc-kg-sr* (gc-kg-surf-obj srn))
   (setq ang (gc-kg-num (gc-kg-get "angle")))
@@ -3343,6 +3388,35 @@
 ;;; Слепых переключателей нет (docs/pitfalls.md -> П23).
 ;;; --------------------------------------------------------------------
 
+;; Подменю правки подписей.
+;;
+;; ПОЧЕМУ МЕНЮ, А НЕ СПИСОК КОМАНД. Печатать список и предлагать набрать
+;; имя руками - перекладывать работу на пользователя. Пять пунктов
+;; выбираются одной буквой, и Enter всегда что-то делает (П23).
+;;
+;; Различающие буквы: О, Д, П, Н, У, В - все разные. У «Обновить» и
+;; «обНулить» совпадает первая буква, поэтому у второго различающая -
+;; заглавная Н, и getkword вернёт ключ ровно в таком написании.
+(defun gc-kg-menu-edit ( / k dflt done)
+  (setq done nil dflt "Выход")
+  (princ "\n\n--- ПРАВКА ПОДПИСЕЙ ---")
+  (princ "\n[i] Все пункты работают с подписью-БЛОКОМ.")
+  (while (not done)
+    (initget "Обновить Добавить Прорядить обНулить Удалить Выход")
+    (setq k (getkword
+              (strcat "\nЧто с подписями?"
+                      " [Обновить/Добавить/Прорядить/обНулить/Удалить/Выход] <"
+                      dflt ">: ")))
+    (if (null k) (setq k dflt))
+    (cond
+      ((= k "Обновить")  (c:kgo) (setq dflt "Выход"))
+      ((= k "Добавить")  (c:kga) (setq dflt "Выход"))
+      ((= k "Прорядить") (c:kgp) (setq dflt "Выход"))
+      ((= k "обНулить")  (c:kgz) (setq dflt "Выход"))
+      ((= k "Удалить")   (c:kgd) (setq dflt "Выход"))
+      (T (setq done T))))
+  (princ))
+
 (defun gc-kg-menu ( / k dflt done)
   (setq done nil dflt "Выход")
   (while (not done)
@@ -3359,15 +3433,7 @@
                           (princ "\n[i] Отмена, ничего не подписано."))
                         (setq dflt "Выход"))
       ((= k "Проверка") (gc-kg-probe) (setq dflt "Выход"))
-      ((= k "пРавка")
-       (princ "\n\n--- ПРАВКА ПОДПИСЕЙ (отдельные команды) ---")
-       (princ "\n  KGO  обновить отметки   - пересчитать по нынешним поверхностям")
-       (princ "\n  KGA  добавить отметки   - в указанных точках")
-       (princ "\n  KGP  прорядить отметки  - убрать те, что стоят слишком густо")
-       (princ "\n  KGZ  обнулить рабочую   - землю здесь не трогаем")
-       (princ "\n  KGD  удалить все отм.   - стереть подписи целиком")
-       (princ "\n[i] Все они работают с подписью-БЛОКОМ.")
-       (setq dflt "Выход"))
+      ((= k "пРавка") (gc-kg-menu-edit) (setq dflt "Выход"))
       (T (setq done T))))
   (princ))
 
@@ -3402,7 +3468,7 @@
     (progn
       (gc-kg-defaults)
       (setq *gc-kg-surf-list* (gc-kg-surfaces))
-      (setq sbn (gc-kg-get "s-black") srn (gc-kg-get "s-red"))
+      (setq sbn (gc-kg-name-b) srn (gc-kg-name-r))
       (if (or (null sbn) (null srn))
         (princ "\n[!] Сначала выберите поверхности в окне KG.")
         (progn
@@ -3462,8 +3528,8 @@
 (defun gc-kg-surf-ready ( / )
   (if (or (null *gc-kg-sb*) (null *gc-kg-sr*))
     (progn
-      (setq *gc-kg-sb* (gc-kg-surf-obj (gc-kg-get "s-black"))
-            *gc-kg-sr* (gc-kg-surf-obj (gc-kg-get "s-red")))))
+      (setq *gc-kg-sb* (gc-kg-surf-obj (gc-kg-name-b))
+            *gc-kg-sr* (gc-kg-surf-obj (gc-kg-name-r)))))
   (if (and *gc-kg-sb* *gc-kg-sr*)
     T
     (progn
@@ -3787,7 +3853,7 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v33 загружен. Команды: KG | KGB границы | рус. ЛП, ЛПИ")
+(princ "\n[gc] kg.lsp v34 загружен. Команды: KG | KGB границы | рус. ЛП, ЛПИ")
 (princ "\n     Правка подписей: KGO обновить | KGA добавить | KGP прорядить")
 (princ "\n                      KGZ обнулить | KGD удалить все")
 (princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
