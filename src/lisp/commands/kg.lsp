@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v36)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v37)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -10,7 +10,32 @@
 ;;;   KGP / ЛПЗ   -- proryadit otmetki, ubrat stoyashchie gusto.
 ;;;   KGZ / ЛПЯ   -- obnulit rabochuyu otmetku.
 ;;;   KGD / ЛПВ   -- udalit vse otmetki.
+;;;   KGV / ЛПМ   -- VYNOSKA: otodvinut podpis, ostaviv liniyu k uzlu.
+;;;   KGW / ЛПЦ   -- perestroit vynoski posle ruchnogo peremeshcheniya.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v37: VYNOSKA PODPISI.
+;;;      Tam, gde na chertezhe tesno, podpis nekuda postavit: ona lezet na
+;;;      linii i na drugie podpisi. Ee otodvigayut v svobodnoe mesto, a k
+;;;      svoemu uzlu tyanut liniyu.
+;;;
+;;;      POCHEMU NE MULTIVYNOSKA. Multivynoska s soderzhimym-blokom tyanet
+;;;      liniyu sama, ruchkami, pryamo pri peretaskivanii - vyglyadit eto
+;;;      luchshe. No znacheniya ee atributov pravyatsya ne tak, kak u
+;;;      obychnogo bloka, i vse pyat komand pravki perestali by ih videt.
+;;;      Podpis, kotoruyu nelzya obnovit, dorozhe krasivoy ruchki.
+;;;      Eto ADR-0009.
+;;;
+;;;      KAK USTROENO. U bloka v rasshirennyh dannyh lezhit ego UZEL -
+;;;      tochka, kotoroy podpis prinadlezhit. Blok mozhno dvigat chem
+;;;      ugodno: komandoy MOVE, ruchkami, nashey KGV. Vynoski - obekty
+;;;      PROIZVODNYE: oni ne ishchutsya i ne pravyatsya po odnoy, a
+;;;      stirayutsya i risuyutsya zanovo vse razom po tekushchim
+;;;      polozheniyam blokov. Poetomu rassinhronizirovatsya im ne s chem.
+;;;
+;;;      KGW perestraivaet vynoski posle togo, kak podpisi dvigali rukami.
+;;;      Tot zhe perestroy idet posle prorezhivaniya i posle udaleniya:
+;;;      vynoska udalennoy podpisi visela by liniey v nikuda.
 ;;;
 ;;; v36: BLOK NE VSTAVAL - GRUPPA 73 U ATRIBUTA ZNACHIT DRUGOE.
 ;;;      Diagnostika v35 srazu nazvala vinovnogo: "blok ne vstal 75 raz,
@@ -539,7 +564,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v36")
+(setq *gc-kg-ver* "v37")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -1898,6 +1923,9 @@
                    (null (entmake (list '(0 . "SEQEND") '(100 . "AcDbEntity")
                                         (cons 8 lay)))))
             (setq bad "SEQEND"))))
+      ;; Узел запоминаем сразу: потом подпись отодвинут, и восстановить
+      ;; её исходное место будет неоткуда.
+      (if (null bad) (gc-kg-node-stamp p))
       (if bad
         (progn
           (setq *gc-kg-ins-fail* (1+ *gc-kg-ins-fail*))
@@ -1909,6 +1937,20 @@
             (gc-kg-drop-last-insert))
           nil)
         T))))
+
+;; Записать узел в только что созданный блок.
+;;
+;; После SEQEND последним примитивом становится сам INSERT, а не SEQEND:
+;; тот подчинённый. Проверяем это явно - записать расширенные данные
+;; не тому объекту хуже, чем не записать вовсе.
+(defun gc-kg-node-stamp (p / e d)
+  (setq e (entlast))
+  (if e
+    (progn
+      (setq d (entget e))
+      (if (and (= "INSERT" (cdr (assoc 0 d)))
+               (= *gc-kg-blk* (cdr (assoc 2 d))))
+        (gc-kg-node-put e p)))))
 
 ;; Стереть последний созданный INSERT нашего блока, если он там.
 (defun gc-kg-drop-last-insert ( / e d)
@@ -3563,22 +3605,23 @@
 ;; «обНулить» совпадает первая буква, поэтому у второго различающая -
 ;; заглавная Н, и getkword вернёт ключ ровно в таком написании.
 (defun gc-kg-menu-edit ( / k dflt done)
-  (setq done nil dflt "Выход")
+  (setq done nil dflt "выХод")
   (princ "\n\n--- ПРАВКА ПОДПИСЕЙ ---")
   (princ "\n[i] Все пункты работают с подписью-БЛОКОМ.")
   (while (not done)
-    (initget "Обновить Добавить Прорядить обНулить Удалить Что Выход")
+    (initget "Обновить Добавить Прорядить обНулить Выноска пеРестроить Удалить Что выХод")
     (setq k (getkword
-              (strcat "\nЧто с подписями?"
-                      " [Обновить/Добавить/Прорядить/обНулить/Удалить/Что/Выход] <"
-                      dflt ">: ")))
+              (strcat "\nЧто с подписями? [Обновить/Добавить/Прорядить/обНулить/"
+                      "Выноска/пеРестроить/Удалить/Что/выХод] <" dflt ">: ")))
     (if (null k) (setq k dflt))
     (cond
-      ((= k "Обновить")  (c:kgo) (setq dflt "Выход"))
-      ((= k "Добавить")  (c:kga) (setq dflt "Выход"))
-      ((= k "Прорядить") (c:kgp) (setq dflt "Выход"))
-      ((= k "обНулить")  (c:kgz) (setq dflt "Выход"))
-      ((= k "Удалить")   (c:kgd) (setq dflt "Выход"))
+      ((= k "Обновить")  (c:kgo) (setq dflt "выХод"))
+      ((= k "Добавить")  (c:kga) (setq dflt "выХод"))
+      ((= k "Прорядить") (c:kgp) (setq dflt "выХод"))
+      ((= k "обНулить")  (c:kgz) (setq dflt "выХод"))
+      ((= k "Выноска")   (c:kgv) (setq dflt "выХод"))
+      ((= k "пеРестроить") (c:kgw) (setq dflt "выХод"))
+      ((= k "Удалить")   (c:kgd) (setq dflt "выХод"))
       ((= k "Что")       (c:kgi))
       (T (setq done T))))
   (princ))
@@ -3888,6 +3931,8 @@
           (setvar "CMDECHO" 0)
           (command "_.UNDO" "_BEGIN")
           (foreach e kill (entdel e))
+          ;; Выноски удалённых подписей остались бы линиями в никуда.
+          (gc-kg-leaders-rebuild)
           (command "_.UNDO" "_END")
           (princ (strcat "\n  было отметок     : " (itoa n)))
           (princ (strcat "\n  осталось         : " (itoa (length keep))))
@@ -3939,9 +3984,9 @@
 ;;; Стираем и блоки, и отдельные тексты со слоя отметок: подписи могли
 ;;; быть поставлены запасным путём, и оставить половину - хуже всего.
 ;;; --------------------------------------------------------------------
-(defun c:kgd ( / ss n i lay nb nt)
+(defun c:kgd ( / ss n i lay nb nt nl)
   (princ "\n\n=== KGD - удалить все отметки ===")
-  (setq lay "GC-Картограмма-Отметки" nb 0 nt 0)
+  (setq lay "GC-Картограмма-Отметки" nb 0 nt 0 nl 0)
   (setvar "CMDECHO" 0)
   (command "_.UNDO" "_BEGIN")
   (if (setq ss (gc-kg-blk-ss))
@@ -3954,11 +3999,174 @@
       (setq n (sslength ss) i 0)
       (while (< i n) (entdel (ssname ss i)) (setq i (1+ i)))
       (setq nt n)))
+  ;; Выноски - производные от подписей: без подписей они висят линиями
+  ;; в никуда, и убрать их надо тем же движением.
+  (setq nl (gc-kg-leaders-clear))
   (command "_.UNDO" "_END")
   (princ (strcat "\n  удалено блоков   : " (itoa nb)))
   (princ (strcat "\n  удалено текстов  : " (itoa nt)))
-  (if (and (= nb 0) (= nt 0)) (princ "\n  [i] Удалять было нечего."))
+  (princ (strcat "\n  удалено выносок  : " (itoa nl)))
+  (if (and (= nb 0) (= nt 0) (= nl 0)) (princ "\n  [i] Удалять было нечего."))
   (princ "\n[i] Один Ctrl+Z возвращает всё удалённое.")
+  (princ))
+
+;;; --------------------------------------------------------------------
+;;; ВЫНОСКА ПОДПИСИ
+;;;
+;;; ЗАЧЕМ. Там, где на чертеже тесно, подпись некуда поставить: она лезет
+;;; на линии, на другие подписи, на условные знаки. Её отодвигают в
+;;; свободное место, а к своему узлу тянут линию - чтобы было видно,
+;;; к чему она относится.
+;;;
+;;; ПОЧЕМУ НЕ МУЛЬТИВЫНОСКА. Мультивыноска с содержимым-блоком тянет
+;;; линию сама, ручками, прямо при перетаскивании - выглядит это лучше.
+;;; Но значения её атрибутов правятся не так, как у обычного блока, и
+;;; все пять команд правки (KGO, KGA, KGP, KGZ, KGD) перестали бы их
+;;; видеть. Подпись, которую нельзя обновить, дороже красивой ручки.
+;;;
+;;; КАК УСТРОЕНО. У блока в расширенных данных лежит его УЗЕЛ - точка,
+;;; которой подпись принадлежит. Блок можно двигать чем угодно: командой
+;;; MOVE, ручками, нашей KGV. Выноски - объекты ПРОИЗВОДНЫЕ: они не
+;;; ищутся и не правятся по одной, а стираются и рисуются заново все
+;;; разом по текущим положениям блоков. Поэтому рассинхронизироваться
+;;; им не с чем.
+;;; --------------------------------------------------------------------
+
+(setq *gc-kg-xapp* "GC-KG")                       ; имя приложения в XData
+(setq *gc-kg-lay-lead* "GC-Картограмма-Выноски")
+
+;; Запомнить у блока его узел. Без этого выноску не от чего вести:
+;; после переноса точка вставки уже не узел, и вернуть её неоткуда.
+(defun gc-kg-node-put (e p / d)
+  (regapp *gc-kg-xapp*)
+  (setq d (entget e))
+  ;; Старые расширенные данные того же приложения заменяются целиком -
+  ;; иначе у блока накопилось бы несколько узлов, и какой из них верный,
+  ;; определить было бы нечем.
+  (setq d (vl-remove (assoc -3 d) d))
+  (entmod (append d (list (list -3 (list *gc-kg-xapp*
+                                         (cons 1010 (list (car p) (cadr p) 0.0))))))))
+
+;; Узел блока либо nil.
+(defun gc-kg-node-get (e / d x)
+  (setq d (entget e (list *gc-kg-xapp*)))
+  (setq x (cdr (assoc -3 d)))
+  (if x
+    (progn
+      (setq x (cdr (car x)))
+      (setq x (assoc 1010 x))
+      (if x (cdr x) nil))
+    nil))
+
+;; Нарисовать выноску от узла к подписи.
+;;
+;; Линия идёт не в саму точку вставки, а немного НЕ доходя: иначе она
+;; упирается в цифры и читается хуже. Отступ - в долях высоты текста,
+;; чтобы не зависеть от масштаба чертежа.
+(defun gc-kg-leader-draw (a b h / d l dx dy)
+  (setq dx (- (car b) (car a)) dy (- (cadr b) (cadr a)))
+  (setq l (sqrt (+ (* dx dx) (* dy dy))))
+  (if (< l (* 0.3 h))
+    nil                                  ; подпись на месте - вести нечего
+    (progn
+      (setq d (* 0.35 h))                ; не доводим до цифр
+      (setq b (list (- (car b)  (* d (/ dx l)))
+                    (- (cadr b) (* d (/ dy l)))))
+      (entmake (list '(0 . "LINE") '(100 . "AcDbEntity")
+                     (cons 8 *gc-kg-lay-lead*)
+                     '(100 . "AcDbLine")
+                     (cons 10 (list (car a) (cadr a) 0.0))
+                     (cons 11 (list (car b) (cadr b) 0.0)))))))
+
+;; Стереть все выноски.
+(defun gc-kg-leaders-clear ( / ss n i)
+  (setq ss (ssget "_X" (list (cons 8 *gc-kg-lay-lead*))))
+  (if ss
+    (progn
+      (setq n (sslength ss) i 0)
+      (while (< i n) (entdel (ssname ss i)) (setq i (1+ i)))
+      n)
+    0))
+
+;; Перестроить ВСЕ выноски по нынешним положениям блоков.
+;;
+;; Стираем и рисуем заново, а не ищем каждую и правим: искать соответствие
+;; «эта линия принадлежит тому блоку» пришлось бы по ссылкам, которые
+;; рвутся при копировании, удалении и откате. Производный объект дешевле
+;; построить заново, чем синхронизировать.
+(defun gc-kg-leaders-rebuild ( / ss n i e p a env h cnt)
+  (gc-kg-layer *gc-kg-lay-lead* 7)
+  (gc-kg-leaders-clear)
+  (setq env (gc-kg-mark-env) h (nth 2 env) cnt 0)
+  (setq ss (gc-kg-blk-ss))
+  (if ss
+    (progn
+      (setq n (sslength ss) i 0)
+      (while (< i n)
+        (setq e (ssname ss i))
+        (setq a (gc-kg-node-get e))
+        (setq p (gc-kg-blk-pt e))
+        (if (and a p (gc-kg-leader-draw a p h))
+          (setq cnt (1+ cnt)))
+        (setq i (1+ i)))))
+  cnt)
+
+;;; --------------------------------------------------------------------
+;;; KGV - выноска подписей: отодвинуть подпись, оставив линию к узлу
+;;; --------------------------------------------------------------------
+(defun c:kgv ( / ss n i e p a np env h cnt one)
+  (princ "\n\n=== KGV - выноска подписей ===")
+  (princ "\n[i] Отодвиньте подпись в свободное место - к узлу протянется линия.")
+  (setq env (gc-kg-mark-env) h (nth 2 env))
+  (setq ss (gc-kg-pick-marks "Выноска"))
+  (if ss
+    (progn
+      (setq n (sslength ss) i 0 cnt 0)
+      (setvar "CMDECHO" 0)
+      (command "_.UNDO" "_BEGIN")
+      (while (< i n)
+        (setq e (ssname ss i))
+        (setq p (gc-kg-blk-pt e))
+        (setq a (gc-kg-node-get e))
+        ;; У подписи, поставленной до v37, узла в данных нет. Считаем
+        ;; узлом её нынешнее место: она пока никуда не двигалась.
+        (if (null a)
+          (progn (gc-kg-node-put e p) (setq a p)))
+        (princ (strcat "\n[" (itoa (1+ i)) " из " (itoa n) "] "))
+        ;; Резинка тянется от подписи - видно, куда она поедет.
+        (setq np (getpoint (trans p 0 1) "Куда отодвинуть подпись: "))
+        (if np
+          (progn
+            (setq np (trans np 1 0))
+            (setq one (ssadd))
+            (ssadd e one)
+            ;; Двигаем командой MOVE, а не правкой точки вставки: у блока
+            ;; с атрибутами своя точка у каждого атрибута, и сдвинуть их
+            ;; по одной значит рано или поздно забыть одну.
+            (command "_.MOVE" one "" (trans p 0 1) (trans np 0 1))
+            (setq cnt (1+ cnt))))
+        (setq i (1+ i)))
+      (setq cnt (gc-kg-leaders-rebuild))
+      (command "_.UNDO" "_END")
+      (princ (strcat "\n  выносок на чертеже: " (itoa cnt)))
+      (princ (strcat "\n  слой              : " *gc-kg-lay-lead*))
+      (princ "\n[i] Подпись можно двигать и обычным способом - ручками или MOVE.")
+      (princ "\n    Потом «Выноски» в меню правки перерисует линии.")
+      (princ "\n[i] Один Ctrl+Z возвращает подписи на место.")))
+  (princ))
+
+;;; --------------------------------------------------------------------
+;;; KGW - перестроить выноски после того, как подписи двигали руками
+;;; --------------------------------------------------------------------
+(defun c:kgw ( / cnt)
+  (princ "\n\n=== KGW - перестроить выноски ===")
+  (setvar "CMDECHO" 0)
+  (command "_.UNDO" "_BEGIN")
+  (setq cnt (gc-kg-leaders-rebuild))
+  (command "_.UNDO" "_END")
+  (princ (strcat "\n  выносок построено : " (itoa cnt)))
+  (if (= cnt 0)
+    (princ "\n  [i] Ни одна подпись не сдвинута со своего узла - вести нечего."))
   (princ))
 
 ;;; --------------------------------------------------------------------
@@ -3985,6 +4193,9 @@
   (setq nt (if nt (gc-kg-ss-len nt) 0))
   (if (null nt) (setq nt 0))
   (princ (strcat "\n  текстов на слое      : " (itoa nt)))
+  (setq ss (ssget "_X" (list (cons 8 *gc-kg-lay-lead*))))
+  (princ (strcat "\n  выносок              : "
+                 (itoa (if ss (if (gc-kg-ss-len ss) (gc-kg-ss-len ss) 0) 0))))
   (if (and (= n 0) (> nt 0))
     (progn
       (princ "\n  [!] Подписи стоят ТЕКСТОМ - команды правки их не увидят.")
@@ -4014,7 +4225,7 @@
                  (if *gc-kg-cells*
                    (strcat "да, квадратов " (itoa (length *gc-kg-cells*)))
                    "нет - узлы при прореживании не защищаются")))
-  (princ "\n[i] Правка подписей: KG -> «пРавка», либо KGO/KGA/KGP/KGZ/KGD.")
+  (princ "\n[i] Правка подписей: KG -> «пРавка», либо KGO/KGA/KGP/KGZ/KGV/KGW/KGD.")
   (princ))
 
 ;; Русская раскладка: K->Л, G->П, O->Щ, A->Ф, P->З, Z->Я, D->В, I->Ш
@@ -4024,6 +4235,8 @@
 (defun c:лпя ( / ) (c:kgz))
 (defun c:лпв ( / ) (c:kgd))
 (defun c:лпш ( / ) (c:kgi))
+(defun c:лпм ( / ) (c:kgv))
+(defun c:лпц ( / ) (c:kgw))
 
 ;;; ====================================================================
 ;;; ЯДРО КОМАНДЫ
