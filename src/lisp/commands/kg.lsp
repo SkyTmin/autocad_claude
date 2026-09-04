@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v37)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v38)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -13,6 +13,37 @@
 ;;;   KGV / ЛПМ   -- VYNOSKA: otodvinut podpis, ostaviv liniyu k uzlu.
 ;;;   KGW / ЛПЦ   -- perestroit vynoski posle ruchnogo peremeshcheniya.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v38: KRESTIK, VYNOSKA ODNIM SHCHELCHKOM, PROREZHIVANIE PO GABARITAM.
+;;;
+;;;      1. KRESTIK MEZHDU CHISLAMI - dve linii VNUTRI opredeleniya bloka.
+;;;         Vysota podpisi zadaetsya masshtabom vstavki, i vsyo, chto lezhit
+;;;         vnutri bloka, masshtabiruetsya vmeste s tekstom samo. Risuy my
+;;;         krestik otdelnymi liniyami - ego razmery prishlos by
+;;;         pereschityvat pri kazhdoy smene shrifta.
+;;;
+;;;         VAZHNOE: entmake NE perepisyvaet uzhe sushchestvuyushchee
+;;;         opredelenie bloka - on molcha beret ego kak est. U vseh, kto
+;;;         podpisyval otmetki prezhney versiey, forma podpisi ostalas by
+;;;         staroy NAVSEGDA. Shamil eto i uvidel: krestik poyavlyalsya
+;;;         tolko tam, gde opredelenie sozdavalos zanovo. Teper krestik
+;;;         dopisyvaetsya v sushchestvuyushchee opredelenie cherez ActiveX,
+;;;         i vse vstavki podhvatyvayut ego srazu (P60).
+;;;
+;;;      2. KGV - ODIN SHCHELCHOK PO PODPISI, i ona srazu edet za kursorom.
+;;;         Postavil - i tut zhe mozhno shchelknut sleduyushchuyu, ne
+;;;         zapuskaya komandu snova. Za odnu pravku chertezha podpisi
+;;;         dvigayut desyatkami, i kazhdoe lishnee nazhatie umnozhaetsya
+;;;         na eto chislo. Predprosmotr daet sama komanda MOVE: poka
+;;;         tyanesh, viden blok, vse tri chisla i krestik.
+;;;
+;;;      3. PROREZHIVANIE PO GABARITAM PODPISI, a ne po rasstoyaniyu.
+;;;         Podpis - ne kruzhok, a lezhachiy pryamougolnik: vshir ona
+;;;         zanimaet vchetvero bolshe, chem vvys. Krugovoy porog vral
+;;;         v obe storony srazu. Glavnoe zhe v tom, chto meshayut podpisi
+;;;         tolko pri KRUPNOM shrifte: pri melkom vsyo pomeshchaetsya, i
+;;;         ubirat NE NADO - mesto est. Gabarit zavisit ot vysoty teksta,
+;;;         poetomu pravilo samo podstraivaetsya pod shrift.
 ;;;
 ;;; v37: VYNOSKA PODPISI.
 ;;;      Tam, gde na chertezhe tesno, podpis nekuda postavit: ona lezet na
@@ -564,7 +595,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v37")
+(setq *gc-kg-ver* "v38")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -1783,6 +1814,23 @@
 (setq *gc-kg-tag-b* "BYLO")    ; чёрная, «было»
 (setq *gc-kg-tag-r* "STALO")   ; красная, «стало»
 
+;; Крестик подписи - две линии внутри блока.
+;;
+;; ЗАЧЕМ. Он отделяет рабочую отметку от пары «было/стало» и сами эти два
+;; числа друг от друга. Без него три числа сливаются в одну кашу цифр,
+;; особенно когда рядом стоит вторая подпись.
+;;
+;; ПОЧЕМУ ВНУТРИ БЛОКА, А НЕ ОТДЕЛЬНЫМИ ЛИНИЯМИ. Высота подписи задаётся
+;; масштабом вставки, и всё, что лежит внутри блока, масштабируется вместе
+;; с текстом само. Рисуй мы крестик отдельно - его размеры пришлось бы
+;; пересчитывать при каждой смене шрифта, и рано или поздно он разъехался
+;; бы с цифрами.
+;;
+;; Размеры в долях высоты текста: вертикаль на всю подпись, горизонталь
+;; вправо примерно на ширину числа из пяти знаков.
+(setq *gc-kg-cross-v* '(0.0 -1.15  0.0  1.20))   ; x1 y1 x2 y2
+(setq *gc-kg-cross-h* '(-0.60 0.0  2.80  0.0))
+
 ;; Смещения текстов внутри блока при высоте 1,0. Те же, что у обычных
 ;; текстов: подпись блоком и подпись текстом должны выглядеть одинаково.
 (setq *gc-kg-off-w* '(-0.15  0.15))    ; рабочая, прижата правым краем
@@ -1812,6 +1860,101 @@
     (princ (strcat "\n[!] Атрибут " tag " в определении блока не создался.")))
   r)
 
+;; Линия крестика внутри определения блока. Цвет ByBlock (0) и слой "0" -
+;; чтобы крестик слушался того, что задано вставке, а не жил своей жизнью.
+(defun gc-kg-cross-line (v / r)
+  (setq r (entmake (list '(0 . "LINE") '(100 . "AcDbEntity") '(8 . "0")
+                         '(62 . 0)
+                         '(100 . "AcDbLine")
+                         (cons 10 (list (nth 0 v) (nth 1 v) 0.0))
+                         (cons 11 (list (nth 2 v) (nth 3 v) 0.0)))))
+  (if (null r) (princ "\n[!] Линия крестика в определении блока не создалась."))
+  r)
+
+;; Сколько линий лежит внутри определения блока.
+;;
+;; Идём по определению entnext-ом от его заголовка до ENDBLK. Так видно
+;; РЕАЛЬНОЕ содержимое, а не то, каким мы его задумывали: определение
+;; могло прийти из чертежа, сделанного прежней версией.
+(defun gc-kg-blk-nlines ( / e d n)
+  (setq n 0 e (tblobjname "BLOCK" *gc-kg-blk*))
+  (if e
+    (progn
+      (setq e (entnext e))
+      (while (and e (setq d (entget e))
+                  (/= "ENDBLK" (cdr (assoc 0 d))))
+        (if (= "LINE" (cdr (assoc 0 d))) (setq n (1+ n)))
+        (setq e (entnext e)))))
+  n)
+
+;; Дописать крестик в УЖЕ СУЩЕСТВУЮЩЕЕ определение блока.
+;;
+;; ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ. entmake не переписывает определение, которое
+;; уже есть: он молча берёт его как есть. Поэтому у всех, кто подписывал
+;; отметки прежней версией, форма подписи осталась бы старой навсегда -
+;; правка формы в коде до чертежа просто не доезжает. Это ровно то, на
+;; чём споткнулся Шамиль: крестик появлялся только там, где определение
+;; создавалось заново (docs/pitfalls.md -> П60).
+;;
+;; Через ActiveX объект добавляется прямо в определение, и ВСЕ вставки
+;; подхватывают его сразу - в том числе те, что уже стоят на чертеже.
+(defun gc-kg-blk-add-cross ( / doc blks blk r ok)
+  (setq ok nil)
+  (if (gc-kg-com-ok)
+    (progn
+      (setq doc (vla-get-activedocument (vlax-get-acad-object)))
+      (setq blks (vla-get-blocks doc))
+      (setq r (vl-catch-all-apply 'vla-item (list blks *gc-kg-blk*)))
+      (if (vl-catch-all-error-p r)
+        (princ (strcat "\n[!] Определение блока не открылось: "
+                       (vl-catch-all-error-message r)))
+        (progn
+          (setq blk r ok T)
+          (foreach v (list *gc-kg-cross-v* *gc-kg-cross-h*)
+            (setq r (vl-catch-all-apply 'vla-addline
+                      (list blk
+                            (vlax-3d-point (list (nth 0 v) (nth 1 v) 0.0))
+                            (vlax-3d-point (list (nth 2 v) (nth 3 v) 0.0)))))
+            (if (vl-catch-all-error-p r)
+              (progn
+                (princ (strcat "\n[!] Линия крестика не добавилась: "
+                               (vl-catch-all-error-message r)))
+                (setq ok nil))
+              ;; 0 = ByBlock: крестик должен слушаться того, что задано
+              ;; вставке, а не жить своим цветом.
+              (vl-catch-all-apply 'vla-put-color (list r 0))))
+          ;; 1 = все видовые экраны. Число, а не имя константы: имена
+          ;; ActiveX-констант доступны не в каждой сборке, и промах по
+          ;; ним уронил бы обновление на ровном месте.
+          (if ok
+            (progn
+              (setq r (vl-catch-all-apply 'vla-regen (list doc 1)))
+              (if (vl-catch-all-error-p r)
+                (princ "\n    Наберите REGEN, чтобы увидеть крестик."))))))))
+  ok)
+
+;; Проверяли ли мы форму определения в этой сессии.
+(setq *gc-kg-blk-checked* nil)
+
+;; Привести определение блока к нынешней форме, если оно из прошлой версии.
+(defun gc-kg-blk-upgrade ( / n)
+  (if (and (null *gc-kg-blk-checked*) (gc-kg-blk-p))
+    (progn
+      (setq n (gc-kg-blk-nlines))
+      (if (< n 2)
+        (progn
+          (princ (strcat "\n[i] Определение блока " *gc-kg-blk*
+                         " из прежней версии - дописываю крестик."))
+          (if (gc-kg-blk-add-cross)
+            (princ "\n    Готово, крестик появится у всех подписей сразу.")
+            (progn
+              (princ "\n[!] Дописать не удалось. Подписи останутся без крестика.")
+              (princ "\n    Обходной путь: KGD (удалить все) и подписать заново.")))))
+      ;; Помечаем в любом случае: если не вышло, повторять на каждую
+      ;; из семидесяти пяти точек и сыпать одним и тем же сообщением
+      ;; - только мешать.
+      (setq *gc-kg-blk-checked* T))))
+
 ;; Создать определение блока. Возвращает T, если после вызова оно есть.
 ;;
 ;; Слой внутри определения - "0", цвет - ByBlock: только так вставленный
@@ -1819,7 +1962,7 @@
 ;; собранный на своём слое, игнорировал бы настройки и жил своей жизнью.
 (defun gc-kg-blk-make ( / ok)
   (if (gc-kg-blk-p)
-    T
+    (progn (gc-kg-blk-upgrade) T)
     (progn
       (setq ok (entmake (list '(0 . "BLOCK") (cons 2 *gc-kg-blk*) '(70 . 2)
                               '(10 0.0 0.0 0.0))))
@@ -1827,6 +1970,8 @@
         (princ (strcat "\n[!] Не открылось определение блока \"" *gc-kg-blk*
                        "\" - entmake отказал на BLOCK."))
         (progn
+          (gc-kg-cross-line *gc-kg-cross-v*)
+          (gc-kg-cross-line *gc-kg-cross-h*)
           (gc-kg-attdef *gc-kg-off-w* *gc-kg-tag-w* "Рабочая отметка" 2)
           (gc-kg-attdef *gc-kg-off-b* *gc-kg-tag-b* "Чёрная (было)"   0)
           (gc-kg-attdef *gc-kg-off-r* *gc-kg-tag-r* "Красная (стало)" 0)
@@ -3895,23 +4040,55 @@
       (and (< (abs (* sx (- (/ (car  w) sx) (gc-kg-rnd (/ (car  w) sx))))) tol)
            (< (abs (* sy (- (/ (cadr w) sy) (gc-kg-rnd (/ (cadr w) sy))))) tol)))))
 
-(defun c:kgp ( / ss n i e p r env h dflt keep kill lst nodes rest ok q k)
+;; Габарит подписи вокруг её точки: (x0 y0 x1 y1).
+;;
+;; ПОЧЕМУ ГАБАРИТ, А НЕ РАССТОЯНИЕ. Подпись - не кружок, а лежачий
+;; прямоугольник: вширь она занимает вчетверо больше, чем ввысь. Круговой
+;; порог поэтому врёт в обе стороны сразу - по вертикали выбрасывает
+;; подписи, которые прекрасно помещались, а по горизонтали оставляет
+;; налезающие друг на друга.
+;;
+;; ПОЧЕМУ ЭТО ГЛАВНОЕ. Мешают подписи не всегда, а только когда шрифт
+;; крупный: при мелком всё помещается, и прореживать НЕ НАДО - место
+;; есть. Габарит зависит от высоты текста, поэтому правило само
+;; подстраивается под шрифт, а не требует подбирать порог руками.
+;;
+;; Ширина считается по числу знаков: три знака целой части, запятая,
+;; знаки после неё, а у рабочей ещё и знак «плюс».
+(defun gc-kg-mark-box (p h prec / k wr wl)
+  (setq k (+ 3.0 (if (> prec 0) (+ 1.0 (float prec)) 0.0)))
+  (setq wr (* 0.62 h k)             ; числа справа
+        wl (* 0.62 h (+ k 1.0)))    ; рабочая слева, со знаком
+  (list (- (car p) wl) (- (cadr p) (* 1.25 h))
+        (+ (car p) wr) (+ (cadr p) (* 1.30 h))))
+
+;; Перекрываются ли два габарита, раздвинутые на зазор g.
+(defun gc-kg-box-hit (a b g)
+  (not (or (< (+ (nth 2 a) g) (nth 0 b))
+           (> (- (nth 0 a) g) (nth 2 b))
+           (< (+ (nth 3 a) g) (nth 1 b))
+           (> (- (nth 1 a) g) (nth 3 b)))))
+
+(defun c:kgp ( / ss n i e p g env h prec dflt keep kill lst nodes rest ok q k bx)
   (princ "\n\n=== KGP - прорядить отметки ===")
-  (setq env (gc-kg-mark-env) h (nth 2 env))
+  (setq env (gc-kg-mark-env) h (nth 2 env) prec (nth 3 env))
   (setq ss (gc-kg-pick-marks "Прореживание"))
   (if ss
     (progn
-      ;; По умолчанию - ширина самой подписи: примерно шесть знаков
-      ;; шириной 0,7 высоты каждый. Ближе этого подписи налезают.
-      (setq dflt (* 4.2 h))
-      (princ (strcat "\nМинимальное расстояние между отметками <"
-                     (gc-kg-fmt dflt) " м>: "))
-      (setq r (getdist))
-      (if (null r) (setq r dflt))
-      (if (<= r 0.0)
-        (princ "\n[!] Расстояние должно быть больше нуля.")
+      (princ (strcat "\n[i] Убираются подписи, налезающие друг на друга при высоте "
+                     (gc-kg-fmt h) " м."))
+      (princ "\n    Зазор - насколько ещё раздвинуть их между собой.")
+      (princ "\n    Зазор 0 значит «убрать только те, что реально пересекаются».")
+      (setq dflt 0.0)
+      (princ (strcat "\nЗазор между подписями, м <" (gc-kg-fmt dflt) ">: "))
+      (setq g (getdist))
+      (if (null g) (setq g dflt))
+      (if (< g 0.0)
+        (princ "\n[!] Зазор не может быть отрицательным.")
         (progn
-          ;; Собираем точки, разделяя на узлы сетки и остальные.
+          ;; Узлы сетки идут ПЕРВЫМИ и не удаляются никогда: иначе
+          ;; прореживание съело бы именно опорные точки, по которым
+          ;; считается объём целых квадратов.
           (setq n (sslength ss) i 0 nodes nil rest nil)
           (while (< i n)
             (setq e (ssname ss i) p (gc-kg-blk-pt e))
@@ -3922,11 +4099,12 @@
           (setq lst (append (reverse nodes) (reverse rest)))
           (setq keep nil kill nil)
           (foreach q lst
+            (setq bx (gc-kg-mark-box (cdr q) h prec))
             (setq ok T)
             (foreach k keep
-              (if (and ok (< (distance (cdr q) k) r)) (setq ok nil)))
+              (if (and ok (gc-kg-box-hit bx k g)) (setq ok nil)))
             (if ok
-              (setq keep (cons (cdr q) keep))
+              (setq keep (cons bx keep))
               (setq kill (cons (car q) kill))))
           (setvar "CMDECHO" 0)
           (command "_.UNDO" "_BEGIN")
@@ -3937,11 +4115,19 @@
           (princ (strcat "\n  было отметок     : " (itoa n)))
           (princ (strcat "\n  осталось         : " (itoa (length keep))))
           (princ (strcat "\n  убрано           : " (itoa (length kill))))
-          (princ (strcat "\n  порог            : " (gc-kg-fmt r) " м"))
+          (princ (strcat "\n  размер подписи   : "
+                         (gc-kg-fmt (* 0.62 h (+ 7.0 (if (> prec 0) (float prec) 0.0))))
+                         " x " (gc-kg-fmt (* 2.55 h)) " м"
+                         "  (при высоте " (gc-kg-fmt h) " м)"))
+          (princ (strcat "\n  зазор            : " (gc-kg-fmt g) " м"))
+          (if (= 0 (length kill))
+            (princ "\n  [i] Ни одна подпись не налезает на другую - убирать нечего."))
           (if nodes
             (princ (strcat "\n  узлов сетки      : " (itoa (length nodes))
                            "  (не удаляются никогда)"))
             (princ "\n  [i] Сетка не построена в этой сессии - узлы не защищались."))
+          (princ "\n[i] Мельче шрифт - меньше придётся убирать: подписи перестанут")
+          (princ "\n    налезать сами. Высота задаётся в окне «Отметки».")
           (princ "\n[i] Один Ctrl+Z возвращает убранные отметки.")))))
   (princ))
 
@@ -4002,6 +4188,17 @@
   ;; Выноски - производные от подписей: без подписей они висят линиями
   ;; в никуда, и убрать их надо тем же движением.
   (setq nl (gc-kg-leaders-clear))
+  ;; Определение блока тоже вычищаем. Иначе форма подписи, заданная
+  ;; в определении (крестик, положение чисел), осталась бы прежней:
+  ;; entmake не переписывает уже существующее определение, а молча
+  ;; берёт его как есть. Из-за этого правка формы не доезжала бы
+  ;; до чертежей, где подпись уже была.
+  (if (gc-kg-blk-p)
+    (progn
+      (command "_.-PURGE" "_B" *gc-kg-blk* "_N")
+      (if (gc-kg-blk-p)
+        (princ "\n  [i] Определение блока осталось - где-то есть его вставки.")
+        (princ "\n  определение блока: вычищено, следующая подпись создаст свежее"))))
   (command "_.UNDO" "_END")
   (princ (strcat "\n  удалено блоков   : " (itoa nb)))
   (princ (strcat "\n  удалено текстов  : " (itoa nt)))
@@ -4113,46 +4310,74 @@
 
 ;;; --------------------------------------------------------------------
 ;;; KGV - выноска подписей: отодвинуть подпись, оставив линию к узлу
+;;;
+;;; КАК РАБОТАЕТ. Один щелчок по подписи - и она сразу поехала за курсором.
+;;; Поставил - и тут же можно щёлкнуть следующую. Никаких «выберите
+;;; объекты, Enter, укажите базовую точку»: за одну правку чертежа подписи
+;;; двигают десятками, и каждое лишнее нажатие умножается на это число.
+;;;
+;;; ПРЕДПРОСМОТР даёт сама команда MOVE: пока тянешь, видно и блок,
+;;; и все три числа, и крестик - это штатное перетаскивание AutoCAD.
+;;; Линия выноски дорисовывается сразу после установки.
+;;;
+;;; ПОЧЕМУ ЛИНИЯ НЕ ТЯНЕТСЯ ВМЕСТЕ С БЛОКОМ. Чтобы она перестраивалась
+;;; прямо в движении, подпись должна быть мультивыноской или динамическим
+;;; блоком - и то и другое ломает правку атрибутов (ADR-0009). Выбор
+;;; между «линия тянется живьём» и «подпись можно обновить» сделан
+;;; в пользу второго.
 ;;; --------------------------------------------------------------------
-(defun c:kgv ( / ss n i e p a np env h cnt one)
-  (princ "\n\n=== KGV - выноска подписей ===")
-  (princ "\n[i] Отодвиньте подпись в свободное место - к узлу протянется линия.")
-  (setq env (gc-kg-mark-env) h (nth 2 env))
-  (setq ss (gc-kg-pick-marks "Выноска"))
-  (if ss
+
+;; Наш ли это блок отметки. Возвращает ename либо nil.
+(defun gc-kg-is-mark (e / d)
+  (if (null e)
+    nil
     (progn
-      (setq n (sslength ss) i 0 cnt 0)
+      (setq d (entget e))
+      (if (and (= "INSERT" (cdr (assoc 0 d)))
+               (= *gc-kg-blk* (cdr (assoc 2 d))))
+        e
+        nil))))
+
+(defun c:kgv ( / sel e p a cnt one lead)
+  (princ "\n\n=== KGV - выноска подписей ===")
+  (if (null (gc-kg-blk-ss))
+    (gc-kg-no-marks)
+    (progn
+      (princ "\n[i] Щёлкните по подписи - она поедет за курсором. Поставьте щелчком.")
+      (princ "\n    Дальше сразу следующая. Enter или Esc - закончить.")
+      (setq cnt 0)
       (setvar "CMDECHO" 0)
       (command "_.UNDO" "_BEGIN")
-      (while (< i n)
-        (setq e (ssname ss i))
-        (setq p (gc-kg-blk-pt e))
-        (setq a (gc-kg-node-get e))
-        ;; У подписи, поставленной до v37, узла в данных нет. Считаем
-        ;; узлом её нынешнее место: она пока никуда не двигалась.
-        (if (null a)
-          (progn (gc-kg-node-put e p) (setq a p)))
-        (princ (strcat "\n[" (itoa (1+ i)) " из " (itoa n) "] "))
-        ;; Резинка тянется от подписи - видно, куда она поедет.
-        (setq np (getpoint (trans p 0 1) "Куда отодвинуть подпись: "))
-        (if np
+      (while (setq sel (entsel "\nПодпись (Enter - закончить): "))
+        (setq e (gc-kg-is-mark (car sel)))
+        (if (null e)
+          (princ "\n[!] Это не подпись отметки - щёлкните по цифрам подписи.")
           (progn
-            (setq np (trans np 1 0))
+            (setq p (gc-kg-blk-pt e))
+            (setq a (gc-kg-node-get e))
+            ;; У подписи, поставленной до v37, узла в данных нет. Считаем
+            ;; узлом её нынешнее место: она пока никуда не двигалась.
+            (if (null a)
+              (progn (gc-kg-node-put e p) (setq a p)))
             (setq one (ssadd))
             (ssadd e one)
-            ;; Двигаем командой MOVE, а не правкой точки вставки: у блока
-            ;; с атрибутами своя точка у каждого атрибута, и сдвинуть их
-            ;; по одной значит рано или поздно забыть одну.
-            (command "_.MOVE" one "" (trans p 0 1) (trans np 0 1))
-            (setq cnt (1+ cnt))))
-        (setq i (1+ i)))
-      (setq cnt (gc-kg-leaders-rebuild))
+            ;; Базовая точка - там, где щёлкнули: тогда подпись не
+            ;; прыгает под курсор, а едет ровно за ним.
+            ;; pause отдаёт перетаскивание пользователю, и он видит
+            ;; настоящий блок со всеми цифрами.
+            (command "_.MOVE" one "" (cadr sel) pause)
+            (setq cnt (1+ cnt))
+            ;; Выноску перестраиваем сразу: пользователь видит результат
+            ;; до того, как возьмётся за следующую подпись.
+            (gc-kg-leaders-rebuild))))
+      (setq lead (gc-kg-leaders-rebuild))
       (command "_.UNDO" "_END")
-      (princ (strcat "\n  выносок на чертеже: " (itoa cnt)))
-      (princ (strcat "\n  слой              : " *gc-kg-lay-lead*))
-      (princ "\n[i] Подпись можно двигать и обычным способом - ручками или MOVE.")
-      (princ "\n    Потом «Выноски» в меню правки перерисует линии.")
-      (princ "\n[i] Один Ctrl+Z возвращает подписи на место.")))
+      (princ (strcat "\n  подписей сдвинуто : " (itoa cnt)))
+      (princ (strcat "\n  выносок на чертеже: " (itoa lead)))
+      (princ (strcat "\n  слой выносок      : " *gc-kg-lay-lead*))
+      (princ "\n[i] Подпись можно двигать и обычным способом - ручками или MOVE,")
+      (princ "\n    потом KGW перерисует линии.")
+      (princ "\n[i] Один Ctrl+Z отменяет всю правку разом.")))
   (princ))
 
 ;;; --------------------------------------------------------------------
@@ -4177,7 +4402,7 @@
 ;;; есть ли определение блока, сколько вставок, сколько текстов, какие
 ;;; настройки, видны ли поверхности.
 ;;; --------------------------------------------------------------------
-(defun c:kgi ( / ss n nt lay e atts)
+(defun c:kgi ( / ss n nt lay e atts nc)
   (gc-kg-defaults)
   (setq lay "GC-Картограмма-Отметки")
   (princ "\n\n=== KGI - что на чертеже ===")
@@ -4185,6 +4410,15 @@
   (princ (strcat "\n  определение блока    : "
                  (if (gc-kg-blk-p) (strcat "ЕСТЬ (" *gc-kg-blk* ")")
                                    "НЕТ - подписей блоком ещё не было")))
+  (if (gc-kg-blk-p)
+    (progn
+      (setq nc (gc-kg-blk-nlines))
+      (princ (strcat "\n  линий крестика       : " (itoa nc)
+                     (if (< nc 2) "  [!] определение из прежней версии" "")))
+      (if (< nc 2)
+        (progn
+          (setq *gc-kg-blk-checked* nil)
+          (gc-kg-blk-upgrade)))))
   (setq ss (gc-kg-blk-ss))
   (setq n (if ss (gc-kg-ss-len ss) 0))
   (if (null n) (setq n 0))
