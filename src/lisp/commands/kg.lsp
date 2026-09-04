@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v41)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v42)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -13,6 +13,13 @@
 ;;;   KGV / ЛПМ   -- VYNOSKA: otodvinut podpis, ostaviv liniyu k uzlu.
 ;;;   KGW / ЛПЦ   -- perestroit vynoski posle ruchnogo peremeshcheniya.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v42: PLECHI KRESTIKA KOROCHE.
+;;;      Bylo: plecho ravnyalos polushirine podpisi, i krestik vyhodil vo
+;;;      vsyu ee dlinu. Shamil: "chereschur bolshoy" - i eto verno: znak
+;;;      ne dolzhen sporit s ciframi, radi kotoryh postavlen.
+;;;      Stalo 0,8 vysoty teksta v kazhduyu storonu, otdelnoy peremennoy
+;;;      *gc-kg-cross-arm* - podstraivaetsya odnim chislom.
 ;;;
 ;;; v41: VYNOSKA STALA CHASTYU BLOKA.
 ;;;      Shamil: "nado sdelat chastyu bloka, bloku izmenennomu mozhno zhe
@@ -676,7 +683,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v41")
+(setq *gc-kg-ver* "v42")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -1894,6 +1901,9 @@
 (setq *gc-kg-tag-w* "RAB")     ; рабочая
 (setq *gc-kg-tag-b* "BYLO")    ; чёрная, «было»
 (setq *gc-kg-tag-r* "STALO")   ; красная, «стало»
+
+;; Полудлина плеча крестика в долях высоты текста.
+(setq *gc-kg-cross-arm* 0.8)
 
 ;; Смещения текстов внутри блока при высоте 1,0. Те же, что у обычных
 ;; текстов: подпись блоком и подпись текстом должны выглядеть одинаково.
@@ -4492,9 +4502,15 @@
 ;; КРЕСТИК СИММЕТРИЧЕН. Горизонталь одинаковой длины по обе стороны от
 ;; вертикали: подпись влево и вправо занимает разное место, но крестик -
 ;; это знак, а не рамка, и разная длина плечей читается как небрежность.
+;;
+;; ДЛИНА ПЛЕЧА - в долях высоты текста, чтобы крестик рос вместе со
+;; шрифтом. Сначала плечо равнялось полуширине подписи, и крестик выходил
+;; во всю её длину - Шамиль сказал «чересчур большой», и он прав: знак
+;; не должен спорить с цифрами, ради которых он поставлен.
+;; Одно число - если понадобится, подстраивается им же.
 (defun gc-kg-lead-geom (a p h prec / w wl wr wm dx att out)
   (setq w (gc-kg-mark-wid h prec) wl (car w) wr (cdr w))
-  (setq wm (if (> wl wr) wl wr))          ; полудлина крестика
+  (setq wm (* *gc-kg-cross-arm* h))       ; полудлина крестика
   (setq dx (- (car a) (car p)))
   (setq att (cond
               ((< dx (* -0.2 h)) (list (- (car p) wl) (cadr p)))
