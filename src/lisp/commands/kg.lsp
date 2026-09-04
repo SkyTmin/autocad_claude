@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v35)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v36)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -11,6 +11,30 @@
 ;;;   KGZ / ЛПЯ   -- obnulit rabochuyu otmetku.
 ;;;   KGD / ЛПВ   -- udalit vse otmetki.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v36: BLOK NE VSTAVAL - GRUPPA 73 U ATRIBUTA ZNACHIT DRUGOE.
+;;;      Diagnostika v35 srazu nazvala vinovnogo: "blok ne vstal 75 raz,
+;;;      pervym sorvalsya ATTRIB rabochey". INSERT prohodil, ATTDEF
+;;;      prohodil, a ATTRIB - net.
+;;;
+;;;      PRICHINA. U obychnogo TEXT gruppa 73 - vertikalnoe vyravnivanie
+;;;      i lezhit v podklasse AcDbText. U ATRIBUTA eto NE TAK: 73
+;;;      prinadlezhit podklassu AcDbAttribute i oznachaet DLINU POLYA,
+;;;      a vertikalnoe vyravnivanie - eto 74. Postavlennaya v AcDbText,
+;;;      ona lomaet razbor podklassa, i entmake otvergaet obekt celikom.
+;;;
+;;;      Samo po sebe eto bylo vidno: iz ATTDEF tu zhe 73 ubrali eshche
+;;;      v v35, i on posle etogo prohodil. Odno i to zhe pole, dve raznye
+;;;      sudby - docs/pitfalls.md -> P59.
+;;;
+;;;      CHTO ESHCHE SDELANO, chtoby progon ne propadal vpustuyu:
+;;;      1. Srыv na PERVOY tochke perevodit ves progon na obychnyy tekst.
+;;;         Prichina sryva odna na vse tochki, i prodolzhat blokom - eto
+;;;         garantirovanno uyti v pustotu, kak i vyshlo u Shamilya DVAZHDY.
+;;;      2. Nedosobrannyy INSERT stiraetsya za soboy. Ostavlennyy, on
+;;;         visit v chertezhe s flagom "dalshe atributy", kotoryh net.
+;;;      3. Zapasnoy zahod dlya ATTRIB bez cveta: cvet byl vtoroy iz dvuh
+;;;         veshchey, kotorymi ATTRIB otlichalsya ot rabochego ATTDEF.
 ;;;
 ;;; v35: PRAVKA NE RABOTALA - ENTMAKE MOLCHAL.
 ;;;      Shamil: "pravki ne rabotayut voobshche, mozhet potomu chto blok
@@ -515,7 +539,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v35")
+(setq *gc-kg-ver* "v36")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -1794,18 +1818,44 @@
 
 ;; Один атрибут вставленного блока. Координаты у ATTRIB МИРОВЫЕ, а не
 ;; внутренние для блока - поэтому смещение здесь домножается на масштаб.
-(defun gc-kg-attrib (p off tag txt just col h lay stl / q)
+;; Атрибут вставленного блока.
+;;
+;; ПОЧЕМУ ЗДЕСЬ НЕТ ГРУППЫ 73. У обычного TEXT 73 - вертикальное
+;; выравнивание и лежит в подклассе AcDbText. У АТРИБУТА это не так:
+;; 73 принадлежит подклассу AcDbAttribute и означает ДЛИНУ ПОЛЯ, а
+;; вертикальное выравнивание - это 74. Поставленная в AcDbText, она
+;; ломает разбор подкласса, и entmake отвергает объект целиком.
+;;
+;; Именно на этом всё и стояло: 75 блоков подряд не вставились, а
+;; определение блока при этом собиралось - в ATTDEF ту же 73 убрали
+;; раньше, и он проходил. Одно и то же поле, две разные судьбы
+;; (docs/pitfalls.md -> П59).
+;;
+;; Точка ТРЁХМЕРНАЯ: у ATTDEF она такая же, и различий между ними
+;; лучше не оставлять вовсе - сравнивать их пришлось построчно.
+(defun gc-kg-attrib (p off tag txt just col h lay stl / q d r)
   (if (not (numberp col)) (setq col 256))   ; 256 = ByLayer, запасной
   (setq q (list (+ (car  p) (* h (car  off)))
-                (+ (cadr p) (* h (cadr off)))))
-  (entmake
-    (list '(0 . "ATTRIB") '(100 . "AcDbEntity") (cons 8 lay) (cons 62 col)
-          '(100 . "AcDbText")
-          (cons 10 q) (cons 11 q) (cons 40 h) (cons 1 txt)
-          (cons 7 (if stl stl "Standard"))
-          (cons 72 just) '(73 . 0)
-          '(100 . "AcDbAttribute")
-          (cons 2 tag) '(70 . 0) '(74 . 0))))
+                (+ (cadr p) (* h (cadr off)))
+                0.0))
+  (setq d (list '(0 . "ATTRIB") '(100 . "AcDbEntity") (cons 8 lay)
+                (cons 62 col)
+                '(100 . "AcDbText")
+                (cons 10 q) (cons 11 q) (cons 40 h) (cons 1 txt)
+                (cons 7 (if stl stl "Standard"))
+                (cons 72 just)
+                '(100 . "AcDbAttribute")
+                (cons 2 tag) '(70 . 0) '(74 . 0)))
+  (setq r (entmake d))
+  ;; Запасной заход БЕЗ цвета. Цвет - вторая из двух вещей, которыми
+  ;; ATTRIB отличался от рабочего ATTDEF; если дело окажется в нём,
+  ;; подпись всё равно встанет, а цвет доставится отдельно через entmod.
+  (if (null r)
+    (progn
+      (setq d (vl-remove (cons 62 col) d))
+      (setq r (entmake d))
+      (if r (setq *gc-kg-attr-nocolor* (1+ *gc-kg-attr-nocolor*)))))
+  r)
 
 ;; Вставить блок отметки в точку p. Возвращает T при успехе.
 ;;
@@ -1816,6 +1866,8 @@
 ;; кричим на каждую точку: узлов сотни, сообщение нужно одно.
 (setq *gc-kg-ins-fail* 0)
 (setq *gc-kg-ins-why* nil)
+;; Сколько атрибутов прошло только со второго захода, без цвета.
+(setq *gc-kg-attr-nocolor* 0)
 
 (defun gc-kg-blk-ins (p tw tb tr colw colb colr h lay stl / bad)
   (if (or (not (numberp h)) (<= h 0.0)) (setq h 0.5))
@@ -1850,8 +1902,23 @@
         (progn
           (setq *gc-kg-ins-fail* (1+ *gc-kg-ins-fail*))
           (if (null *gc-kg-ins-why*) (setq *gc-kg-ins-why* bad))
+          ;; Убираем за собой недособранный INSERT. Оставленный, он висит
+          ;; в чертеже с флагом «дальше атрибуты», которых нет: команды
+          ;; правки принимают его за отметку, а показать ему нечего.
+          (if (/= bad "INSERT")
+            (gc-kg-drop-last-insert))
           nil)
         T))))
+
+;; Стереть последний созданный INSERT нашего блока, если он там.
+(defun gc-kg-drop-last-insert ( / e d)
+  (setq e (entlast))
+  (if e
+    (progn
+      (setq d (entget e))
+      (if (and (= "INSERT" (cdr (assoc 0 d)))
+               (= *gc-kg-blk* (cdr (assoc 2 d))))
+        (entdel e)))))
 
 ;; Набор всех блоков отметок в чертеже. nil, если их нет.
 (defun gc-kg-blk-ss ( / )
@@ -1926,7 +1993,7 @@
      (princ (strcat "\n[i] Точек для подписи: " (itoa (length pts))
                     ". Считаю отметки..."))
      (setq cnt 0 skip 0 sb 0.0 sr 0.0 *gc-kg-mask-fail* 0
-           *gc-kg-ins-fail* 0 *gc-kg-ins-why* nil)
+           *gc-kg-ins-fail* 0 *gc-kg-ins-why* nil *gc-kg-attr-nocolor* 0)
      (if (and blk (null (gc-kg-blk-make)))
        (progn
          (princ "\n[!] Блок отметки создать не удалось - подписываю текстом.")
@@ -1951,9 +2018,24 @@
                  tr (gc-kg-fmt-p zr prec sep))
            (if blk
              ;; Блоком: одна подпись - один объект, её можно править.
-             (gc-kg-blk-ins p tw tb tr col
-                            (gc-kg-get "c-black") (gc-kg-get "c-red")
-                            h lay stl)
+             (if (null (gc-kg-blk-ins p tw tb tr col
+                                      (gc-kg-get "c-black") (gc-kg-get "c-red")
+                                      h lay stl))
+               ;; Причина срыва одна на весь прогон, поэтому дальше блоком
+               ;; идти незачем - не встанет ни одна подпись. Уходим на
+               ;; текст, чтобы прогон не пропал впустую: отметки нужны
+               ;; сейчас, а править их можно и после починки блока.
+               (progn
+                 (princ "\n[!] Блок не встаёт - перехожу на обычный текст.")
+                 (princ (strcat "\n    Сорвалось на: "
+                                (if *gc-kg-ins-why* *gc-kg-ins-why* "?")))
+                 (setq blk nil)
+                 (gc-kg-put (list (- (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
+                            tw h col lay stl 2 msk)
+                 (gc-kg-put (list (+ (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
+                            tb hx (gc-kg-get "c-black") lay stl 0 msk)
+                 (gc-kg-put (list (+ (car p) (* 0.15 h)) (- (cadr p) (* 1.05 h)))
+                            tr hx (gc-kg-get "c-red") lay stl 0 msk)))
              (progn
                ;; рабочая - слева от точки, прижата к ней правым краем
                (gc-kg-put (list (- (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
@@ -1982,7 +2064,10 @@
        (progn
          (princ (strcat "\n  [!] блок не встал: " (itoa *gc-kg-ins-fail*)
                         " раз, первым сорвался " *gc-kg-ins-why*))
-         (princ "\n      Команды правки этих точек не увидят.")))
+         (princ "\n      Дальше подписывал текстом - команды правки его не увидят.")))
+     (if (> *gc-kg-attr-nocolor* 0)
+       (princ (strcat "\n  [i] атрибутов без цвета: " (itoa *gc-kg-attr-nocolor*)
+                      "  (прошли со второго захода, цвет не встал)")))
      (princ (strcat "\n  слой             : " lay))
      (princ (strcat "\n  высота текста    : " (gc-kg-fmt h) " м"
                     ", точность " (itoa prec) " знака"))
