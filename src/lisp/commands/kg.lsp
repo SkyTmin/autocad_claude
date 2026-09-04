@@ -1,8 +1,32 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v31)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v32)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;
+;;; v32: HARAKTERNYE TOCHKI GRANICY -- IZLOMY.
+;;;      Shamil sravnil s obrazcom: "na takih rezkih uglah u nas v nekotoryh
+;;;      mestah ne podpisalis otmetki". Verno: pravilo v31 bralo tolko tochki
+;;;      NA LINIYAH SETKI, a vershina s rezkim izlomom lezhit vnutri kvadrata.
+;;;
+;;;      Mezhdu tem izlom -- NASTOYASHCHAYA vershina raschetnoy figury: ee
+;;;      otmetka vhodit v srednee po formule obema (docs/formulas.md), i
+;;;      obrazec takie tochki podpisyvaet. A vot vershina na PLAVNOM uchastke
+;;;      lomanoy -- eto opisanie formy kraya, ne raschetnaya tochka.
+;;;
+;;;      Porog izloma 30 grad vybran ne na glaz: proveren chislenno na dvuh
+;;;      vidah granicy (gladkaya lomanaya TIN i izlomistaya, kak u ploshchadki
+;;;      so zdaniyami) pri chetyreh gustotah vershin. Priznak horoshego poroga
+;;;      tot zhe, chto u vsego pravila: chislo podpisey ne dolzhno rasti
+;;;      vmeste s podrobnostyu granicy.
+;;;        30 grad: 150 / 135 / 135 / 135  -- derzhitsya
+;;;        10 grad: 162 / 187 / 135 / 135  -- plyvet
+;;;         5 grad: 167 / 221 / 201 / 135  -- plyvet zametno
+;;;
+;;;      Popravleno i ohrannoe uslovie iz v31: u gladkogo ostrova vnutri
+;;;      kvadrata net ni tochek na setke, ni izlomov, i "podpisat vse ego
+;;;      vershiny" davalo by 64 podpisi v odnom kvadrate. Teper berutsya
+;;;      KRAYNIE tochki gabarita -- ih ne bolshe chetyreh.
 ;;;
 ;;; v31: LISHNIE VERSHINY KONTURA -- ubrany u KORNYA.
 ;;;      Shamil: "ochen mnogo tochek... v kvadratah ochen mnogo nenuzhnyh
@@ -1420,8 +1444,57 @@
   (or (< (abs (* sx (- (/ (car p) sx) (gc-kg-rnd (/ (car p) sx))))) tol)
       (< (abs (* sy (- (/ (cadr p) sy) (gc-kg-rnd (/ (cadr p) sy))))) tol)))
 
+;; Излом в вершине b, градусы: 0 — идём прямо, 180 — разворот назад.
+(defun gc-kg-bend (a b c / x1 y1 x2 y2 l1 l2 cs)
+  (setq x1 (- (car b) (car a)) y1 (- (cadr b) (cadr a))
+        x2 (- (car c) (car b)) y2 (- (cadr c) (cadr b)))
+  (setq l1 (sqrt (+ (* x1 x1) (* y1 y1)))
+        l2 (sqrt (+ (* x2 x2) (* y2 y2))))
+  (if (or (< l1 1.0e-12) (< l2 1.0e-12))
+    0.0
+    (progn
+      (setq cs (/ (+ (* x1 x2) (* y1 y2)) (* l1 l2)))
+      ;; Округление может вытолкнуть косинус за [-1;1], и тогда корень
+      ;; из отрицательного числа уронил бы всю команду на ровном месте.
+      (if (> cs  1.0) (setq cs  1.0))
+      (if (< cs -1.0) (setq cs -1.0))
+      (/ (* 180.0 (atan (sqrt (- 1.0 (* cs cs))) cs)) pi))))
+
+;; Излом, начиная с которого вершина границы считается ХАРАКТЕРНОЙ ТОЧКОЙ
+;; и подписывается, градусы.
+;;
+;; ПОЧЕМУ 30, а не «на глаз». Порог проверен численно на двух видах
+;; границы — гладкой ломаной TIN и изломистой, как у площадки со
+;; зданиями, — при четырёх густотах вершин. Признак хорошего порога тот
+;; же, что и у всего правила отбора: число подписей не должно расти
+;; вместе с подробностью границы. При 30 град оно держится (150 / 135 /
+;; 135 / 135), при 10 град уже плывёт (162 / 187 / 135 / 135), при 5 град
+;; плывёт заметно (167 / 221 / 201 / 135) — мелкие звенья ломаной
+;; начинают выдавать себя за изломы.
+(setq *gc-kg-bend-min* 30.0)
+
 ;; Сколько краевых фигур не коснулось линий сетки и подписано целиком.
 (setq *gc-kg-label-island* 0)
+
+;; Сколько вершин подписано как излом границы, а не как точка на сетке.
+(setq *gc-kg-label-bend* 0)
+
+;; Крайние точки контура: самая левая, правая, нижняя, верхняя.
+;;
+;; ЗАЧЕМ. Кусок области, целиком лежащий внутри квадрата, линий сетки не
+;; касается, и если он ещё и гладкий — изломов в нём тоже нет. Подписать
+;; такой кусок ЦЕЛИКОМ нельзя: у гладкого острова из 64 вершин вышло бы
+;; 64 подписи в одном квадрате, то есть ровно та каша, от которой ушли.
+;; Крайние точки габарита — характерные: в них граница разворачивается
+;; относительно осей. Их не больше четырёх, и они есть всегда.
+(defun gc-kg-extremes (lp / xl xr yb yt p)
+  (setq xl (car lp) xr (car lp) yb (car lp) yt (car lp))
+  (foreach p lp
+    (if (< (car  p) (car  xl)) (setq xl p))
+    (if (> (car  p) (car  xr)) (setq xr p))
+    (if (< (cadr p) (cadr yb)) (setq yb p))
+    (if (> (cadr p) (cadr yt)) (setq yt p)))
+  (list xl xr yb yt))
 
 ;; Точки подписи — РАСЧЁТНЫЕ ВЕРШИНЫ ФИГУР, и только они.
 ;;
@@ -1434,19 +1507,24 @@
 ;; Замерено: 8322 точки там, где по делу нужно 188 (docs/pitfalls.md -> П56).
 ;;
 ;; ЧТО ТЕПЕРЬ. По docs/formulas.md объём фигуры = площадь x среднее рабочих
-;; отметок ЕЁ ВЕРШИН. Вершины расчётной фигуры — это узлы сетки и точки,
-;; где режущая линия пересекает линии сетки. Вершина ломаной границы,
-;; лежащая внутри квадрата, описывает форму края, а расчётной точкой не
-;; является: площадь мы и так считаем точным отсечением, отметка в ней
-;; ни во что не входит.
+;; отметок ЕЁ ВЕРШИН. Вершины расчётной фигуры — это узлы сетки, точки, где
+;; режущая линия пересекает линии сетки, И ХАРАКТЕРНЫЕ ТОЧКИ САМОЙ ГРАНИЦЫ:
+;; вершины с резким изломом. Излом — это настоящая вершина фигуры, её
+;; отметка входит в среднее по формуле, и образец такие точки подписывает.
+;;
+;; А вот вершина на ПЛАВНОМ участке ломаной расчётной точкой не является:
+;; она описывает форму края, площадь мы и так считаем точным отсечением,
+;; и отметка в ней ни во что не входит. Разделяет эти два случая порог
+;; *gc-kg-bend-min* — см. обоснование у него.
 ;;
 ;; ПРИЗНАК, ЧТО КРИТЕРИЙ ВЕРНЫЙ: число подписей перестаёт зависеть от того,
 ;; насколько подробна граница. Проверено численно — 188 точек и при 35
 ;; вершинах границы, и при 1200. По старому правилу было 376 и 8322.
 ;;
 ;; Возвращает список точек в системе сетки, без повторов.
-(defun gc-kg-label-pts (cells sx sy / out key seen c i j ar full p lp got q nd)
-  (setq out nil seen nil *gc-kg-label-island* 0)
+(defun gc-kg-label-pts (cells sx sy / out key seen c i j ar full p lp got q nd
+                        nn k og bn)
+  (setq out nil seen nil *gc-kg-label-island* 0 *gc-kg-label-bend* 0)
   (foreach c cells
     (setq i (car c) j (cadr c) ar (nth 2 c))
     (setq full (> ar (- (* sx sy) (* 1.0e-6 sx sy))))
@@ -1463,22 +1541,37 @@
       (foreach lp (cons (nth 4 c) (nth 5 c))
         (if (and (listp lp) (listp (car lp)))
           (progn
-            (setq p nil)
-            (foreach q lp
-              (if (and (listp q) (numberp (car q))
-                       (gc-kg-on-grid q sx sy *gc-kg-col-tol*))
-                (setq p (cons q p))))
+            (setq p nil nn (length lp) k 0)
+            (while (< k nn)
+              (setq q (nth k lp))
+              (if (and (listp q) (numberp (car q)))
+                (progn
+                  (setq og (gc-kg-on-grid q sx sy *gc-kg-col-tol*))
+                  ;; Излом считаем ТОЛЬКО у точек не на сетке: у точки на
+                  ;; линии сетки он всё равно ничего не решает, а лишний
+                  ;; счёт на каждой вершине каждого квадрата не бесплатен.
+                  (setq bn (if og
+                             nil
+                             (>= (gc-kg-bend (nth (rem (+ k (1- nn)) nn) lp)
+                                             q
+                                             (nth (rem (1+ k) nn) lp))
+                                 *gc-kg-bend-min*)))
+                  (if bn (setq *gc-kg-label-bend* (1+ *gc-kg-label-bend*)))
+                  (if (or og bn) (setq p (cons q p)))))
+              (setq k (1+ k)))
             ;; ОХРАННОЕ УСЛОВИЕ (docs/pitfalls.md -> П17: эвристике нужны
             ;; охранные условия). Кусок области, целиком лежащий внутри
-            ;; квадрата, линий сетки не касается вовсе — по общему правилу
-            ;; он остался бы БЕЗ ЕДИНОЙ подписи, а объём в нём считается.
-            ;; Для такого берём все его вершины и говорим об этом вслух.
+            ;; квадрата, линий сетки не касается вовсе; если он вдобавок
+            ;; гладкий, то и изломов в нём нет — по общему правилу он
+            ;; остался бы БЕЗ ЕДИНОЙ подписи, а объём в нём считается.
+            ;;
+            ;; Берём КРАЙНИЕ точки, а не все подряд: у гладкого острова из
+            ;; 64 вершин «все подряд» дали бы 64 подписи в одном квадрате —
+            ;; ту самую кашу, от которой ушли. Говорим об этом вслух.
             (if (null p)
               (progn
                 (setq *gc-kg-label-island* (1+ *gc-kg-label-island*))
-                (foreach q lp
-                  (if (and (listp q) (numberp (car q)))
-                    (setq p (cons q p))))))
+                (setq p (gc-kg-extremes lp))))
             (setq got (append p got))))))
     (foreach p got
       (setq key (strcat (rtos (car p) 2 4) "|" (rtos (cadr p) 2 4)))
@@ -1562,6 +1655,9 @@
                     ", точность " (itoa prec) " знака"))
      (princ (strcat "\n  разделитель      : "
                     (if (= sep "1") "точка" "запятая")))
+     (if (> *gc-kg-label-bend* 0)
+       (princ (strcat "\n  изломов границы  : " (itoa *gc-kg-label-bend*)
+                      "  (от " (gc-kg-fmt *gc-kg-bend-min*) " град)")))
      (if (> *gc-kg-label-island* 0)
        (princ (strcat "\n  кусков внутри кв.: " (itoa *gc-kg-label-island*)
                       "  (не касаются сетки, подписаны все их вершины)")))
@@ -3178,6 +3274,6 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v31 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
+(princ "\n[gc] kg.lsp v32 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
 (princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
 (princ)
