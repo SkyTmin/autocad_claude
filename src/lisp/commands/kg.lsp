@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v34)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v35)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -10,6 +10,38 @@
 ;;;   KGP / ЛПЗ   -- proryadit otmetki, ubrat stoyashchie gusto.
 ;;;   KGZ / ЛПЯ   -- obnulit rabochuyu otmetku.
 ;;;   KGD / ЛПВ   -- udalit vse otmetki.
+;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v35: PRAVKA NE RABOTALA - ENTMAKE MOLCHAL.
+;;;      Shamil: "pravki ne rabotayut voobshche, mozhet potomu chto blok
+;;;      ne sdelan?". Vopros po delu, i otvetit na nego bylo NECHEM.
+;;;
+;;;      PRICHINA NE V ALGORITME, A V MOLCHANII. Vstavka bloka - eto pyat
+;;;      entmake podryad (BLOCK, tri ATTDEF, ENDBLK; potom INSERT, tri
+;;;      ATTRIB, SEQEND), i NI ODIN iz nih ne proveryalsya. entmake pri
+;;;      otkaze vozvrashchaet nil i molchit - eto zapisano u nas kak P4,
+;;;      i eto zhe pravilo ya narushil.
+;;;
+;;;      Teper kazhdyy shag proveryaetsya, srыv schitaetsya i pechataetsya
+;;;      s ukazaniem, na chem imenno sorvalos. gc-kg-blk-make verit ne
+;;;      vozvratu entmake, a tablice blokov: opredelenie moglo ne
+;;;      sobratsya i pri udachnyh na vid vyzovah.
+;;;
+;;;      Ubran lishniy cvet iz opredeleniya atributa: u vstavlennogo on
+;;;      svoy, a lishnyaya gruppa - lishniy povod dlya otkaza.
+;;;
+;;;      SAMAYA VEROYATNAYA PRICHINA U SHAMILYA, odnako, drugaya: podpisi
+;;;      na chertezhe stoyat TEKSTOM ot prezhney versii, a komandy pravki
+;;;      ishchut BLOKI. Teper eto govoritsya pryamo, s chislom naydennyh
+;;;      tekstov i s tem, chto sdelat.
+;;;
+;;;      NOVAYA KOMANDA KGI - "chto na chertezhe": est li opredelenie
+;;;      bloka, skolko vstavok, skolko tekstov, tegi pervogo bloka,
+;;;      nastroyki, vidny li poverhnosti. Odin progon vmesto desyati
+;;;      voprosov po odnomu.
+;;;
+;;;      Nomer versii teper v ODNOM meste (*gc-kg-ver*): pechatalsya on
+;;;      v treh, i rashodilis oni uzhe dvazhdy (P38).
 ;;;
 ;;; v34: POVERHNOSTI MESTAMI I PODMENYU PRAVKI.
 ;;;      1. Shamil nastoyal: raz polya pereimenovany, to i poverhnosti
@@ -483,6 +515,8 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
+(setq *gc-kg-ver* "v35")
+
 (setq *gc-kg-dlg* "gc_kg")
 
 ;; Имя окна подписей внутри того же DCL.
@@ -1711,16 +1745,23 @@
   (if (tblsearch "BLOCK" *gc-kg-blk*) T nil))
 
 ;; Определение атрибута внутри блока.
-(defun gc-kg-attdef (off tag prompt just col / p)
+;;
+;; Цвет здесь НЕ задаётся намеренно: у вставленного атрибута он свой
+;; (у рабочей отметки зависит от знака), а лишняя группа в определении -
+;; лишний повод для entmake отказать.
+(defun gc-kg-attdef (off tag prompt just / p r)
   (setq p (list (car off) (cadr off) 0.0))
-  (entmake
-    (list '(0 . "ATTDEF") '(100 . "AcDbEntity") '(8 . "0") (cons 62 col)
+  (setq r (entmake
+    (list '(0 . "ATTDEF") '(100 . "AcDbEntity") '(8 . "0")
           '(100 . "AcDbText")
           (cons 10 p) (cons 11 p) '(40 . 1.0) '(1 . "0")
           '(7 . "Standard")
-          (cons 72 just) '(73 . 0)
+          (cons 72 just)
           '(100 . "AcDbAttributeDefinition")
           (cons 3 prompt) (cons 2 tag) '(70 . 0) '(74 . 0))))
+  (if (null r)
+    (princ (strcat "\n[!] Атрибут " tag " в определении блока не создался.")))
+  r)
 
 ;; Создать определение блока. Возвращает T, если после вызова оно есть.
 ;;
@@ -1731,15 +1772,25 @@
   (if (gc-kg-blk-p)
     T
     (progn
-      (entmake (list '(0 . "BLOCK") (cons 2 *gc-kg-blk*) '(70 . 2)
-                     '(10 0.0 0.0 0.0)))
-      (gc-kg-attdef *gc-kg-off-w* *gc-kg-tag-w* "Рабочая отметка" 2 0)
-      (gc-kg-attdef *gc-kg-off-b* *gc-kg-tag-b* "Чёрная (было)"   0 0)
-      (gc-kg-attdef *gc-kg-off-r* *gc-kg-tag-r* "Красная (стало)" 0 0)
-      (setq ok (entmake '((0 . "ENDBLK"))))
+      (setq ok (entmake (list '(0 . "BLOCK") (cons 2 *gc-kg-blk*) '(70 . 2)
+                              '(10 0.0 0.0 0.0))))
       (if (null ok)
-        (princ "\n[!] Определение блока отметки создать не удалось."))
-      (gc-kg-blk-p))))
+        (princ (strcat "\n[!] Не открылось определение блока \"" *gc-kg-blk*
+                       "\" - entmake отказал на BLOCK."))
+        (progn
+          (gc-kg-attdef *gc-kg-off-w* *gc-kg-tag-w* "Рабочая отметка" 2)
+          (gc-kg-attdef *gc-kg-off-b* *gc-kg-tag-b* "Чёрная (было)"   0)
+          (gc-kg-attdef *gc-kg-off-r* *gc-kg-tag-r* "Красная (стало)" 0)
+          (if (null (entmake '((0 . "ENDBLK"))))
+            (princ "\n[!] Определение блока не закрылось - entmake отказал на ENDBLK."))))
+      ;; Верим не тому, что entmake вернул, а тому, что лежит в таблице:
+      ;; определение могло не собраться и при удачных на вид вызовах.
+      (if (gc-kg-blk-p)
+        T
+        (progn
+          (princ (strcat "\n[!] Определения блока \"" *gc-kg-blk*
+                         "\" в чертеже нет. Подписи пойдут текстом."))
+          nil)))))
 
 ;; Один атрибут вставленного блока. Координаты у ATTRIB МИРОВЫЕ, а не
 ;; внутренние для блока - поэтому смещение здесь домножается на масштаб.
@@ -1761,23 +1812,46 @@
 ;; 66 . 1 в INSERT означает «дальше идут атрибуты»; без него AutoCAD их
 ;; не ждёт и следующие entmake прилетают в пространство модели сами по
 ;; себе - тремя осиротевшими текстами, внешне неотличимыми от подписи.
-(defun gc-kg-blk-ins (p tw tb tr colw colb colr h lay stl / )
+;; Сколько раз вставка блока сорвалась и на каком шаге. Считаем, а не
+;; кричим на каждую точку: узлов сотни, сообщение нужно одно.
+(setq *gc-kg-ins-fail* 0)
+(setq *gc-kg-ins-why* nil)
+
+(defun gc-kg-blk-ins (p tw tb tr colw colb colr h lay stl / bad)
   (if (or (not (numberp h)) (<= h 0.0)) (setq h 0.5))
   (if (null (gc-kg-blk-make))
     nil
     (progn
-      (entmake
-        (list '(0 . "INSERT") '(100 . "AcDbEntity") (cons 8 lay)
-              '(100 . "AcDbBlockReference") '(66 . 1)
-              (cons 2 *gc-kg-blk*)
-              (cons 10 (list (car p) (cadr p) 0.0))
-              (cons 41 h) (cons 42 h) (cons 43 h) '(50 . 0.0)))
-      (gc-kg-attrib p *gc-kg-off-w* *gc-kg-tag-w* tw 2 colw h lay stl)
-      (gc-kg-attrib p *gc-kg-off-b* *gc-kg-tag-b* tb 0 colb h lay stl)
-      (gc-kg-attrib p *gc-kg-off-r* *gc-kg-tag-r* tr 0 colr h lay stl)
-      (if (entmake (list '(0 . "SEQEND") '(100 . "AcDbEntity") (cons 8 lay)))
-        T
-        nil))))
+      (setq bad nil)
+      (if (null (entmake
+                  (list '(0 . "INSERT") '(100 . "AcDbEntity") (cons 8 lay)
+                        '(100 . "AcDbBlockReference") '(66 . 1)
+                        (cons 2 *gc-kg-blk*)
+                        (cons 10 (list (car p) (cadr p) 0.0))
+                        (cons 41 h) (cons 42 h) (cons 43 h) '(50 . 0.0))))
+        (setq bad "INSERT"))
+      ;; Атрибуты идут ТОЛЬКО если INSERT принят: вне последовательности
+      ;; они не создаются, и звать их незачем.
+      (if (null bad)
+        (progn
+          (if (null (gc-kg-attrib p *gc-kg-off-w* *gc-kg-tag-w* tw 2 colw h lay stl))
+            (setq bad "ATTRIB рабочей"))
+          (if (and (null bad)
+                   (null (gc-kg-attrib p *gc-kg-off-b* *gc-kg-tag-b* tb 0 colb h lay stl)))
+            (setq bad "ATTRIB «было»"))
+          (if (and (null bad)
+                   (null (gc-kg-attrib p *gc-kg-off-r* *gc-kg-tag-r* tr 0 colr h lay stl)))
+            (setq bad "ATTRIB «стало»"))
+          (if (and (null bad)
+                   (null (entmake (list '(0 . "SEQEND") '(100 . "AcDbEntity")
+                                        (cons 8 lay)))))
+            (setq bad "SEQEND"))))
+      (if bad
+        (progn
+          (setq *gc-kg-ins-fail* (1+ *gc-kg-ins-fail*))
+          (if (null *gc-kg-ins-why*) (setq *gc-kg-ins-why* bad))
+          nil)
+        T))))
 
 ;; Набор всех блоков отметок в чертеже. nil, если их нет.
 (defun gc-kg-blk-ss ( / )
@@ -1851,7 +1925,8 @@
      (setq hx h)                   ; все три числа одной высоты
      (princ (strcat "\n[i] Точек для подписи: " (itoa (length pts))
                     ". Считаю отметки..."))
-     (setq cnt 0 skip 0 sb 0.0 sr 0.0 *gc-kg-mask-fail* 0)
+     (setq cnt 0 skip 0 sb 0.0 sr 0.0 *gc-kg-mask-fail* 0
+           *gc-kg-ins-fail* 0 *gc-kg-ins-why* nil)
      (if (and blk (null (gc-kg-blk-make)))
        (progn
          (princ "\n[!] Блок отметки создать не удалось - подписываю текстом.")
@@ -1903,6 +1978,11 @@
      (princ (strcat "\n  чем подписано    : "
                     (if blk (strcat "блоком " *gc-kg-blk*)
                             "отдельными текстами")))
+     (if (> *gc-kg-ins-fail* 0)
+       (progn
+         (princ (strcat "\n  [!] блок не встал: " (itoa *gc-kg-ins-fail*)
+                        " раз, первым сорвался " *gc-kg-ins-why*))
+         (princ "\n      Команды правки этих точек не увидят.")))
      (princ (strcat "\n  слой             : " lay))
      (princ (strcat "\n  высота текста    : " (gc-kg-fmt h) " м"
                     ", точность " (itoa prec) " знака"))
@@ -3402,10 +3482,10 @@
   (princ "\n\n--- ПРАВКА ПОДПИСЕЙ ---")
   (princ "\n[i] Все пункты работают с подписью-БЛОКОМ.")
   (while (not done)
-    (initget "Обновить Добавить Прорядить обНулить Удалить Выход")
+    (initget "Обновить Добавить Прорядить обНулить Удалить Что Выход")
     (setq k (getkword
               (strcat "\nЧто с подписями?"
-                      " [Обновить/Добавить/Прорядить/обНулить/Удалить/Выход] <"
+                      " [Обновить/Добавить/Прорядить/обНулить/Удалить/Что/Выход] <"
                       dflt ">: ")))
     (if (null k) (setq k dflt))
     (cond
@@ -3414,6 +3494,7 @@
       ((= k "Прорядить") (c:kgp) (setq dflt "Выход"))
       ((= k "обНулить")  (c:kgz) (setq dflt "Выход"))
       ((= k "Удалить")   (c:kgd) (setq dflt "Выход"))
+      ((= k "Что")       (c:kgi))
       (T (setq done T))))
   (princ))
 
@@ -3569,9 +3650,33 @@
       (setq ss (gc-kg-blk-ss))
       (if ss (princ (strcat "\n[i] Взяты все отметки чертежа: "
                             (itoa (sslength ss)))))))
-  (if (null ss)
-    (princ "\n[!] Отметок-блоков в чертеже нет. Подпишите их через KG (блоком)."))
+  (if (null ss) (gc-kg-no-marks))
   ss)
+
+;; Объяснить, почему отметок не нашлось. Просто «их нет» - не объяснение:
+;; чаще всего подписи НА ЧЕРТЕЖЕ ЕСТЬ, но поставлены прежней версией
+;; текстом, и команды правки их не видят.
+(defun gc-kg-no-marks ( / nt)
+  (princ "\n[!] Отметок-БЛОКОВ в чертеже не нашлось.")
+  (setq nt (ssget "_X" (list '(0 . "TEXT,MTEXT")
+                             (cons 8 "GC-Картограмма-Отметки"))))
+  (cond
+    ((and nt (> (gc-kg-ss-len nt) 0))
+     (princ (strcat "\n    Но на слое отметок лежит текстов: "
+                    (itoa (gc-kg-ss-len nt))))
+     (princ "\n    Значит подписи поставлены ТЕКСТОМ - прежней версией")
+     (princ "\n    или при снятой галке «Подписывать блоком».")
+     (princ "\n    Правка текстом не работает: непонятно, какие три числа")
+     (princ "\n    образуют одну подпись.")
+     (princ "\n    ЧТО СДЕЛАТЬ: KGD (удалить все) -> KG -> «Отметки».")
+     (princ "\n    Проверьте в окне «Отметки», что галка «Подписывать блоком» стоит."))
+    ((null (gc-kg-blk-p))
+     (princ "\n    Определения блока в чертеже тоже нет - подписей ещё не было.")
+     (princ "\n    ЧТО СДЕЛАТЬ: KG -> «Отметки»."))
+    (T
+     (princ "\n    Определение блока есть, а вставок нет - подписи удалены.")
+     (princ "\n    ЧТО СДЕЛАТЬ: KG -> «Отметки».")))
+  (princ))
 
 ;;; --------------------------------------------------------------------
 ;;; ОБНОВИТЬ ОТМЕТКИ - пересчитать по нынешним поверхностям
@@ -3771,12 +3876,69 @@
   (princ "\n[i] Один Ctrl+Z возвращает всё удалённое.")
   (princ))
 
-;; Русская раскладка: K->Л, G->П, O->Щ, A->Ф, P->З, Z->Я, D->В
+;;; --------------------------------------------------------------------
+;;; ЧТО НА ЧЕРТЕЖЕ - диагностика одной командой
+;;;
+;;; «Не работает» без подробностей - не сообщение (П24). Эта команда
+;;; отвечает на все вопросы, которые иначе пришлось бы задавать по одному:
+;;; есть ли определение блока, сколько вставок, сколько текстов, какие
+;;; настройки, видны ли поверхности.
+;;; --------------------------------------------------------------------
+(defun c:kgi ( / ss n nt lay e atts)
+  (gc-kg-defaults)
+  (setq lay "GC-Картограмма-Отметки")
+  (princ "\n\n=== KGI - что на чертеже ===")
+  (princ (strcat "\n  версия kg.lsp        : " *gc-kg-ver*))
+  (princ (strcat "\n  определение блока    : "
+                 (if (gc-kg-blk-p) (strcat "ЕСТЬ (" *gc-kg-blk* ")")
+                                   "НЕТ - подписей блоком ещё не было")))
+  (setq ss (gc-kg-blk-ss))
+  (setq n (if ss (gc-kg-ss-len ss) 0))
+  (if (null n) (setq n 0))
+  (princ (strcat "\n  отметок-блоков       : " (itoa n)))
+  (setq nt (ssget "_X" (list '(0 . "TEXT,MTEXT") (cons 8 lay))))
+  (setq nt (if nt (gc-kg-ss-len nt) 0))
+  (if (null nt) (setq nt 0))
+  (princ (strcat "\n  текстов на слое      : " (itoa nt)))
+  (if (and (= n 0) (> nt 0))
+    (progn
+      (princ "\n  [!] Подписи стоят ТЕКСТОМ - команды правки их не увидят.")
+      (princ "\n      KGD (удалить все) -> KG -> «Отметки», галка «блоком» включена.")))
+  ;; Показываем теги первого блока: если они не те, правка молча
+  ;; не найдёт, что менять.
+  (if (> n 0)
+    (progn
+      (setq e (ssname ss 0))
+      (setq atts (gc-kg-blk-atts e))
+      (princ (strcat "\n  атрибутов у первого  : " (itoa (length atts))))
+      (foreach a atts
+        (princ (strcat "\n      " (car a) " = " (caddr a))))
+      (if (/= 3 (length atts))
+        (princ "\n  [!] Атрибутов не три - блок не наш или повреждён."))))
+  (princ (strcat "\n  подписывать блоком   : "
+                 (if (= "1" (gc-kg-get "use-blk")) "ДА" "НЕТ - снята галка в окне «Отметки»")))
+  (princ (strcat "\n  «было»  (чёрная)     : "
+                 (if (gc-kg-name-b) (gc-kg-name-b) "не выбрана")))
+  (princ (strcat "\n  «стало» (красная)    : "
+                 (if (gc-kg-name-r) (gc-kg-name-r) "не выбрана")))
+  (princ (strcat "\n  поверхности местами  : "
+                 (if (= "1" (gc-kg-get "swap")) "ДА" "нет")))
+  (princ (strcat "\n  поверхности открыты  : "
+                 (if (and *gc-kg-sb* *gc-kg-sr*) "да" "нет - будут открыты при первой команде")))
+  (princ (strcat "\n  сетка в памяти       : "
+                 (if *gc-kg-cells*
+                   (strcat "да, квадратов " (itoa (length *gc-kg-cells*)))
+                   "нет - узлы при прореживании не защищаются")))
+  (princ "\n[i] Правка подписей: KG -> «пРавка», либо KGO/KGA/KGP/KGZ/KGD.")
+  (princ))
+
+;; Русская раскладка: K->Л, G->П, O->Щ, A->Ф, P->З, Z->Я, D->В, I->Ш
 (defun c:лпщ ( / ) (c:kgo))
 (defun c:лпф ( / ) (c:kga))
 (defun c:лпз ( / ) (c:kgp))
 (defun c:лпя ( / ) (c:kgz))
 (defun c:лпв ( / ) (c:kgd))
+(defun c:лпш ( / ) (c:kgi))
 
 ;;; ====================================================================
 ;;; ЯДРО КОМАНДЫ
@@ -3853,7 +4015,8 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v34 загружен. Команды: KG | KGB границы | рус. ЛП, ЛПИ")
+(princ (strcat "\n[gc] kg.lsp " *gc-kg-ver*
+               " загружен. Команды: KG | KGB границы | KGI что на чертеже"))
 (princ "\n     Правка подписей: KGO обновить | KGA добавить | KGP прорядить")
 (princ "\n                      KGZ обнулить | KGD удалить все")
 (princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
