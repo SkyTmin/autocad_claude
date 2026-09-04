@@ -1,8 +1,44 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v32)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v33)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
 ;;;   ЛП          -- to zhe v russkoy raskladke.
+;;;   KGB         -- pokazat granicy poverhnostey ot modulya .NET.
+;;;   PRAVKA PODPISEY (rabotayut s podpisyu-BLOKOM):
+;;;   KGO / ЛПЩ   -- obnovit otmetki po nyneshnim poverhnostyam.
+;;;   KGA / ЛПФ   -- dobavit otmetki v ukazannyh tochkah.
+;;;   KGP / ЛПЗ   -- proryadit otmetki, ubrat stoyashchie gusto.
+;;;   KGZ / ЛПЯ   -- obnulit rabochuyu otmetku.
+;;;   KGD / ЛПВ   -- udalit vse otmetki.
+;;;
+;;; v33: PODPIS BLOKOM I PYAT KOMAND PRAVKI.
+;;;      Podpisi rasstavlyayutsya odin raz, a zhivut dolgo: proekt pravyat,
+;;;      chast otmetok okazyvaetsya lishney, chast ustarevshey. Ranshe na
+;;;      eto byl odin otvet -- steret vsyo i podpisat zanovo.
+;;;
+;;;      PODPIS TEPER BLOK "GC-Отметка" s tremya atributami (RAB, BYLO,
+;;;      STALO). Tremya otdelnymi tekstami pravit podpisi NELZYA: neponyatno,
+;;;      kakie tri chisla obrazuyut odnu podpis, i lyubaya pravka
+;;;      prevrashchaetsya v ugadyvanie po rasstoyaniyu. Tekst ostalsya
+;;;      zapasnym putem -- tumbler v okne "Otmetki".
+;;;
+;;;      Vysota zadaetsya MASSHTABOM vstavki, a ne otdelnym opredeleniem
+;;;      bloka na kazhduyu vysotu. Cvet rabochey zavisit ot znaka, poetomu
+;;;      stavitsya u vstavlennogo atributa, a ne v opredelenii.
+;;;
+;;;      KGP (proryadit) -- zhadnyy prohod: ostavlyaem otmetku, esli ona
+;;;      dalshe poroga ot vseh uzhe ostavlennyh. OHRANNOE USLOVIE: uzly
+;;;      setki idut PERVYMI i ne udalyayutsya nikogda, inache proredilo by
+;;;      imenno opornye tochki. Provereno chislenno: uzlov ubito 0 pri
+;;;      lyubom poroge, par blizhe poroga sredi ostavshihsya 0.
+;;;
+;;;      POLYA POVERHNOSTEY PEREIMENOVANY v terminy obrazca: "Чёрная (было)"
+;;;      i "Красная (стало)". Mestami NE menyalis: chisla uzhe shodyatsya s
+;;;      obrazcom (12,47 - 9,46 = +3,01), a perestanovka perevernula by
+;;;      znak vsey vedomosti. Vmesto etogo dobavlena proverka: komanda
+;;;      pechataet srednie otmetki oboih poverhnostey i govorit vsluh,
+;;;      esli "bylo" v srednem nizhe "stalo" -- pervyy priznak poverhnostey,
+;;;      vybrannyh mestami.
 ;;;
 ;;; v32: HARAKTERNYE TOCHKI GRANICY -- IZLOMY.
 ;;;      Shamil sravnil s obrazcom: "na takih rezkih uglah u nas v nekotoryh
@@ -475,6 +511,12 @@
     ;; MTEXT-ом с непрозрачным фоном и линию под собой закрывает.
     ;; По умолчанию ВЫКЛЮЧЕНО: обычный TEXT проверен на чертеже, MTEXT нет.
     (cons "mask"     "0")
+    ;; Подпись блоком, а не тремя текстами. По умолчанию ВКЛЮЧЕНО:
+    ;; все команды работы с подписями (обновить, прорядить, обнулить,
+    ;; удалить, выноска) опознают подпись именно как блок. Тремя текстами
+    ;; они работать не могут - непонятно, какие три числа образуют одну
+    ;; подпись. Текстом остаётся запасной путь.
+    (cons "use-blk"  "1")
     (cons "c-plus"   5)           ; цвет насыпи  (+)
     (cons "c-minus"  1)           ; цвет выемки  (-)
     (cons "c-zero"   7)))         ; цвет нулевой зоны
@@ -813,8 +855,8 @@
 "  : boxed_column { label = \" Поверхности \";"
 "    : row {"
 "      : column {"
-"        : text { label = \"Чёрная (существующая)\"; }"
-"        : text { label = \"Красная (проектная)\"; } }"
+"        : text { label = \"Чёрная (было)\"; }"
+"        : text { label = \"Красная (стало)\"; } }"
 "      : column {"
 "        : popup_list { key = \"s_black\"; width = 34; fixed_width = true; }"
 "        : popup_list { key = \"s_red\";   width = 34; fixed_width = true; } } }"
@@ -908,6 +950,7 @@
 "        : row {"
 "          : text { label = \"Рабочая  +  \"; }"
 "          : image_button { key = \"c_wplus\";  width = 6; height = 1.4; fixed_width = true; fixed_height = true; } } } } }"
+"  : toggle { key = \"m_blk\";  label = \"Подписывать блоком (нужно для правки подписей)\"; }"
 "  : toggle { key = \"m_mask\"; label = \"Скрывать задний план\"; }"
 "  : row {"
 "    : text   { label = \"Знак рабочей отметки:\"; }"
@@ -1204,7 +1247,8 @@
           ", точность " (gc-kg-nth-s (gc-kg-get "p-mark") *gc-kg-prec* "0,00")
           ", " (if (= "1" (gc-kg-get "sep")) "точка" "запятая")
           (if (= "1" (gc-kg-get "wsign")) ", плюс = выемка" ", плюс = насыпь")
-          (if (= "1" (gc-kg-get "mask")) ", с подложкой" "")))
+          (if (= "1" (gc-kg-get "mask")) ", с подложкой" "")
+          (if (= "1" (gc-kg-get "use-blk")) ", блоком" ", текстом")))
 
 ;; Разделитель дробной части. Порядок в списке = значение настройки:
 ;; 0 запятая, 1 точка. Менять порядок нельзя — настройка хранится числом.
@@ -1224,6 +1268,7 @@
   (gc-kg-set "p-mark" (atoi (get_tile "m_prec")))
   (gc-kg-set "sep"    (itoa (atoi (get_tile "m_sep"))))
   (gc-kg-set "mask"   (get_tile "m_mask"))
+  (gc-kg-set "use-blk" (get_tile "m_blk"))
   (gc-kg-set "wsign"  (get_tile "m_wsign"))
   (if *gc-kg-styles*
     (gc-kg-set "style" (gc-kg-nth-s (atoi (get_tile "m_style"))
@@ -1251,6 +1296,7 @@
          (setq *gc-kg-dlg-err* nil)
          (gc-kg-try "m_h" 'set_tile (list "m_h" (gc-kg-get "h-mark")))
          (gc-kg-try "m_mask"  'set_tile (list "m_mask"  (gc-kg-get "mask")))
+         (gc-kg-try "m_blk"   'set_tile (list "m_blk"   (gc-kg-get "use-blk")))
          (gc-kg-try "m_wsign" 'set_tile (list "m_wsign" (gc-kg-get "wsign")))
          (gc-kg-try "m_prec" 'gc-kg-fill-list
            (list "m_prec" *gc-kg-prec* (gc-kg-get "p-mark")))
@@ -1345,7 +1391,8 @@
                  (if (= "1" (gc-kg-get "sep")) "точка" "запятая")
                  (if (= "1" (gc-kg-get "wsign"))
                    ", плюс = ВЫЕМКА" ", плюс = насыпь")
-                 (if (= "1" (gc-kg-get "mask")) ", с подложкой" "")))
+                 (if (= "1" (gc-kg-get "mask")) ", с подложкой" "")
+                 (if (= "1" (gc-kg-get "use-blk")) ", блоком" ", текстом")))
   (princ (strcat "\n  объёмы              : высота " (gc-kg-get "h-vol") " м"
                  ", точность " (nth (gc-kg-get "p-vol") *gc-kg-prec*)))
   (if (= "1" (gc-kg-get "use-min"))
@@ -1580,6 +1627,149 @@
                (setq out (cons p out))))))
   (reverse out))
 
+;;; --------------------------------------------------------------------
+;;; БЛОК ОТМЕТКИ
+;;;
+;;; ЗАЧЕМ БЛОК, А НЕ ТРИ ОТДЕЛЬНЫХ ТЕКСТА. Тремя текстами подпись нельзя
+;;; ни обновить, ни прорядить, ни сдвинуть целиком: чтобы понять, что эти
+;;; три числа - одна подпись, пришлось бы каждый раз искать соседей по
+;;; расстоянию и гадать. У блока три атрибута, и он ОДИН объект: команды
+;;; «обновить», «прорядить», «обнулить», «удалить» работают с ним прямо.
+;;;
+;;; ПОЧЕМУ АТРИБУТЫ, А НЕ ТЕКСТ ВНУТРИ БЛОКА. Значение атрибута меняется
+;;; у вставленного блока, не трогая определение. Текст внутри блока
+;;; одинаков у всех вставок - подписать им разные отметки нельзя.
+;;;
+;;; ВЫСОТА. Определение блока делается с высотой текста 1,0, а нужная
+;;; высота задаётся МАСШТАБОМ вставки. Иначе на каждую высоту текста
+;;; заводилось бы своё определение блока.
+;;;
+;;; ЦВЕТ. У рабочей отметки цвет зависит от знака, поэтому он ставится
+;;; не в определении, а у каждого вставленного атрибута отдельно.
+;;; --------------------------------------------------------------------
+
+(setq *gc-kg-blk* "GC-Отметка")
+
+;; Метки атрибутов. Латиница: у тега атрибута в DWG свои ограничения на
+;; символы, и кириллица в них - лишний риск на ровном месте.
+(setq *gc-kg-tag-w* "RAB")     ; рабочая
+(setq *gc-kg-tag-b* "BYLO")    ; чёрная, «было»
+(setq *gc-kg-tag-r* "STALO")   ; красная, «стало»
+
+;; Смещения текстов внутри блока при высоте 1,0. Те же, что у обычных
+;; текстов: подпись блоком и подпись текстом должны выглядеть одинаково.
+(setq *gc-kg-off-w* '(-0.15  0.15))    ; рабочая, прижата правым краем
+(setq *gc-kg-off-b* '( 0.15  0.15))    ; было
+(setq *gc-kg-off-r* '( 0.15 -1.05))    ; стало
+
+;; Есть ли уже такое определение блока.
+(defun gc-kg-blk-p ( / )
+  (if (tblsearch "BLOCK" *gc-kg-blk*) T nil))
+
+;; Определение атрибута внутри блока.
+(defun gc-kg-attdef (off tag prompt just col / p)
+  (setq p (list (car off) (cadr off) 0.0))
+  (entmake
+    (list '(0 . "ATTDEF") '(100 . "AcDbEntity") '(8 . "0") (cons 62 col)
+          '(100 . "AcDbText")
+          (cons 10 p) (cons 11 p) '(40 . 1.0) '(1 . "0")
+          '(7 . "Standard")
+          (cons 72 just) '(73 . 0)
+          '(100 . "AcDbAttributeDefinition")
+          (cons 3 prompt) (cons 2 tag) '(70 . 0) '(74 . 0))))
+
+;; Создать определение блока. Возвращает T, если после вызова оно есть.
+;;
+;; Слой внутри определения - "0", цвет - ByBlock: только так вставленный
+;; блок слушается слоя и цвета, которые ему задали при вставке. Блок,
+;; собранный на своём слое, игнорировал бы настройки и жил своей жизнью.
+(defun gc-kg-blk-make ( / ok)
+  (if (gc-kg-blk-p)
+    T
+    (progn
+      (entmake (list '(0 . "BLOCK") (cons 2 *gc-kg-blk*) '(70 . 2)
+                     '(10 0.0 0.0 0.0)))
+      (gc-kg-attdef *gc-kg-off-w* *gc-kg-tag-w* "Рабочая отметка" 2 0)
+      (gc-kg-attdef *gc-kg-off-b* *gc-kg-tag-b* "Чёрная (было)"   0 0)
+      (gc-kg-attdef *gc-kg-off-r* *gc-kg-tag-r* "Красная (стало)" 0 0)
+      (setq ok (entmake '((0 . "ENDBLK"))))
+      (if (null ok)
+        (princ "\n[!] Определение блока отметки создать не удалось."))
+      (gc-kg-blk-p))))
+
+;; Один атрибут вставленного блока. Координаты у ATTRIB МИРОВЫЕ, а не
+;; внутренние для блока - поэтому смещение здесь домножается на масштаб.
+(defun gc-kg-attrib (p off tag txt just col h lay stl / q)
+  (if (not (numberp col)) (setq col 256))   ; 256 = ByLayer, запасной
+  (setq q (list (+ (car  p) (* h (car  off)))
+                (+ (cadr p) (* h (cadr off)))))
+  (entmake
+    (list '(0 . "ATTRIB") '(100 . "AcDbEntity") (cons 8 lay) (cons 62 col)
+          '(100 . "AcDbText")
+          (cons 10 q) (cons 11 q) (cons 40 h) (cons 1 txt)
+          (cons 7 (if stl stl "Standard"))
+          (cons 72 just) '(73 . 0)
+          '(100 . "AcDbAttribute")
+          (cons 2 tag) '(70 . 0) '(74 . 0))))
+
+;; Вставить блок отметки в точку p. Возвращает T при успехе.
+;;
+;; 66 . 1 в INSERT означает «дальше идут атрибуты»; без него AutoCAD их
+;; не ждёт и следующие entmake прилетают в пространство модели сами по
+;; себе - тремя осиротевшими текстами, внешне неотличимыми от подписи.
+(defun gc-kg-blk-ins (p tw tb tr colw colb colr h lay stl / )
+  (if (or (not (numberp h)) (<= h 0.0)) (setq h 0.5))
+  (if (null (gc-kg-blk-make))
+    nil
+    (progn
+      (entmake
+        (list '(0 . "INSERT") '(100 . "AcDbEntity") (cons 8 lay)
+              '(100 . "AcDbBlockReference") '(66 . 1)
+              (cons 2 *gc-kg-blk*)
+              (cons 10 (list (car p) (cadr p) 0.0))
+              (cons 41 h) (cons 42 h) (cons 43 h) '(50 . 0.0)))
+      (gc-kg-attrib p *gc-kg-off-w* *gc-kg-tag-w* tw 2 colw h lay stl)
+      (gc-kg-attrib p *gc-kg-off-b* *gc-kg-tag-b* tb 0 colb h lay stl)
+      (gc-kg-attrib p *gc-kg-off-r* *gc-kg-tag-r* tr 0 colr h lay stl)
+      (if (entmake (list '(0 . "SEQEND") '(100 . "AcDbEntity") (cons 8 lay)))
+        T
+        nil))))
+
+;; Набор всех блоков отметок в чертеже. nil, если их нет.
+(defun gc-kg-blk-ss ( / )
+  (ssget "_X" (list '(0 . "INSERT") (cons 2 *gc-kg-blk*))))
+
+;; Атрибуты вставленного блока: список (тег ename значение).
+;; Идём entnext-ом по подчинённым сущностям до SEQEND.
+(defun gc-kg-blk-atts (e / o d out tp)
+  (setq out nil o (entnext e))
+  (while (and o (setq d (entget o))
+              (/= "SEQEND" (setq tp (cdr (assoc 0 d)))))
+    (if (= tp "ATTRIB")
+      (setq out (cons (list (cdr (assoc 2 d)) o (cdr (assoc 1 d))) out)))
+    (setq o (entnext o)))
+  (reverse out))
+
+;; Записать значение в атрибут с таким тегом. Возвращает T, если нашли.
+(defun gc-kg-att-put (atts tag txt col / a d)
+  (setq a (assoc tag atts))
+  (if (null a)
+    nil
+    (progn
+      (setq d (entget (cadr a)))
+      (setq d (subst (cons 1 txt) (assoc 1 d) d))
+      (if (and (numberp col) (assoc 62 d))
+        (setq d (subst (cons 62 col) (assoc 62 d) d))
+        (if (numberp col) (setq d (append d (list (cons 62 col))))))
+      (if (entmod d)
+        (progn (entupd (cadr a)) T)
+        nil))))
+
+;; Значение атрибута с таким тегом либо nil.
+(defun gc-kg-att-get (atts tag / a)
+  (setq a (assoc tag atts))
+  (if a (caddr a) nil))
+
 ;; Подписать отметки в узлах построенной сетки.
 ;;
 ;; РАСПОЛОЖЕНИЕ по образцу:
@@ -1590,7 +1780,8 @@
 ;; 13,23 - 8,00 = +5,23: плюс означает выемку, землю срезают.
 ;; Все три числа одной высоты - так в образце.
 (defun gc-kg-label ( / cells par base ang sx sy pts lay stl h prec sep
-                       wsg msk p w zb zr hw col cnt skip cls hx)
+                       wsg msk blk p w zb zr hw col cnt skip cls hx
+                       tw tb tr sb sr)
   (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
   (cond
     ((or (null cells) (null par))
@@ -1609,13 +1800,18 @@
            prec (gc-kg-get "p-mark")
            sep  (gc-kg-get "sep")
            wsg  (gc-kg-get "wsign")
-           msk  (gc-kg-get "mask"))
+           msk  (gc-kg-get "mask")
+           blk  (= "1" (gc-kg-get "use-blk")))
      (if (or (null h) (<= h 0.0)) (setq h 0.5))
      (if (not (numberp prec)) (setq prec 2))
      (setq hx h)                   ; все три числа одной высоты
      (princ (strcat "\n[i] Точек для подписи: " (itoa (length pts))
                     ". Считаю отметки..."))
-     (setq cnt 0 skip 0 *gc-kg-mask-fail* 0)
+     (setq cnt 0 skip 0 sb 0.0 sr 0.0 *gc-kg-mask-fail* 0)
+     (if (and blk (null (gc-kg-blk-make)))
+       (progn
+         (princ "\n[!] Блок отметки создать не удалось - подписываю текстом.")
+         (setq blk nil)))
      (setvar "CMDECHO" 0)
      (command "_.UNDO" "_BEGIN")
      (foreach w pts
@@ -1631,17 +1827,27 @@
                        ((= cls "ZERO") (gc-kg-get "c-wzero"))
                        ((= cls "CUT")  (gc-kg-get "c-wminus"))
                        (T              (gc-kg-get "c-wplus"))))
-           ;; рабочая - слева от точки, прижата к ней правым краем
-           (gc-kg-put (list (- (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
-                      (strcat (if (= cls "FILL") "+" "") (gc-kg-fmt-p hw prec sep))
-                      h col lay stl 2 msk)
-           ;; справа сверху СУЩЕСТВУЮЩАЯ, справа снизу ПРОЕКТНАЯ
-           (gc-kg-put (list (+ (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
-                      (gc-kg-fmt-p zb prec sep) hx
-                      (gc-kg-get "c-black") lay stl 0 msk)
-           (gc-kg-put (list (+ (car p) (* 0.15 h)) (- (cadr p) (* 1.05 h)))
-                      (gc-kg-fmt-p zr prec sep) hx
-                      (gc-kg-get "c-red") lay stl 0 msk)
+           (setq tw (strcat (if (= cls "FILL") "+" "") (gc-kg-fmt-p hw prec sep))
+                 tb (gc-kg-fmt-p zb prec sep)
+                 tr (gc-kg-fmt-p zr prec sep))
+           (if blk
+             ;; Блоком: одна подпись - один объект, её можно править.
+             (gc-kg-blk-ins p tw tb tr col
+                            (gc-kg-get "c-black") (gc-kg-get "c-red")
+                            h lay stl)
+             (progn
+               ;; рабочая - слева от точки, прижата к ней правым краем
+               (gc-kg-put (list (- (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
+                          tw h col lay stl 2 msk)
+               ;; справа сверху ЧЁРНАЯ (было), справа снизу КРАСНАЯ (стало)
+               (gc-kg-put (list (+ (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
+                          tb hx (gc-kg-get "c-black") lay stl 0 msk)
+               (gc-kg-put (list (+ (car p) (* 0.15 h)) (- (cadr p) (* 1.05 h)))
+                          tr hx (gc-kg-get "c-red") lay stl 0 msk)))
+           ;; Суммы нужны для проверки на перепутанные поверхности - см.
+           ;; сообщение в конце. Считаем здесь, потому что отметки уже на
+           ;; руках: отдельный проход стоил бы второго опроса поверхностей.
+           (setq sb (+ sb zb) sr (+ sr zr))
            (setq cnt (1+ cnt)))
          (setq skip (1+ skip))))
      (command "_.UNDO" "_END")
@@ -1650,6 +1856,9 @@
      (if (> skip 0)
        (princ (strcat "\n  пропущено        : " (itoa skip)
                       "  (одна из поверхностей не дала отметку)")))
+     (princ (strcat "\n  чем подписано    : "
+                    (if blk (strcat "блоком " *gc-kg-blk*)
+                            "отдельными текстами")))
      (princ (strcat "\n  слой             : " lay))
      (princ (strcat "\n  высота текста    : " (gc-kg-fmt h) " м"
                     ", точность " (itoa prec) " знака"))
@@ -1673,6 +1882,22 @@
                       "плюс = насыпь (проектная минус существующая)")))
      (princ "\n  расположение     : слева рабочая, справа сверху существующая,")
      (princ "\n                     справа снизу проектная")
+     ;; ПРОВЕРКА НА ПЕРЕПУТАННЫЕ ПОВЕРХНОСТИ. Выбрать их местами - ошибка
+     ;; тихая: числа выглядят правдоподобно, знак у всей ведомости просто
+     ;; зеркальный. Средние отметки её показывают: земля обычно выше
+     ;; проекта не бывает целиком, но бывает - площадку сыплют. Поэтому
+     ;; не запрещаем, а говорим вслух и даём проверить глазами.
+     (if (> cnt 0)
+       (progn
+         (princ (strcat "\n  средняя «было»   : " (gc-kg-fmt (/ sb cnt)) " м"
+                        "  (" (if (gc-kg-get "s-black") (gc-kg-get "s-black") "?") ")"))
+         (princ (strcat "\n  средняя «стало»  : " (gc-kg-fmt (/ sr cnt)) " м"
+                        "  (" (if (gc-kg-get "s-red") (gc-kg-get "s-red") "?") ")"))
+         (if (< sb sr)
+           (progn
+             (princ "\n  [!] «Было» в среднем НИЖЕ, чем «стало» - вся площадка в насыпи.")
+             (princ "\n      Так бывает, но чаще это поверхности, выбранные местами.")
+             (princ "\n      Проверьте в окне: чёрная - земля, красная - проект.")))))
      (princ "\n[i] Один Ctrl+Z убирает все подписи.")
      T)))
 
@@ -3121,9 +3346,10 @@
 (defun gc-kg-menu ( / k dflt done)
   (setq done nil dflt "Выход")
   (while (not done)
-    (initget "Сетка Отметки Проверка Выход")
+    (initget "Сетка Отметки пРавка Проверка Выход")
     (setq k (getkword
-              (strcat "\nЧто делаем? [Сетка/Отметки/Проверка/Выход] <" dflt ">: ")))
+              (strcat "\nЧто делаем? [Сетка/Отметки/пРавка/Проверка/Выход] <"
+                      dflt ">: ")))
     (if (null k) (setq k dflt))
     (cond
       ((= k "Сетка")    (gc-kg-build) (setq dflt "Отметки"))
@@ -3133,6 +3359,15 @@
                           (princ "\n[i] Отмена, ничего не подписано."))
                         (setq dflt "Выход"))
       ((= k "Проверка") (gc-kg-probe) (setq dflt "Выход"))
+      ((= k "пРавка")
+       (princ "\n\n--- ПРАВКА ПОДПИСЕЙ (отдельные команды) ---")
+       (princ "\n  KGO  обновить отметки   - пересчитать по нынешним поверхностям")
+       (princ "\n  KGA  добавить отметки   - в указанных точках")
+       (princ "\n  KGP  прорядить отметки  - убрать те, что стоят слишком густо")
+       (princ "\n  KGZ  обнулить рабочую   - землю здесь не трогаем")
+       (princ "\n  KGD  удалить все отм.   - стереть подписи целиком")
+       (princ "\n[i] Все они работают с подписью-БЛОКОМ.")
+       (setq dflt "Выход"))
       (T (setq done T))))
   (princ))
 
@@ -3198,6 +3433,284 @@
 
 ;; K -> Л, G -> П, B -> И
 (defun c:лпи ( / ) (c:kgb))
+
+;;; ====================================================================
+;;; ПРАВКА ПОДПИСЕЙ
+;;;
+;;; Подписи расставляются один раз, а живут долго: проект правят, часть
+;;; отметок оказывается лишней, часть - устаревшей. Пять команд закрывают
+;;; то, ради чего иначе пришлось бы стирать всё и подписывать заново.
+;;;
+;;; Все они работают с БЛОКОМ отметки. Тремя отдельными текстами работать
+;;; нельзя: непонятно, какие три числа образуют одну подпись, и любая
+;;; правка превращается в угадывание по расстоянию.
+;;; ====================================================================
+
+;; Общая обстановка подписи: слой, стиль, высота, точность, разделитель,
+;; знак. Одним местом, чтобы пять команд не разошлись между собой.
+(defun gc-kg-mark-env ( / h prec)
+  (gc-kg-defaults)
+  (setq h (gc-kg-num (gc-kg-get "h-mark")))
+  (if (or (null h) (<= h 0.0)) (setq h 0.5))
+  (setq prec (gc-kg-get "p-mark"))
+  (if (not (numberp prec)) (setq prec 2))
+  (list (gc-kg-layer "GC-Картограмма-Отметки" 7)
+        (gc-kg-get "style") h prec
+        (gc-kg-get "sep") (gc-kg-get "wsign")))
+
+;; Поверхности под рукой? Берём по именам из настроек, если ещё не взяты.
+(defun gc-kg-surf-ready ( / )
+  (if (or (null *gc-kg-sb*) (null *gc-kg-sr*))
+    (progn
+      (setq *gc-kg-sb* (gc-kg-surf-obj (gc-kg-get "s-black"))
+            *gc-kg-sr* (gc-kg-surf-obj (gc-kg-get "s-red")))))
+  (if (and *gc-kg-sb* *gc-kg-sr*)
+    T
+    (progn
+      (princ "\n[!] Поверхности не выбраны - откройте KG и выберите их.")
+      nil)))
+
+;; Три текста и цвет рабочей для точки p. nil, если отметку дала не каждая
+;; поверхность: подписать половину подписи хуже, чем не подписать вовсе.
+(defun gc-kg-mark-vals (p env / zb zr hw cls prec sep wsg)
+  (setq prec (nth 3 env) sep (nth 4 env) wsg (nth 5 env))
+  (setq zb (gc-kg-elev *gc-kg-sb* (car p) (cadr p))
+        zr (gc-kg-elev *gc-kg-sr* (car p) (cadr p)))
+  (if (and zb zr)
+    (progn
+      (setq hw (if (= wsg "1") (- zb zr) (- zr zb)))
+      (setq cls (gc-kg-work-class hw))
+      (list (strcat (if (= cls "FILL") "+" "") (gc-kg-fmt-p hw prec sep))
+            (gc-kg-fmt-p zb prec sep)
+            (gc-kg-fmt-p zr prec sep)
+            (cond ((= cls "ZERO") (gc-kg-get "c-wzero"))
+                  ((= cls "CUT")  (gc-kg-get "c-wminus"))
+                  (T              (gc-kg-get "c-wplus")))))
+    nil))
+
+;; Точка вставки блока.
+(defun gc-kg-blk-pt (e / d)
+  (setq d (entget e))
+  (cdr (assoc 10 d)))
+
+;; Выбрать блоки отметок: указанные пользователем либо все.
+;; Возвращает набор либо nil.
+(defun gc-kg-pick-marks (what / ss)
+  (princ (strcat "\n" what " - выберите отметки, Enter = все: "))
+  (setq ss (ssget (list '(0 . "INSERT") (cons 2 *gc-kg-blk*))))
+  (if (null ss)
+    (progn
+      (setq ss (gc-kg-blk-ss))
+      (if ss (princ (strcat "\n[i] Взяты все отметки чертежа: "
+                            (itoa (sslength ss)))))))
+  (if (null ss)
+    (princ "\n[!] Отметок-блоков в чертеже нет. Подпишите их через KG (блоком)."))
+  ss)
+
+;;; --------------------------------------------------------------------
+;;; ОБНОВИТЬ ОТМЕТКИ - пересчитать по нынешним поверхностям
+;;; --------------------------------------------------------------------
+(defun c:kgo ( / ss env n i e p v cnt skip atts)
+  (princ "\n\n=== KGO - обновить отметки ===")
+  (if (gc-kg-surf-ready)
+    (progn
+      (setq env (gc-kg-mark-env))
+      (setq ss (gc-kg-pick-marks "Обновление"))
+      (if ss
+        (progn
+          (setq n (sslength ss) i 0 cnt 0 skip 0)
+          (setvar "CMDECHO" 0)
+          (command "_.UNDO" "_BEGIN")
+          (while (< i n)
+            (setq e (ssname ss i))
+            (setq p (gc-kg-blk-pt e))
+            (setq v (gc-kg-mark-vals p env))
+            (if v
+              (progn
+                (setq atts (gc-kg-blk-atts e))
+                (gc-kg-att-put atts *gc-kg-tag-w* (nth 0 v) (nth 3 v))
+                (gc-kg-att-put atts *gc-kg-tag-b* (nth 1 v) (gc-kg-get "c-black"))
+                (gc-kg-att-put atts *gc-kg-tag-r* (nth 2 v) (gc-kg-get "c-red"))
+                (setq cnt (1+ cnt)))
+              (setq skip (1+ skip)))
+            (setq i (1+ i)))
+          (command "_.UNDO" "_END")
+          (princ (strcat "\n  обновлено        : " (itoa cnt)))
+          (if (> skip 0)
+            (princ (strcat "\n  пропущено        : " (itoa skip)
+                           "  (поверхность не дала отметку в этой точке)")))
+          (princ "\n[i] Один Ctrl+Z возвращает прежние значения.")))))
+  (princ))
+
+;;; --------------------------------------------------------------------
+;;; ДОБАВИТЬ ОТМЕТКИ - в указанных точках
+;;; --------------------------------------------------------------------
+(defun c:kga ( / env p v cnt lay stl h)
+  (princ "\n\n=== KGA - добавить отметки ===")
+  (if (gc-kg-surf-ready)
+    (progn
+      (setq env (gc-kg-mark-env)
+            lay (nth 0 env) stl (nth 1 env) h (nth 2 env))
+      (princ "\n[i] Указывайте точки. Enter - закончить.")
+      (setq cnt 0)
+      (setvar "CMDECHO" 0)
+      (command "_.UNDO" "_BEGIN")
+      (while (setq p (getpoint "\nТочка отметки: "))
+        (setq p (trans p 1 0))
+        (setq v (gc-kg-mark-vals p env))
+        (if (null v)
+          (princ "\n[!] В этой точке отметку дала не каждая поверхность - пропущено.")
+          (if (gc-kg-blk-ins p (nth 0 v) (nth 1 v) (nth 2 v) (nth 3 v)
+                             (gc-kg-get "c-black") (gc-kg-get "c-red")
+                             h lay stl)
+            (setq cnt (1+ cnt))
+            (princ "\n[!] Не удалось поставить блок в этой точке."))))
+      (command "_.UNDO" "_END")
+      (princ (strcat "\n  добавлено отметок: " (itoa cnt)))))
+  (princ))
+
+;;; --------------------------------------------------------------------
+;;; ПРОРЯДИТЬ ОТМЕТКИ - убрать те, что стоят слишком густо
+;;;
+;;; ЗАЧЕМ. Там, где границы сходятся часто, подписи встают вплотную и
+;;; читать их невозможно. Убирать руками - десятки кликов.
+;;;
+;;; КАК. Жадный проход: идём по отметкам и оставляем ту, что дальше
+;;; заданного расстояния от всех уже оставленных. Остальные стираем.
+;;;
+;;; ОХРАННОЕ УСЛОВИЕ. Узлы сетки проходят ПЕРВЫМИ и не удаляются никогда.
+;;; Иначе прореживание съело бы именно опорные точки - те, по которым
+;;; считается объём целых квадратов, - оставив случайные краевые.
+;;; --------------------------------------------------------------------
+
+;; Узел ли это сетки: обе координаты кратны шагу. Требует построенной
+;; сетки; без неё защищать нечего и все отметки равноправны.
+(defun gc-kg-node-p (p / w par sx sy tol)
+  (setq par *gc-kg-grid-par*)
+  (if (null par)
+    nil
+    (progn
+      (setq sx (caddr par) sy (cadddr par) tol 1.0e-4)
+      (gc-kg-set-frame (car par) (cadr par))
+      (setq w (gc-kg-to-grid p))
+      (and (< (abs (* sx (- (/ (car  w) sx) (gc-kg-rnd (/ (car  w) sx))))) tol)
+           (< (abs (* sy (- (/ (cadr w) sy) (gc-kg-rnd (/ (cadr w) sy))))) tol)))))
+
+(defun c:kgp ( / ss n i e p r env h dflt keep kill lst nodes rest ok q k)
+  (princ "\n\n=== KGP - прорядить отметки ===")
+  (setq env (gc-kg-mark-env) h (nth 2 env))
+  (setq ss (gc-kg-pick-marks "Прореживание"))
+  (if ss
+    (progn
+      ;; По умолчанию - ширина самой подписи: примерно шесть знаков
+      ;; шириной 0,7 высоты каждый. Ближе этого подписи налезают.
+      (setq dflt (* 4.2 h))
+      (princ (strcat "\nМинимальное расстояние между отметками <"
+                     (gc-kg-fmt dflt) " м>: "))
+      (setq r (getdist))
+      (if (null r) (setq r dflt))
+      (if (<= r 0.0)
+        (princ "\n[!] Расстояние должно быть больше нуля.")
+        (progn
+          ;; Собираем точки, разделяя на узлы сетки и остальные.
+          (setq n (sslength ss) i 0 nodes nil rest nil)
+          (while (< i n)
+            (setq e (ssname ss i) p (gc-kg-blk-pt e))
+            (if (gc-kg-node-p p)
+              (setq nodes (cons (cons e p) nodes))
+              (setq rest  (cons (cons e p) rest)))
+            (setq i (1+ i)))
+          (setq lst (append (reverse nodes) (reverse rest)))
+          (setq keep nil kill nil)
+          (foreach q lst
+            (setq ok T)
+            (foreach k keep
+              (if (and ok (< (distance (cdr q) k) r)) (setq ok nil)))
+            (if ok
+              (setq keep (cons (cdr q) keep))
+              (setq kill (cons (car q) kill))))
+          (setvar "CMDECHO" 0)
+          (command "_.UNDO" "_BEGIN")
+          (foreach e kill (entdel e))
+          (command "_.UNDO" "_END")
+          (princ (strcat "\n  было отметок     : " (itoa n)))
+          (princ (strcat "\n  осталось         : " (itoa (length keep))))
+          (princ (strcat "\n  убрано           : " (itoa (length kill))))
+          (princ (strcat "\n  порог            : " (gc-kg-fmt r) " м"))
+          (if nodes
+            (princ (strcat "\n  узлов сетки      : " (itoa (length nodes))
+                           "  (не удаляются никогда)"))
+            (princ "\n  [i] Сетка не построена в этой сессии - узлы не защищались."))
+          (princ "\n[i] Один Ctrl+Z возвращает убранные отметки.")))))
+  (princ))
+
+;;; --------------------------------------------------------------------
+;;; ОБНУЛИТЬ РАБОЧУЮ
+;;;
+;;; Смысл: в этих точках землю не трогаем. Рабочая становится нулём,
+;;; и «стало» приравнивается к «было» - иначе три числа подписи
+;;; противоречили бы друг другу: 0 не равно «было» минус «стало».
+;;; --------------------------------------------------------------------
+(defun c:kgz ( / ss n i e cnt env prec sep zero atts vb)
+  (princ "\n\n=== KGZ - обнулить рабочую отметку ===")
+  (setq env (gc-kg-mark-env) prec (nth 3 env) sep (nth 4 env))
+  (setq ss (gc-kg-pick-marks "Обнуление"))
+  (if ss
+    (progn
+      (setq zero (gc-kg-fmt-p 0.0 prec sep))
+      (setq n (sslength ss) i 0 cnt 0)
+      (setvar "CMDECHO" 0)
+      (command "_.UNDO" "_BEGIN")
+      (while (< i n)
+        (setq e (ssname ss i))
+        (setq atts (gc-kg-blk-atts e))
+        (setq vb (gc-kg-att-get atts *gc-kg-tag-b*))
+        (gc-kg-att-put atts *gc-kg-tag-w* zero (gc-kg-get "c-wzero"))
+        ;; «Стало» = «было». Если «было» прочитать не удалось, ставим
+        ;; ноль в рабочую и не трогаем остальное - врать не будем.
+        (if vb (gc-kg-att-put atts *gc-kg-tag-r* vb (gc-kg-get "c-red")))
+        (setq cnt (1+ cnt))
+        (setq i (1+ i)))
+      (command "_.UNDO" "_END")
+      (princ (strcat "\n  обнулено отметок : " (itoa cnt)))
+      (princ "\n  «стало» приравнено к «было» - иначе подпись противоречила бы себе.")
+      (princ "\n[i] Один Ctrl+Z возвращает прежние значения.")))
+  (princ))
+
+;;; --------------------------------------------------------------------
+;;; УДАЛИТЬ ВСЕ ОТМЕТКИ
+;;;
+;;; Стираем и блоки, и отдельные тексты со слоя отметок: подписи могли
+;;; быть поставлены запасным путём, и оставить половину - хуже всего.
+;;; --------------------------------------------------------------------
+(defun c:kgd ( / ss n i lay nb nt)
+  (princ "\n\n=== KGD - удалить все отметки ===")
+  (setq lay "GC-Картограмма-Отметки" nb 0 nt 0)
+  (setvar "CMDECHO" 0)
+  (command "_.UNDO" "_BEGIN")
+  (if (setq ss (gc-kg-blk-ss))
+    (progn
+      (setq n (sslength ss) i 0)
+      (while (< i n) (entdel (ssname ss i)) (setq i (1+ i)))
+      (setq nb n)))
+  (if (setq ss (ssget "_X" (list '(0 . "TEXT,MTEXT") (cons 8 lay))))
+    (progn
+      (setq n (sslength ss) i 0)
+      (while (< i n) (entdel (ssname ss i)) (setq i (1+ i)))
+      (setq nt n)))
+  (command "_.UNDO" "_END")
+  (princ (strcat "\n  удалено блоков   : " (itoa nb)))
+  (princ (strcat "\n  удалено текстов  : " (itoa nt)))
+  (if (and (= nb 0) (= nt 0)) (princ "\n  [i] Удалять было нечего."))
+  (princ "\n[i] Один Ctrl+Z возвращает всё удалённое.")
+  (princ))
+
+;; Русская раскладка: K->Л, G->П, O->Щ, A->Ф, P->З, Z->Я, D->В
+(defun c:лпщ ( / ) (c:kgo))
+(defun c:лпф ( / ) (c:kga))
+(defun c:лпз ( / ) (c:kgp))
+(defun c:лпя ( / ) (c:kgz))
+(defun c:лпв ( / ) (c:kgd))
 
 ;;; ====================================================================
 ;;; ЯДРО КОМАНДЫ
@@ -3274,6 +3787,8 @@
 ;; Те же клавиши в ЙЦУКЕН: K -> Л, G -> П. См. docs/pitfalls.md -> П15.
 (defun c:лп ( / ) (c:kg))
 (defun c:ЛП ( / ) (c:kg))
-(princ "\n[gc] kg.lsp v32 загружен. Команды: KG | KGB показать границы | рус. ЛП, ЛПИ")
+(princ "\n[gc] kg.lsp v33 загружен. Команды: KG | KGB границы | рус. ЛП, ЛПИ")
+(princ "\n     Правка подписей: KGO обновить | KGA добавить | KGP прорядить")
+(princ "\n                      KGZ обнулить | KGD удалить все")
 (princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
 (princ)
