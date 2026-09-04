@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v42)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v43)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -13,6 +13,17 @@
 ;;;   KGV / ЛПМ   -- VYNOSKA: otodvinut podpis, ostaviv liniyu k uzlu.
 ;;;   KGW / ЛПЦ   -- perestroit vynoski posle ruchnogo peremeshcheniya.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v43: LINIYA PRIHODIT V KONEC KRESTIKA; plecho 1200 mm.
+;;;      1. Plecho 2,4 vysoty teksta - eto 1200 mm pri vysote 500 mm,
+;;;         razmer po chertezhu Shamilya. V dolyah vysoty, a ne
+;;;         v millimetrah: krestik dolzhen rasti vmeste so shriftom.
+;;;      2. Liniya prihodit V KONEC KRESTIKA - v tot iz chetyreh, chto
+;;;         smotrit v storonu uzla. Ranshe ona prihodila v KRAY PODPISI,
+;;;         a krestik koroche ee: mezhdu koncom linii i krestikom
+;;;         ostavalsya razryv, i vyglyadelo eto kak dve nesvyazannye veshchi.
+;;;         Storona vybiraetsya po bolshey proekcii: tyanuli vbok -
+;;;         prihodim v plecho, vverh ili vniz - v konec vertikali.
 ;;;
 ;;; v42: PLECHI KRESTIKA KOROCHE.
 ;;;      Bylo: plecho ravnyalos polushirine podpisi, i krestik vyhodil vo
@@ -683,7 +694,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v42")
+(setq *gc-kg-ver* "v43")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -1903,7 +1914,12 @@
 (setq *gc-kg-tag-r* "STALO")   ; красная, «стало»
 
 ;; Полудлина плеча крестика в долях высоты текста.
-(setq *gc-kg-cross-arm* 0.8)
+;;
+;; 2,4 - это 1200 мм при высоте текста 500 мм, размер по чертежу Шамиля.
+;; В долях высоты, а не в миллиметрах: крестик должен расти вместе со
+;; шрифтом, иначе при мелком тексте он накроет подпись целиком, а при
+;; крупном превратится в точку.
+(setq *gc-kg-cross-arm* 2.4)
 
 ;; Смещения текстов внутри блока при высоте 1,0. Те же, что у обычных
 ;; текстов: подпись блоком и подпись текстом должны выглядеть одинаково.
@@ -4508,14 +4524,20 @@
 ;; во всю её длину - Шамиль сказал «чересчур большой», и он прав: знак
 ;; не должен спорить с цифрами, ради которых он поставлен.
 ;; Одно число - если понадобится, подстраивается им же.
-(defun gc-kg-lead-geom (a p h prec / w wl wr wm dx att out)
-  (setq w (gc-kg-mark-wid h prec) wl (car w) wr (cdr w))
-  (setq wm (* *gc-kg-cross-arm* h))       ; полудлина крестика
-  (setq dx (- (car a) (car p)))
-  (setq att (cond
-              ((< dx (* -0.2 h)) (list (- (car p) wl) (cadr p)))
-              ((> dx (*  0.2 h)) (list (+ (car p) wr) (cadr p)))
-              (T                 (list (car p) (cadr p)))))
+(defun gc-kg-lead-geom (a p h prec / wm vup vdn dx dy att out)
+  (setq wm (* *gc-kg-cross-arm* h))       ; полудлина плеча крестика
+  (setq vup (* 1.20 h) vdn (* 1.15 h))    ; вертикаль вверх и вниз
+  (setq dx (- (car a) (car p)) dy (- (cadr a) (cadr p)))
+  ;; Линия приходит В КОНЕЦ КРЕСТИКА - в тот из четырёх, что смотрит
+  ;; в сторону узла. Раньше она приходила в край подписи, а крестик
+  ;; короче её: между концом линии и крестиком оставался разрыв, и
+  ;; выглядело это как две несвязанные вещи.
+  ;;
+  ;; Сторона выбирается по большей проекции: тянули вбок - приходим
+  ;; в плечо, тянули вверх или вниз - в конец вертикальной чёрточки.
+  (setq att (if (>= (abs dx) (abs dy))
+              (list (+ (car p) (if (< dx 0.0) (- wm) wm)) (cadr p))
+              (list (car p) (+ (cadr p) (if (< dy 0.0) (- vdn) vup)))))
   (setq out
     (list
       ;; вертикальная чёрточка крестика - во всю высоту подписи
@@ -4524,6 +4546,8 @@
       ;; горизонталь крестика - симметрично в обе стороны
       (list (list (- (car p) wm) (cadr p))
             (list (+ (car p) wm) (cadr p)))))
+  ;; Вертикаль крестика уже в списке первой - её концы и служат
+  ;; привязкой, когда подпись отодвинули вверх или вниз.
   ;; сама выноска - от узла к краю подписи
   (if (> (distance a att) (* 0.3 h))
     (setq out (cons (list a att) out)))
