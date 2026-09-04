@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v40)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v41)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -13,6 +13,33 @@
 ;;;   KGV / ЛПМ   -- VYNOSKA: otodvinut podpis, ostaviv liniyu k uzlu.
 ;;;   KGW / ЛПЦ   -- perestroit vynoski posle ruchnogo peremeshcheniya.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v41: VYNOSKA STALA CHASTYU BLOKA.
+;;;      Shamil: "nado sdelat chastyu bloka, bloku izmenennomu mozhno zhe
+;;;      dat drugoe nazvanie". Eto i byl otvet, kotorogo ne hvatalo.
+;;;
+;;;      Vnutri bloka lezhit ODNA geometriya na vse vstavki - poetomu
+;;;      odnim opredeleniem obojtis nelzya. No opredeleniy mozhet byt
+;;;      MNOGO: u kazhdoy otodvinutoy podpisi svoe, "GC-Отметка-N",
+;;;      s ee vynoskoy vnutri. Komandy pravki ishchut podpisi po maske
+;;;      "GC-Отметка*" i vidyat i bazovye, i s vynoskoy.
+;;;
+;;;      CHTO ETO DAET. Vynosku nelzya sluchayno otorvat, sdvinut otdelno
+;;;      ili zabyt pri kopirovanii - ona edet s podpisyu, potomu chto ona
+;;;      i est podpis. Sloy vynosok bolshe ne nuzhen.
+;;;
+;;;      CENA. Opredeleniya nakaplivayutsya: kazhdoe peremeshchenie sozdaet
+;;;      novoe. Posle kazhdoy pravki lishnie vychishchayutsya PURGE - bez
+;;;      etogo chertezh raspuhal by na kazhdoe dvizhenie.
+;;;
+;;;      PERETASKIVANIE. Na vremya peretaskivaniya podpis stanovitsya
+;;;      obychnoy, bez vynoski: inache liniya poehala by vmeste s blokom
+;;;      oboimi koncami. Zhivaya liniya risuetsya rezinkoy, a sobiraetsya
+;;;      obratno uzhe na novom meste.
+;;;
+;;;      Lokalnye koordinaty vnutri bloka - eto mirovye, podelennye na
+;;;      masshtab; vstavka umnozhaet ih obratno. Provereno chislenno na
+;;;      pyati vysotah teksta i na koordinatah 1,4e6: rashozhdenie 0.
 ;;;
 ;;; v40: ZHIVAYA VYNOSKA PRI PERETASKIVANII, SIMMETRICHNYY KRESTIK.
 ;;;
@@ -138,7 +165,7 @@
 ;;;      sudby - docs/pitfalls.md -> P59.
 ;;;
 ;;;      CHTO ESHCHE SDELANO, chtoby progon ne propadal vpustuyu:
-;;;      1. Srыv na PERVOY tochke perevodit ves progon na obychnyy tekst.
+;;;      1. Sryv na PERVOY tochke perevodit ves progon na obychnyy tekst.
 ;;;         Prichina sryva odna na vse tochki, i prodolzhat blokom - eto
 ;;;         garantirovanno uyti v pustotu, kak i vyshlo u Shamilya DVAZHDY.
 ;;;      2. Nedosobrannyy INSERT stiraetsya za soboy. Ostavlennyy, on
@@ -156,7 +183,7 @@
 ;;;      otkaze vozvrashchaet nil i molchit - eto zapisano u nas kak P4,
 ;;;      i eto zhe pravilo ya narushil.
 ;;;
-;;;      Teper kazhdyy shag proveryaetsya, srыv schitaetsya i pechataetsya
+;;;      Teper kazhdyy shag proveryaetsya, sryv schitaetsya i pechataetsya
 ;;;      s ukazaniem, na chem imenno sorvalos. gc-kg-blk-make verit ne
 ;;;      vozvratu entmake, a tablice blokov: opredelenie moglo ne
 ;;;      sobratsya i pri udachnyh na vid vyzovah.
@@ -545,7 +572,7 @@
 ;;;     Eto sovpadaet s tem, chto zapisano v specs/009 §5B.5: beretsya
 ;;;     OBSHCHAYA OBLAST poverhnostey i granic.
 ;;;
-;;;     Kray ishchetsya opросом uzlov i deleniem popolam. Ploshchad kraevogo
+;;;     Kray ishchetsya oprosom uzlov i deleniem popolam. Ploshchad kraevogo
 ;;;     kvadrata utochnyaetsya drobleniem 4 x 4 -- bez etogo ugol granicy,
 ;;;     popavshiy vnutr kvadrata, srezalsya by pryamoy (docs/pitfalls.md P29).
 ;;;
@@ -649,7 +676,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v40")
+(setq *gc-kg-ver* "v41")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -2059,49 +2086,56 @@
 ;; Сколько атрибутов прошло только со второго захода, без цвета.
 (setq *gc-kg-attr-nocolor* 0)
 
-(defun gc-kg-blk-ins (p tw tb tr colw colb colr h lay stl / bad)
+;; Вставить блок с ЗАДАННЫМ именем. Общая часть для обычной подписи
+;; и для подписи с выноской: отличаются они только определением блока,
+;; а порядок вставки, атрибуты и проверки у них одни и те же.
+(defun gc-kg-blk-ins-named (nm p tw tb tr colw colb colr h lay stl / bad)
   (if (or (not (numberp h)) (<= h 0.0)) (setq h 0.5))
+  (setq bad nil)
+  (if (null (entmake
+              (list '(0 . "INSERT") '(100 . "AcDbEntity") (cons 8 lay)
+                    '(100 . "AcDbBlockReference") '(66 . 1)
+                    (cons 2 nm)
+                    (cons 10 (list (car p) (cadr p) 0.0))
+                    (cons 41 h) (cons 42 h) (cons 43 h) '(50 . 0.0))))
+    (setq bad "INSERT"))
+  ;; Атрибуты идут ТОЛЬКО если INSERT принят: вне последовательности
+  ;; они не создаются, и звать их незачем.
+  (if (null bad)
+    (progn
+      (if (null (gc-kg-attrib p *gc-kg-off-w* *gc-kg-tag-w* tw 2 colw h lay stl))
+        (setq bad "ATTRIB рабочей"))
+      (if (and (null bad)
+               (null (gc-kg-attrib p *gc-kg-off-b* *gc-kg-tag-b* tb 0 colb h lay stl)))
+        (setq bad "ATTRIB «было»"))
+      (if (and (null bad)
+               (null (gc-kg-attrib p *gc-kg-off-r* *gc-kg-tag-r* tr 0 colr h lay stl)))
+        (setq bad "ATTRIB «стало»"))
+      (if (and (null bad)
+               (null (entmake (list '(0 . "SEQEND") '(100 . "AcDbEntity")
+                                    (cons 8 lay)))))
+        (setq bad "SEQEND"))))
+  (if bad
+    (progn
+      (setq *gc-kg-ins-fail* (1+ *gc-kg-ins-fail*))
+      (if (null *gc-kg-ins-why*) (setq *gc-kg-ins-why* bad))
+      ;; Убираем за собой недособранный INSERT: оставленный, он висит
+      ;; в чертеже с флагом «дальше атрибуты», которых нет.
+      (if (/= bad "INSERT") (gc-kg-drop-last-insert))
+      nil)
+    T))
+
+;; Вставить обычную подпись - без выноски.
+(defun gc-kg-blk-ins (p tw tb tr colw colb colr h lay stl / ok)
   (if (null (gc-kg-blk-make))
     nil
     (progn
-      (setq bad nil)
-      (if (null (entmake
-                  (list '(0 . "INSERT") '(100 . "AcDbEntity") (cons 8 lay)
-                        '(100 . "AcDbBlockReference") '(66 . 1)
-                        (cons 2 *gc-kg-blk*)
-                        (cons 10 (list (car p) (cadr p) 0.0))
-                        (cons 41 h) (cons 42 h) (cons 43 h) '(50 . 0.0))))
-        (setq bad "INSERT"))
-      ;; Атрибуты идут ТОЛЬКО если INSERT принят: вне последовательности
-      ;; они не создаются, и звать их незачем.
-      (if (null bad)
-        (progn
-          (if (null (gc-kg-attrib p *gc-kg-off-w* *gc-kg-tag-w* tw 2 colw h lay stl))
-            (setq bad "ATTRIB рабочей"))
-          (if (and (null bad)
-                   (null (gc-kg-attrib p *gc-kg-off-b* *gc-kg-tag-b* tb 0 colb h lay stl)))
-            (setq bad "ATTRIB «было»"))
-          (if (and (null bad)
-                   (null (gc-kg-attrib p *gc-kg-off-r* *gc-kg-tag-r* tr 0 colr h lay stl)))
-            (setq bad "ATTRIB «стало»"))
-          (if (and (null bad)
-                   (null (entmake (list '(0 . "SEQEND") '(100 . "AcDbEntity")
-                                        (cons 8 lay)))))
-            (setq bad "SEQEND"))))
+      (setq ok (gc-kg-blk-ins-named *gc-kg-blk* p tw tb tr colw colb colr
+                                    h lay stl))
       ;; Узел запоминаем сразу: потом подпись отодвинут, и восстановить
       ;; её исходное место будет неоткуда.
-      (if (null bad) (gc-kg-node-stamp p))
-      (if bad
-        (progn
-          (setq *gc-kg-ins-fail* (1+ *gc-kg-ins-fail*))
-          (if (null *gc-kg-ins-why*) (setq *gc-kg-ins-why* bad))
-          ;; Убираем за собой недособранный INSERT. Оставленный, он висит
-          ;; в чертеже с флагом «дальше атрибуты», которых нет: команды
-          ;; правки принимают его за отметку, а показать ему нечего.
-          (if (/= bad "INSERT")
-            (gc-kg-drop-last-insert))
-          nil)
-        T))))
+      (if ok (gc-kg-node-stamp p))
+      ok)))
 
 ;; Записать узел в только что созданный блок.
 ;;
@@ -2114,7 +2148,7 @@
     (progn
       (setq d (entget e))
       (if (and (= "INSERT" (cdr (assoc 0 d)))
-               (= *gc-kg-blk* (cdr (assoc 2 d))))
+               (wcmatch (cdr (assoc 2 d)) *gc-kg-blk-mask*))
         (gc-kg-node-put e p)))))
 
 ;; Стереть последний созданный INSERT нашего блока, если он там.
@@ -2124,12 +2158,19 @@
     (progn
       (setq d (entget e))
       (if (and (= "INSERT" (cdr (assoc 0 d)))
-               (= *gc-kg-blk* (cdr (assoc 2 d))))
+               (wcmatch (cdr (assoc 2 d)) *gc-kg-blk-mask*))
         (entdel e)))))
 
 ;; Набор всех блоков отметок в чертеже. nil, если их нет.
+;; Маска имён подписи: базовый блок и все блоки с выноской.
+;;
+;; У подписи, которую отодвинули, СВОЁ определение блока - с её выноской
+;; внутри. Поэтому искать надо по маске, а не по одному имени: иначе
+;; команды правки перестали бы видеть ровно те подписи, которые двигали.
+(setq *gc-kg-blk-mask* "GC-Отметка*")
+
 (defun gc-kg-blk-ss ( / )
-  (ssget "_X" (list '(0 . "INSERT") (cons 2 *gc-kg-blk*))))
+  (ssget "_X" (list '(0 . "INSERT") (cons 2 *gc-kg-blk-mask*))))
 
 ;; Атрибуты вставленного блока: список (тег ename значение).
 ;; Идём entnext-ом по подчинённым сущностям до SEQEND.
@@ -3937,7 +3978,7 @@
 ;; Возвращает набор либо nil.
 (defun gc-kg-pick-marks (what / ss)
   (princ (strcat "\n" what " - выберите отметки, Enter = все: "))
-  (setq ss (ssget (list '(0 . "INSERT") (cons 2 *gc-kg-blk*))))
+  (setq ss (ssget (list '(0 . "INSERT") (cons 2 *gc-kg-blk-mask*))))
   (if (null ss)
     (progn
       (setq ss (gc-kg-blk-ss))
@@ -4211,6 +4252,7 @@
   ;; entmake не переписывает уже существующее определение, а молча
   ;; берёт его как есть. Из-за этого правка формы не доезжала бы
   ;; до чертежей, где подпись уже была.
+  (gc-kg-purge-leads)
   (if (gc-kg-blk-p)
     (progn
       (command "_.-PURGE" "_B" *gc-kg-blk* "_N")
@@ -4223,6 +4265,152 @@
   (princ (strcat "\n  удалено выносок  : " (itoa nl)))
   (if (and (= nb 0) (= nt 0) (= nl 0)) (princ "\n  [i] Удалять было нечего."))
   (princ "\n[i] Один Ctrl+Z возвращает всё удалённое.")
+  (princ))
+
+;;; --------------------------------------------------------------------
+;;; ВЫНОСКА ВНУТРИ БЛОКА
+;;;
+;;; ПОЧЕМУ У КАЖДОЙ ОТОДВИНУТОЙ ПОДПИСИ СВОЁ ОПРЕДЕЛЕНИЕ БЛОКА.
+;;; Внутри блока лежит одна геометрия на все вставки. Выноска же у каждой
+;;; подписи своя - своей длины и в свою сторону. Значит либо выноска
+;;; отдельным объектом (так было в v37-v40), либо у каждой отодвинутой
+;;; подписи СВОЙ блок. Второе лучше: выноску нельзя случайно оторвать,
+;;; сдвинуть отдельно или забыть при копировании - она едет с подписью,
+;;; потому что она и есть подпись.
+;;;
+;;; Имя такого блока - «GC-Отметка-N». Команды правки ищут подписи по
+;;; маске «GC-Отметка*», поэтому видят и базовые, и с выноской.
+;;;
+;;; ЦЕНА РЕШЕНИЯ: определения накапливаются. После каждой правки лишние
+;;; вычищаются PURGE - без этого чертёж распухал бы на каждое движение.
+;;; --------------------------------------------------------------------
+
+;; Свободное имя для блока с выноской.
+(defun gc-kg-blk-name-free ( / i nm)
+  (setq i 1)
+  (while (tblsearch "BLOCK" (setq nm (strcat *gc-kg-blk* "-" (itoa i))))
+    (setq i (1+ i)))
+  nm)
+
+;; Геометрия выноски в ЛОКАЛЬНЫХ координатах блока (высота текста = 1).
+;;
+;; Внутри блока всё живёт в единицах, которые при вставке множатся на
+;; масштаб. Поэтому здесь делим на h: тогда подпись любой высоты получит
+;; свою выноску без пересчёта.
+(defun gc-kg-lead-local (a p h prec / out)
+  (setq out nil)
+  (foreach l (gc-kg-lead-geom a p h prec)
+    (setq out (cons (list (list (/ (- (car  (car l)) (car  p)) h)
+                                (/ (- (cadr (car l)) (cadr p)) h))
+                          (list (/ (- (car  (cadr l)) (car  p)) h)
+                                (/ (- (cadr (cadr l)) (cadr p)) h)))
+                    out)))
+  (reverse out))
+
+;; Линия внутри определения блока. Цвет ByBlock и слой "0" - чтобы
+;; выноска слушалась того, что задано вставке.
+(defun gc-kg-blk-line (l / r)
+  (setq r (entmake (list '(0 . "LINE") '(100 . "AcDbEntity") '(8 . "0")
+                         '(62 . 0)
+                         '(100 . "AcDbLine")
+                         (cons 10 (list (car (car l)) (cadr (car l)) 0.0))
+                         (cons 11 (list (car (cadr l)) (cadr (cadr l)) 0.0)))))
+  (if (null r) (princ "\n[!] Линия выноски в определении блока не создалась."))
+  r)
+
+;; Создать определение блока с выноской. Возвращает имя либо nil.
+(defun gc-kg-blk-make-lead (loc / nm ok)
+  (setq nm (gc-kg-blk-name-free))
+  (if (null (entmake (list '(0 . "BLOCK") (cons 2 nm) '(70 . 2)
+                           '(10 0.0 0.0 0.0))))
+    (progn
+      (princ "\n[!] Определение блока с выноской не открылось.")
+      nil)
+    (progn
+      (foreach l loc (gc-kg-blk-line l))
+      (gc-kg-attdef *gc-kg-off-w* *gc-kg-tag-w* "Рабочая отметка" 2)
+      (gc-kg-attdef *gc-kg-off-b* *gc-kg-tag-b* "Чёрная (было)"   0)
+      (gc-kg-attdef *gc-kg-off-r* *gc-kg-tag-r* "Красная (стало)" 0)
+      (entmake '((0 . "ENDBLK")))
+      (if (tblsearch "BLOCK" nm) nm nil))))
+
+;; Всё о подписи: имя блока, точка, масштаб, слой, атрибуты, узел.
+;; Возвращает список либо nil.
+(defun gc-kg-mark-read (e / d atts out)
+  (setq d (entget e))
+  (if (null d)
+    nil
+    (progn
+      (setq atts (gc-kg-blk-atts e))
+      (list (cdr (assoc 2 d))                       ; 0 имя блока
+            (cdr (assoc 10 d))                      ; 1 точка вставки
+            (cdr (assoc 41 d))                      ; 2 масштаб
+            (cdr (assoc 8 d))                       ; 3 слой
+            (gc-kg-att-get atts *gc-kg-tag-w*)      ; 4 рабочая
+            (gc-kg-att-get atts *gc-kg-tag-b*)      ; 5 было
+            (gc-kg-att-get atts *gc-kg-tag-r*)      ; 6 стало
+            (gc-kg-att-col atts *gc-kg-tag-w*)      ; 7 цвет рабочей
+            (gc-kg-att-col atts *gc-kg-tag-b*)      ; 8 цвет было
+            (gc-kg-att-col atts *gc-kg-tag-r*)      ; 9 цвет стало
+            (gc-kg-node-get e)))))                  ; 10 узел
+
+;; Цвет атрибута с таким тегом.
+(defun gc-kg-att-col (atts tag / a d c)
+  (setq a (assoc tag atts))
+  (if (null a)
+    nil
+    (progn
+      (setq d (entget (cadr a)) c (cdr (assoc 62 d)))
+      (if (numberp c) c nil))))
+
+;; Пересобрать подпись: с выноской внутри блока либо без неё.
+;;
+;; ПОЧЕМУ ПЕРЕСОБИРАТЬ, А НЕ ПРАВИТЬ. Определение блока переписать нельзя
+;; (П60), а выноска у каждой подписи своя. Значит для новой выноски нужно
+;; новое определение - и, соответственно, новая вставка.
+;;
+;; Возвращает ename новой вставки либо nil.
+(defun gc-kg-mark-remake (e a prec base / info p h lay nm loc far new)
+  (setq info (gc-kg-mark-read e))
+  (if (or (null info) (null (nth 4 info)))
+    nil
+    (progn
+      (setq p (nth 1 info) h (nth 2 info) lay (nth 3 info))
+      (if (or (not (numberp h)) (<= h 0.0)) (setq h 0.5))
+      (if (null a) (setq a (nth 10 info)))
+      (setq far (and (null base) a (> (distance a p) (* 0.3 h))))
+      ;; Отодвинута - своё определение с выноской; вернулась на узел -
+      ;; обычный блок, чтобы лишние определения не плодились.
+      (if far
+        (progn
+          (setq loc (gc-kg-lead-local a p h prec))
+          (setq nm (gc-kg-blk-make-lead loc)))
+        (progn
+          (gc-kg-blk-make)
+          (setq nm *gc-kg-blk*)))
+      (if (null nm)
+        nil
+        (progn
+          (entdel e)
+          (if (gc-kg-blk-ins-named nm p (nth 4 info) (nth 5 info) (nth 6 info)
+                                   (nth 7 info) (nth 8 info) (nth 9 info)
+                                   h lay (gc-kg-get "style"))
+            (progn
+              (setq new (entlast))
+              (if a (gc-kg-node-put new a))
+              new)
+            (progn
+              ;; Вставка не удалась - возвращаем старую подпись, иначе
+              ;; она пропала бы совсем.
+              (entdel e)
+              nil)))))))
+
+;; Вычистить определения блоков с выноской, на которые нет ссылок.
+;;
+;; Каждое движение подписи создаёт новое определение, а старое остаётся
+;; в чертеже. Без уборки файл распухал бы на каждое движение мыши.
+(defun gc-kg-purge-leads ( / )
+  (command "_.-PURGE" "_B" (strcat *gc-kg-blk* "-*") "_N")
   (princ))
 
 ;;; --------------------------------------------------------------------
@@ -4349,27 +4537,28 @@
       n)
     0))
 
-;; Перестроить ВСЕ выноски по нынешним положениям блоков.
+;; Перестроить ВСЕ подписи по нынешним положениям: у отодвинутых -
+;; выноска внутри блока, у стоящих на своём узле - обычный блок.
 ;;
-;; Стираем и рисуем заново, а не ищем каждую и правим: искать соответствие
-;; «эта линия принадлежит тому блоку» пришлось бы по ссылкам, которые
-;; рвутся при копировании, удалении и откате. Производный объект дешевле
-;; построить заново, чем синхронизировать.
-(defun gc-kg-leaders-rebuild ( / ss n i e p a env h prec cnt)
-  (gc-kg-layer *gc-kg-lay-lead* 7)
-  (gc-kg-leaders-clear)
+;; Пересобираем, а не правим: определение блока переписать нельзя (П60),
+;; а выноска у каждой подписи своя. Заодно вычищаем линии со старого слоя
+;; выносок - в версиях v37-v40 они были отдельными объектами.
+(defun gc-kg-leaders-rebuild ( / ss n i e p a env h prec cnt lst)
   (setq env (gc-kg-mark-env) h (nth 2 env) prec (nth 3 env) cnt 0)
+  (gc-kg-leaders-clear)
   (setq ss (gc-kg-blk-ss))
   (if ss
     (progn
-      (setq n (sslength ss) i 0)
-      (while (< i n)
-        (setq e (ssname ss i))
+      ;; Сначала собираем имена, потом пересобираем: пересборка удаляет
+      ;; вставку и создаёт новую, и набор выбора по ходу разъехался бы.
+      (setq n (sslength ss) i 0 lst nil)
+      (while (< i n) (setq lst (cons (ssname ss i) lst)) (setq i (1+ i)))
+      (foreach e lst
         (setq a (gc-kg-node-get e))
         (setq p (gc-kg-blk-pt e))
-        (if (and a p (gc-kg-leader-draw a p h prec))
-          (setq cnt (1+ cnt)))
-        (setq i (1+ i)))))
+        (if (and a p (> (distance a p) (* 0.3 h)))
+          (if (gc-kg-mark-remake e a prec nil) (setq cnt (1+ cnt)))))))
+  (gc-kg-purge-leads)
   cnt)
 
 ;; Резинка: те же отрезки, что станут настоящими линиями.
@@ -4401,7 +4590,13 @@
 ;; строятся, перестраиваются и стираются только вместе с ней.
 ;;
 ;; Возвращает T, если подпись поставлена, и nil, если бросили.
-(defun gc-kg-drag (e a h prec / obj last g cur prev ok)
+(defun gc-kg-drag (e a h prec / obj last g cur prev ok tmp)
+  ;; Выноска лежит ВНУТРИ блока, и при перетаскивании она поехала бы
+  ;; вместе с ним - оба её конца. Поэтому на время перетаскивания
+  ;; подпись становится обычной, без выноски, а живая линия рисуется
+  ;; резинкой. Собирается обратно уже на новом месте.
+  (setq tmp (gc-kg-mark-remake e a prec T))
+  (if tmp (setq e tmp))
   (setq obj (vlax-ename->vla-object e))
   (setq last (gc-kg-blk-pt e) prev nil ok nil)
   (setq g (grread T 12 0))
@@ -4421,6 +4616,9 @@
     (progn
       (setq cur (trans (cadr g) 1 0))
       (vla-move obj (vlax-3d-point last) (vlax-3d-point cur))
+      ;; Теперь выноска становится частью блока: у подписи появляется
+      ;; своё определение с её линией внутри.
+      (gc-kg-mark-remake e a prec nil)
       (setq ok T)))
   ok)
 
@@ -4450,7 +4648,7 @@
     (progn
       (setq d (entget e))
       (if (and (= "INSERT" (cdr (assoc 0 d)))
-               (= *gc-kg-blk* (cdr (assoc 2 d))))
+               (wcmatch (cdr (assoc 2 d)) *gc-kg-blk-mask*))
         e
         nil))))
 
@@ -4498,22 +4696,20 @@
                    (setq one (ssadd))
                    (ssadd e one)
                    (command "_.MOVE" one "" (cadr sel) pause)))
-               (setq cnt (1+ cnt))
-               ;; Выноску перестраиваем сразу: видно результат до того,
-               ;; как возьмёшься за следующую подпись.
-               (gc-kg-leaders-rebuild))))
+               (setq cnt (1+ cnt)))))
           ;; 52 - пользователь нажал Enter. Только это и означает «хватит».
           ;; 7 - щелчок мимо объекта; раньше он ЗАВЕРШАЛ команду, и после
           ;; каждого промаха приходилось запускать её заново.
           ((= err 52) (setq done T))
           ((= err 7)  (princ "\n[!] Мимо. Щёлкните по цифрам подписи."))
           (T          (setq done T))))
-      (setq lead (gc-kg-leaders-rebuild))
+      (gc-kg-purge-leads)
+      (setq lead cnt)
       (command "_.UNDO" "_END")
       (setvar "DRAGMODE" dm)
       (princ (strcat "\n  подписей сдвинуто : " (itoa cnt)))
-      (princ (strcat "\n  выносок на чертеже: " (itoa lead)))
-      (princ (strcat "\n  слой выносок      : " *gc-kg-lay-lead*))
+      (princ (strcat "\n  выносок сделано   : " (itoa lead)))
+      (princ "\n  выноска - часть блока подписи, отдельным объектом её нет")
       (princ "\n[i] Подпись можно двигать и обычным способом - ручками или MOVE,")
       (princ "\n    потом KGW перерисует линии.")
       (princ "\n[i] Один Ctrl+Z отменяет всю правку разом.")))
