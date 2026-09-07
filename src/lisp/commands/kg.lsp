@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v47)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v48)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -15,6 +15,27 @@
 ;;;   KGM / ЛПЬ   -- OBEMY zemlyanyh mass.
 ;;;   KGT / ЛПЕ   -- VEDOMOST obemov pod kartogrammoy.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v48: PORYADOK CHISEL V PODPISI BYL ZERKALNYY.
+;;;      Shamil prislal odin i tot zhe kvadrat u obrazca i u nas:
+;;;        obrazec:  +3,08 | 6,34 / 3,26     obem +35,87
+;;;        u nas:    -3,08 | 3,26 / 6,34     obem -35,6
+;;;
+;;;      1. U OBRAZCA SVERHU PROEKT (6,34), SNIZU ZEMLYA (3,26), i
+;;;         rabochaya chitaetsya kak "verhnee minus nizhnee". U nas bylo
+;;;         naoborot. Eto oshibka prochteniya obrazca eshche v v29:
+;;;         ya reshil, chto sverhu stoit zemlya, i s teh por vsyo
+;;;         stroilos na etom.
+;;;
+;;;      2. ZNAK PO UMOLCHANIYU stal PLYUS = NASYP - iz togo zhe kvadrata:
+;;;         proekt vyshe zemli, i u obrazca tam plyus.
+;;;
+;;;      3. OBEMY vsyo eshche rashodyatsya s obrazcom (u nego 4089 m3
+;;;         nasypi, u nas 3773). Prichina NE NAYDENA, zapisana v
+;;;         status/ISSUES.md #003. Chislenno provereno: na celyh
+;;;         kvadratah metody sovpadayut do 0,00 %, na kraevyh figurah
+;;;         "srednee vershin" othodit do 2 % - eto chast raznicy, no ne
+;;;         vsya. Nuzhna svertka po odnomu konkretnomu kvadratu.
 ;;;
 ;;; v47: KONTROL "OBEM PROTIV PLOSHCHADI" I VID VEDOMOSTI.
 ;;;      1. V vedomosti v45 stoyalo: obem "Nasyp" 3773 m3 pri ploshchadi
@@ -790,7 +811,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v47")
+(setq *gc-kg-ver* "v48")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -831,12 +852,12 @@
     ;; как в docs/formulas.md. 1: плюс = выемка, обратная конвенция.
     ;; Тумблер, а не жёстко: контора конторе рознь, а зеркальный знак
     ;; выглядит правдоподобно и молча портит всю ведомость.
-    ;; По умолчанию ПЛЮС = ВЫЕМКА: так в образце, по которому Шамиль
-    ;; сверяется. Рабочая считается как существующая минус проектная:
-    ;; земля 13,23, проект 8,00 -> +5,23, срезать пять с лишним метров.
-    ;; В docs/formulas.md записана обратная конвенция - обе встречаются,
-    ;; поэтому это тумблер, а не жёстко зашитое правило.
-    (cons "wsign"    "1")
+    ;; По умолчанию ПЛЮС = НАСЫПЬ. Сверено по образцу на одном квадрате:
+    ;; проект 6,34, земля 3,26, рабочая +3,08 - плюс там, где досыпают.
+    ;; Прежнее умолчание (плюс = выемка) шло из неверного прочтения:
+    ;; я считал, что сверху в подписи стоит земля, а стоит проект.
+    ;; Тумблер оставлен - обе конвенции встречаются.
+    (cons "wsign"    "0")
     (cons "style"    "Standard")  ; стиль текста подписей
     ;; Подложка под подписью. Узлы сетки стоят на её линиях, и число
     ;; ложится прямо на линию - читать тяжело. С подложкой текст ставится
@@ -2119,9 +2140,14 @@
 
 ;; Смещения текстов внутри блока при высоте 1,0. Те же, что у обычных
 ;; текстов: подпись блоком и подпись текстом должны выглядеть одинаково.
+;;
+;; ПОРЯДОК ЧИСЕЛ: сверху ПРОЕКТ, снизу ЗЕМЛЯ. Тогда рабочая читается
+;; как «верхнее минус нижнее» - ровно так, как её и считают. Обратный
+;; порядок держался до v47 и был ошибкой прочтения образца: у него
+;; сверху 6,34, снизу 3,26 и рабочая +3,08, а у нас выходило зеркально.
 (setq *gc-kg-off-w* '(-0.15  0.15))    ; рабочая, прижата правым краем
-(setq *gc-kg-off-b* '( 0.15  0.15))    ; было
-(setq *gc-kg-off-r* '( 0.15 -1.05))    ; стало
+(setq *gc-kg-off-r* '( 0.15  0.15))    ; стало (проект) - СВЕРХУ
+(setq *gc-kg-off-b* '( 0.15 -1.05))    ; было (земля) - снизу
 
 ;; Есть ли уже такое определение блока.
 (defun gc-kg-blk-p ( / )
@@ -2516,11 +2542,12 @@
                ;; рабочая - слева от точки, прижата к ней правым краем
                (gc-kg-put (list (- (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
                           tw h col lay stl 2 msk)
-               ;; справа сверху ЧЁРНАЯ (было), справа снизу КРАСНАЯ (стало)
+               ;; справа сверху КРАСНАЯ (проект), справа снизу ЧЁРНАЯ (земля):
+               ;; рабочая читается как «верхнее минус нижнее».
                (gc-kg-put (list (+ (car p) (* 0.15 h)) (+ (cadr p) (* 0.15 h)))
-                          tb hx (gc-kg-get "c-black") lay stl 0 msk)
+                          tr hx (gc-kg-get "c-red") lay stl 0 msk)
                (gc-kg-put (list (+ (car p) (* 0.15 h)) (- (cadr p) (* 1.05 h)))
-                          tr hx (gc-kg-get "c-red") lay stl 0 msk)))
+                          tb hx (gc-kg-get "c-black") lay stl 0 msk)))
            ;; Суммы нужны для проверки на перепутанные поверхности - см.
            ;; сообщение в конце. Считаем здесь, потому что отметки уже на
            ;; руках: отдельный проход стоил бы второго опроса поверхностей.
