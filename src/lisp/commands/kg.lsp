@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v46)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v47)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -15,6 +15,24 @@
 ;;;   KGM / ЛПЬ   -- OBEMY zemlyanyh mass.
 ;;;   KGT / ЛПЕ   -- VEDOMOST obemov pod kartogrammoy.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v47: KONTROL "OBEM PROTIV PLOSHCHADI" I VID VEDOMOSTI.
+;;;      1. V vedomosti v45 stoyalo: obem "Nasyp" 3773 m3 pri ploshchadi
+;;;         nasypi 10,29 m2. Eto srednyaya rabochaya otmetka 367 metrov -
+;;;         nevozmozhnaya velichina, i vidno eto BEZ vsyakogo obrazca.
+;;;         Teper komanda sama delit obem na ploshchad i govorit vsluh,
+;;;         esli chastnoe neprvdopodobno: znachit obem i ploshchad
+;;;         poscheny v raznyh orientaciyah znaka.
+;;;
+;;;         Takaya oshibka tihaya: kazhdoe chislo po otdelnosti vyglyadit
+;;;         normalno, balans shoditsya, ploshchadi shodyatsya. Poymat ee
+;;;         mozhno tolko sopostavleniem dvuh velichin mezhdu soboy.
+;;;
+;;;      2. VID VEDOMOSTI. Nazvaniya strok obrezalis do "syp", itog
+;;;         perenosilsya na dve stroki, tekst o ploshchadi lozhilsya
+;;;         poverh tablicy. Kolonki rasshireny, a tekst stavitsya po
+;;;         FAKTICHESKOY vysote tablicy: schitat ee po chislu strok
+;;;         nelzya - vysota stroki mozhet ne primenitsya.
 ;;;
 ;;; v46: ZNAK, OKNO VYCHISLENIYA, NASTOYASHCHAYA TABLICA, TRI METODA.
 ;;;
@@ -772,7 +790,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v46")
+(setq *gc-kg-ver* "v47")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -4362,6 +4380,24 @@
 (setq *gc-kg-area-fill* 0.0)    ; площадь насыпи, м2
 (setq *gc-kg-vols*     nil)     ; по ячейкам: (i j выемка насыпь площадь центр)
 
+;; Проверка «объём против площади»: их частное - средняя рабочая отметка,
+;; и она должна быть правдоподобной. Порог 50 м взят с большим запасом:
+;; рабочие отметки на планировке идут метрами, а рассогласование даёт
+;; сотни и тысячи.
+(defun gc-kg-vs-check (what v s / hm)
+  (cond
+    ((and (> v 1.0e-6) (< s 1.0e-6))
+     (princ (strcat "\n  [!] " what ": объём " (gc-kg-fmt v)
+                    " м3 при нулевой площади - расчёт рассогласован.")))
+    ((> s 1.0e-6)
+     (setq hm (/ v s))
+     (princ (strcat "\n  средняя по «" what "» : " (gc-kg-fmt hm) " м"))
+     (if (> (abs hm) 50.0)
+       (progn
+         (princ "\n  [!] Это невозможная рабочая отметка. Объём и площадь")
+         (princ "\n      посчитаны в разных ориентациях знака - проверьте,")
+         (princ "\n      какая поверхность выбрана землёй, а какая проектом."))))))
+
 ;; Подписаны ли отметки. Без них объёмы считать нельзя - и не потому,
 ;; что не из чего: отметки берутся с поверхностей напрямую. Дело в другом:
 ;; неподписанный расчёт нечем проверить. Шамиль сверяет объём с отметками
@@ -4442,7 +4478,17 @@
      (princ (strcat "\n  НАСЫПЬ              : " (gc-kg-fmt tfill) " м3"))
      (princ (strcat "\n  баланс (выемка-нас.): " (gc-kg-fmt (- tcut tfill)) " м3"
                     "  (плюс - грунт вывозят, минус - привозят)"))
-     (princ (strcat "\n  площадь             : " (gc-kg-fmt tarea) " м2"))
+     (princ (strcat "\n  площадь             : " (gc-kg-fmt tarea) " м2"
+                    "  (насыпь " (gc-kg-fmt safill)
+                    ", выемка " (gc-kg-fmt sacut) ")"))
+     ;; КОНТРОЛЬ: объём, делённый на площадь, это средняя рабочая отметка
+     ;; части. Она обязана быть в метрах - таких же, как отметки площадки.
+     ;; Сотни метров означают, что объём и площадь посчитаны в РАЗНЫХ
+     ;; ориентациях знака, и одно из двух относится не к той категории.
+     ;; Ошибка это тихая: каждое число по отдельности правдоподобно
+     ;; (docs/pitfalls.md -> П62).
+     (gc-kg-vs-check "насыпь" tfill safill)
+     (gc-kg-vs-check "выемка" tcut  sacut)
      (if use-mn
        (princ (strcat "\n  порог подписи       : " (gc-kg-fmt mn) " м3")))
      (princ (strcat "\n  слой                : " lay))
@@ -4527,6 +4573,9 @@
 ;;; нельзя - ведомость нужна в любом случае.
 ;;; --------------------------------------------------------------------
 
+;; Фактическая высота построенной таблицы, м. nil, если не удалось узнать.
+(setq *gc-kg-tab-h* nil)
+
 ;; Безопасный вызов метода таблицы: считаем отказы, а не падаем.
 (defun gc-kg-tv (fn args / r)
   (setq r (vl-catch-all-apply fn args))
@@ -4553,6 +4602,7 @@
       (if (null tbl)
         nil
         (progn
+          (setq *gc-kg-tab-h* nil)
           (gc-kg-tv 'vla-put-regeneratetablesuppressed (list tbl :vlax-true))
           (gc-kg-tv 'vla-put-titlesuppressed  (list tbl :vlax-true))
           (gc-kg-tv 'vla-put-headersuppressed (list tbl :vlax-true))
@@ -4560,12 +4610,12 @@
           ;; Ширина: узкая колонка названий, колонки ровно по шагу сетки,
           ;; широкая колонка итога. Совпадение с сеткой - главное в этой
           ;; таблице, поэтому ширину задаём явно каждой.
-          (gc-kg-tv 'vla-setcolumnwidth (list tbl 0 (* 1.8 h)))
+          (gc-kg-tv 'vla-setcolumnwidth (list tbl 0 (* 5.0 h)))
           (setq i 0)
           (while (< i (length cols))
             (gc-kg-tv 'vla-setcolumnwidth (list tbl (1+ i) sx))
             (setq i (1+ i)))
-          (gc-kg-tv 'vla-setcolumnwidth (list tbl (1- n) (* 7.0 h)))
+          (gc-kg-tv 'vla-setcolumnwidth (list tbl (1- n) (* 9.0 h)))
           (setq r 2)                       ; первые две строки погашены
           (gc-kg-tv 'vla-settext (list tbl r 0 "Насыпь"))
           (gc-kg-tv 'vla-settext (list tbl (1+ r) 0 "Выемка"))
@@ -4590,6 +4640,10 @@
           (gc-kg-tv 'vla-setrowheight (list tbl r (* 2.0 h)))
           (gc-kg-tv 'vla-setrowheight (list tbl (1+ r) (* 2.0 h)))
           (gc-kg-tv 'vla-put-regeneratetablesuppressed (list tbl :vlax-false))
+          ;; Запоминаем фактическую высоту: по ней ставится текст под
+          ;; таблицей. Свойство может не отдаться - тогда считаем по
+          ;; строкам, но это уже догадка, и она может не совпасть.
+          (setq *gc-kg-tab-h* (gc-kg-tv 'vla-get-height (list tbl)))
           T)))))
 
 ;;; ====================================================================
@@ -4771,7 +4825,11 @@
          ;; Строка о площади - текстом под таблицей, как в образце.
          (setq *gc-kg-txt-ang* (if ang ang 0.0))
          (setq pt (list (* (car org) sx)
-                        (- (* (cadr org) sy) (* 3.0 h) (* 5.2 h))))
+                        (- (* (cadr org) sy) (* 3.0 h)
+                           (if (and *gc-kg-tab-h* (numberp *gc-kg-tab-h*)
+                                    (> *gc-kg-tab-h* 0.0))
+                             (+ *gc-kg-tab-h* (* 1.5 h))
+                             (* 5.2 h)))))
          (gc-kg-tab-text pt
            (strcat "Площадь картограммы - " (gc-kg-fmt *gc-kg-vol-area*)
                    " м2, в т.ч.:")
