@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v53)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v54)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -17,6 +17,30 @@
 ;;;   KGQ / ЛПЙ   -- RAZOBRAT ODIN KVADRAT: ploshchad, otmetki, obem
 ;;;                   tremya metodami. Dlya sverki s chuzhim raschetom.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v54: OTSECHENIE PO ZNAKU VRALO NA NEVYPUKLOM KONTURE.
+;;;      Ostavalos: summa ploshchadey chastey byla BOLSHE ploshchadi
+;;;      yacheyki na 0,556 m2. Prichina naydena chislenno.
+;;;
+;;;      gc-kg-clip-sign - eto otsechenie poluploskostyu, i verno ono
+;;;      tolko dlya VYPUKLOGO kontura. Na nevypuklom, esli rabochaya
+;;;      otmetka menyaet znak dvazhdy i bolee, ono skleivaet kuski
+;;;      v SAMOPERESEKAYUSHCHIYSYA mnogougolnik, i ego ploshchad po
+;;;      formule shnurkov vyhodit BOLSHE nastoyashchey - vsegda bolshe,
+;;;      nikogda menshe. Imenno takoy znak rashozhdeniya my i videli.
+;;;
+;;;      Na modeli iz 3000 sluchaynyh nevypuklyh konturov rashozhdenie
+;;;      voznikalo u 52 % iz nih, summarno +3821 m2. Posle pravki -
+;;;      u 8,7 %, summarno +633.
+;;;
+;;;      TEPER nevypuklyy kontur rezhetsya na treugolniki DAZHE v metode
+;;;      kvadratov: treugolnik vypuklyy vsegda, i delenie po znaku na nem
+;;;      korrektno. Na vypuklom (celyy kvadrat vsegda takov) idem prezhnim
+;;;      putem, i kontrolnyy primer iz docs/formulas.md ostaetsya tochnym:
+;;;      nasyp S=361,905 V=65,143, vyemka S=38,095 V=2,540.
+;;;
+;;;      POROG otbrasyvaniya vklyuchen po umolchaniyu i raven 0,01 m3 -
+;;;      kak v okne etalona. Bez etogo v v53 on prosto ne rabotal.
 ;;;
 ;;; v53: POROG OTBRASYVANIYA RABOTAET V RASCHETE, A NE TOLKO V PODPISI.
 ;;;      Ostavalos rashozhdenie po VYEMKE: u nas 10,292 m2, u etalona
@@ -917,7 +941,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v53")
+(setq *gc-kg-ver* "v54")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -940,8 +964,12 @@
     (cons "p-mark"   2)           ; знаков после запятой у отметок
     (cons "h-vol"    "0.5")       ; высота текста объёмов, м
     (cons "p-vol"    1)           ; знаков после запятой у объёмов
-    (cons "min-vol"  "0")         ; порог: объём ниже не подписывается, м3
-    (cons "use-min"  "0")         ; включён ли порог
+    ;; Порог отбрасывания: кусок тоньше него не идёт ни в объём, ни
+    ;; в площадь. 0,01 м3 и включён - ровно как в окне эталона, иначе
+    ;; ведомости не сойдутся: у него такие куски дают прочерк, у нас
+    ;; «-0,00» и лишние квадратные метры площади (П64).
+    (cons "min-vol"  "0.01")      ; порог, м3
+    (cons "use-min"  "1")         ; порог включён
     ;; Цвета по образцу, к которому Шамиль привык: существующая синяя,
     ;; проектная зелёная, рабочая пурпурная. Развести цвета рабочей
     ;; по знаку можно в окне - настройки для этого есть.
@@ -4379,6 +4407,31 @@
   (cons (reverse out) (reverse outh)))
 
 ;; Объём части: площадь на среднее отметок её вершин.
+;; Выпуклый ли контур: все повороты в одну сторону.
+;;
+;; ЗАЧЕМ. Отсечение по знаку (gc-kg-clip-sign) верно только для ВЫПУКЛОГО
+;; контура. На невыпуклом, если рабочая отметка меняет знак дважды и
+;; более, оно склеивает куски в самопересекающийся многоугольник, и его
+;; площадь по формуле шнурков выходит БОЛЬШЕ настоящей - всегда больше,
+;; никогда меньше.
+;;
+;; Это и давало «части больше целого»: на модели из 3000 случайных
+;; невыпуклых контуров расхождение возникало у 52 % из них
+;; (docs/pitfalls.md -> П65).
+(defun gc-kg-convex-p (pts / n i z pos neg)
+  (setq n (length pts) i 0 pos nil neg nil)
+  (if (< n 4)
+    T                                   ; треугольник выпуклый всегда
+    (progn
+      (while (< i n)
+        (setq z (gc-kg-cross3 (nth i pts)
+                              (nth (rem (1+ i) n) pts)
+                              (nth (rem (+ i 2) n) pts)))
+        (if (>  z 1.0e-12) (setq pos T))
+        (if (< z -1.0e-12) (setq neg T))
+        (setq i (1+ i)))
+      (not (and pos neg)))))
+
 ;; Объёмы и площади насыпи и выемки для контура: (Vнас Sнас Vвыем Sвыем).
 ;;
 ;; Метод квадратов режет ВЕСЬ контур нулевой линией и считает каждую часть
@@ -4390,6 +4443,11 @@
   (setq m (gc-kg-get "vmethod"))
   (if (not (numberp m)) (setq m 0))
   (setq fill 0.0 sf 0.0 cut 0.0 sc 0.0)
+  ;; Невыпуклый контур режем на треугольники ДАЖЕ в методе квадратов:
+  ;; иначе деление по знаку даст самопересечение и завысит площадь.
+  ;; На выпуклом (а целый квадрат всегда выпуклый) идём прежним путём,
+  ;; и контрольный пример из docs/formulas.md остаётся точным.
+  (if (and (= m 0) (not (gc-kg-convex-p pts))) (setq m 1))
   (if (= m 0)
     (progn
       (setq prt (gc-kg-clip-sign pts hs  1))
@@ -4620,7 +4678,7 @@
 ;;; --------------------------------------------------------------------
 (defun c:kgm ( / cells par base ang sx sy lay stl h prec sep env
                v cut fill cnt skip lo mn use-mn tcut tfill tarea p
-               sacut safill)
+               sacut safill dc nbad dbad dmax ibad)
   (princ "\n\n=== KGM - объёмы земляных масс ===")
   (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
   (cond
@@ -4645,7 +4703,8 @@
      (setq use-mn (= "1" (gc-kg-get "use-min")))
      (setq lay (gc-kg-layer "GC-Картограмма-Объёмы" 7))
      (setq *gc-kg-hw-cache* nil *gc-kg-vols* nil)
-     (setq cnt 0 skip 0 tcut 0.0 tfill 0.0 tarea 0.0 sacut 0.0 safill 0.0)
+     (setq cnt 0 skip 0 tcut 0.0 tfill 0.0 tarea 0.0 sacut 0.0 safill 0.0
+           nbad 0 dbad 0.0 dmax 0.0 ibad nil)
      (princ (strcat "\n[i] Квадратов: " (itoa (length cells)) ". Считаю..."))
      (setvar "CMDECHO" 0)
      (command "_.UNDO" "_BEGIN")
@@ -4658,6 +4717,15 @@
            (setq tcut (+ tcut cut) tfill (+ tfill fill)
                  tarea (+ tarea (nth 2 v))
                  sacut (+ sacut (nth 4 v)) safill (+ safill (nth 5 v)))
+           ;; Сколько ячеек, где части не сошлись с площадью самой ячейки,
+           ;; и на сколько. Без порога это должен быть чистый ноль:
+           ;; части квадрата обязаны давать квадрат.
+           (setq dc (- (+ (nth 4 v) (nth 5 v)) (nth 2 v)))
+           (if (> (abs dc) 1.0e-6)
+             (setq nbad (1+ nbad) dbad (+ dbad dc)
+                   dmax (if (> (abs dc) (abs dmax)) dc dmax)
+                   ibad (if ibad ibad (list (car c) (cadr c) (nth 2 v)
+                                            (+ (nth 4 v) (nth 5 v))))))
            (setq *gc-kg-vols* (cons (list (car c) (cadr c) cut fill (nth 2 v) p)
                                     *gc-kg-vols*))
            ;; Подписываем обе части, если квадрат переходный: одно число
@@ -4702,6 +4770,21 @@
                         (gc-kg-fmt (- tarea (+ safill sacut))) " м2"))
          (princ (strcat "\n                        (куски тоньше порога "
                         (gc-kg-fmt mn) " м3 - в расчёт не идут)"))))
+     ;; ГДЕ ИМЕННО не сходится - по ячейкам. Итог может сойтись случайно,
+     ;; если ошибки разных знаков погасят друг друга, поэтому считаем
+     ;; расхождение по каждому квадрату отдельно.
+     (if (> nbad 0)
+       (progn
+         (princ (strcat "\n  [!] квадратов с расхождением: " (itoa nbad)
+                        " из " (itoa cnt)))
+         (princ (strcat "\n      суммарно " (gc-kg-fmt dbad)
+                        " м2, худший " (gc-kg-fmt dmax) " м2"))
+         (if ibad
+           (princ (strcat "\n      первый: i=" (itoa (car ibad))
+                          " j=" (itoa (cadr ibad))
+                          ", площадь " (rtos (caddr ibad) 2 4)
+                          ", части " (rtos (cadddr ibad) 2 4))))
+         (princ "\n      Разберите его командой KGQ.")))
      ;; Части НЕ МОГУТ быть больше целого: это уже не порог, а ошибка.
      (if (> (- (+ safill sacut) tarea) 0.001)
        (progn
