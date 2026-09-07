@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v44)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v45)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -13,7 +13,33 @@
 ;;;   KGV / ЛПМ   -- VYNOSKA: otodvinut podpis, ostaviv liniyu k uzlu.
 ;;;   KGW / ЛПЦ   -- perestroit vynoski posle ruchnogo peremeshcheniya.
 ;;;   KGM / ЛПЬ   -- OBEMY zemlyanyh mass.
+;;;   KGT / ЛПЕ   -- VEDOMOST obemov pod kartogrammoy.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v45: VEDOMOST OBEMOV.
+;;;      Tablica vstaet POD kartogrammoy, i kazhdyy ee stolbec tochno raven
+;;;      kolonke kvadratov setki: v stolbce - summa obemov vseh kvadratov
+;;;      nad nim. Poetomu vedomost chitaetsya pryamo s chertezha: vidno,
+;;;      iz chego slozhilas kazhdaya cifra.
+;;;
+;;;      Sovpadenie stolbcov s kolonkami - ne oformlenie, a sut. Razehavshis
+;;;      na polkletki, tablica nachnet vrat glazu, ostavayas vernoy po
+;;;      chislam. Poetomu ona stroitsya v SISTEME SETKI i povorachivaetsya
+;;;      vmeste s ney.
+;;;
+;;;      Dve stroki - nasyp i vyemka, sprava itog, pod tablicey ploshchad
+;;;      kartogrammy s razbivkoy. Procherk vmesto nulya: nol oznachal by,
+;;;      chto obem schitali i on vyshel nulevym, a na dele rabot takogo
+;;;      roda v etoy kolonke prosto net.
+;;;
+;;;      Provereno chislenno: granicy stolbcov sovpadayut s liniyami setki
+;;;      do nulya, shirina kazhdogo rovno shag setki, summy po stolbcam
+;;;      shodyatsya s itogom, tablica parallelna setke pri povorotah
+;;;      0/30/45/90/137 gradusov.
+;;;
+;;;      OBEMY teper vozvrashchayutsya POLOZHITELNYMI, a znak pripisyvaetsya
+;;;      pri podpisi. Derzhat znak vnutri rascheta znachit kazhdyy raz
+;;;      gadat, chto oznachaet minus u "vyemki".
 ;;;
 ;;; v44: ETAP 4 - OBEMY.
 ;;;      Metodika - docs/formulas.md: obem figury = ee ploshchad na SREDNEE
@@ -714,7 +740,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v44")
+(setq *gc-kg-ver* "v45")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -1700,6 +1726,10 @@
     (setq i (1+ i)))
   out)
 
+;; Угол поворота текста, радианы. Ведомость встаёт под повёрнутой сеткой,
+;; и её текст должен лежать вдоль строк, а не поперёк.
+(setq *gc-kg-txt-ang* 0.0)
+
 ;; Текст в точке. Выравнивание: 0 влево, 1 по центру, 2 вправо.
 ;; Группа 72/73 и точка 11 - выравнивание идёт по ней, а не по 10
 ;; (docs/pitfalls.md -> П2: со стилем фиксированной высоты и аннотативным
@@ -1710,6 +1740,7 @@
                 '(100 . "AcDbText")
                 (cons 10 p) (cons 11 p)
                 (cons 40 h) (cons 1 txt)
+                (cons 50 *gc-kg-txt-ang*)
                 (cons 7 (if stl stl "Standard"))
                 (cons 72 (cond ((= just 1) 1) ((= just 2) 2) (T 0)))
                 '(73 . 0)))
@@ -3881,10 +3912,10 @@
 (defun gc-kg-menu ( / k dflt done)
   (setq done nil dflt "Выход")
   (while (not done)
-    (initget "Сетка Отметки оБъёмы пРавка Проверка Выход")
+    (initget "Сетка Отметки оБъёмы Таблица пРавка Проверка Выход")
     (setq k (getkword
-              (strcat "\nЧто делаем? [Сетка/Отметки/оБъёмы/пРавка/Проверка/Выход] <"
-                      dflt ">: ")))
+              (strcat "\nЧто делаем? [Сетка/Отметки/оБъёмы/Таблица/пРавка/"
+                      "Проверка/Выход] <" dflt ">: ")))
     (if (null k) (setq k dflt))
     (cond
       ((= k "Сетка")    (gc-kg-build) (setq dflt "Отметки"))
@@ -3893,7 +3924,8 @@
       ((= k "Отметки")  (if (gc-kg-dialog-marks) (gc-kg-label)
                           (princ "\n[i] Отмена, ничего не подписано."))
                         (setq dflt "оБъёмы"))
-      ((= k "оБъёмы")   (c:kgm) (setq dflt "Выход"))
+      ((= k "оБъёмы")   (c:kgm) (setq dflt "Таблица"))
+      ((= k "Таблица")  (c:kgt) (setq dflt "Выход"))
       ((= k "Проверка") (gc-kg-probe) (setq dflt "Выход"))
       ((= k "пРавка") (gc-kg-menu-edit) (setq dflt "Выход"))
       (T (setq done T))))
@@ -4060,8 +4092,14 @@
     (list (/ cx (* 3.0 sa)) (/ cy (* 3.0 sa)))))
 
 ;; Объёмы одной ячейки: список (выемка насыпь площадь центр).
+;;
+;; ОБА ОБЪЁМА ПОЛОЖИТЕЛЬНЫЕ - это кубометры грунта, который срезают или
+;; досыпают. Знак приписывается позже, при подписи, по выбранной конвенции
+;; (*gc-kg-wsign*). Держать знак внутри расчёта - значит каждый раз гадать,
+;; что означает минус у «выемки»: меньше нуля или наоборот больше.
+;;
 ;; nil, если хоть в одной вершине отметки нет.
-(defun gc-kg-cell-vol (c sx sy / pts hs ok p w cut fill r prt)
+(defun gc-kg-cell-vol (c sx sy / pts hs ok p w cut fill r prt sc sf)
   ;; Контур: у целого квадрата это его стороны, у краевого - обрезанный.
   (setq pts (if (> (nth 2 c) (- (* sx sy) (* 1.0e-6 sx sy)))
               (nth 3 c)
@@ -4082,17 +4120,22 @@
           ;; они гасят друг друга, и общий объём вышел бы заниженным.
           (setq prt (gc-kg-clip-sign pts hs  1))
           (setq fill (gc-kg-part-vol (car prt) (cdr prt)))
+          (setq sf (if (> (length (car prt)) 2) (gc-kg-area (car prt)) 0.0))
           (setq prt (gc-kg-clip-sign pts hs -1))
           (setq cut (gc-kg-part-vol (car prt) (cdr prt)))
-          ;; При wsign=1 плюс означает выемку, при 0 - насыпь.
+          (setq sc (if (> (length (car prt)) 2) (gc-kg-area (car prt)) 0.0))
+          ;; fill - объём части с h>0, cut - с h<0 (он отрицателен).
+          ;; Кто из них выемка, а кто насыпь, решает конвенция знака.
           (if (= "1" (gc-kg-get "wsign"))
-            (list fill cut (nth 2 c) (gc-kg-centroid pts))
-            (list (- cut) (- fill) (nth 2 c) (gc-kg-centroid pts))))))))
+            (list fill (abs cut) (nth 2 c) (gc-kg-centroid pts) sf sc)
+            (list (abs cut) fill (nth 2 c) (gc-kg-centroid pts) sc sf)))))))
 
 ;; Итоги последнего расчёта - для ведомости на этапе 5.
 (setq *gc-kg-vol-cut*  0.0)     ; выемка, м3
 (setq *gc-kg-vol-fill* 0.0)     ; насыпь, м3
 (setq *gc-kg-vol-area* 0.0)     ; площадь, м2
+(setq *gc-kg-area-cut*  0.0)    ; площадь выемки, м2
+(setq *gc-kg-area-fill* 0.0)    ; площадь насыпи, м2
 (setq *gc-kg-vols*     nil)     ; по ячейкам: (i j выемка насыпь площадь центр)
 
 ;; Подписаны ли отметки. Без них объёмы считать нельзя - и не потому,
@@ -4117,7 +4160,8 @@
 ;;; KGM - рассчитать объёмы
 ;;; --------------------------------------------------------------------
 (defun c:kgm ( / cells par base ang sx sy lay stl h prec sep env
-               v cut fill cnt skip lo mn use-mn tcut tfill tarea p)
+               v cut fill cnt skip lo mn use-mn tcut tfill tarea p
+               sacut safill)
   (princ "\n\n=== KGM - объёмы земляных масс ===")
   (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
   (cond
@@ -4138,7 +4182,7 @@
      (setq use-mn (= "1" (gc-kg-get "use-min")))
      (setq lay (gc-kg-layer "GC-Картограмма-Объёмы" 7))
      (setq *gc-kg-hw-cache* nil *gc-kg-vols* nil)
-     (setq cnt 0 skip 0 tcut 0.0 tfill 0.0 tarea 0.0)
+     (setq cnt 0 skip 0 tcut 0.0 tfill 0.0 tarea 0.0 sacut 0.0 safill 0.0)
      (princ (strcat "\n[i] Квадратов: " (itoa (length cells)) ". Считаю..."))
      (setvar "CMDECHO" 0)
      (command "_.UNDO" "_BEGIN")
@@ -4149,7 +4193,8 @@
          (progn
            (setq cut (car v) fill (cadr v) p (gc-kg-to-wcs (nth 3 v)))
            (setq tcut (+ tcut cut) tfill (+ tfill fill)
-                 tarea (+ tarea (nth 2 v)))
+                 tarea (+ tarea (nth 2 v))
+                 sacut (+ sacut (nth 4 v)) safill (+ safill (nth 5 v)))
            (setq *gc-kg-vols* (cons (list (car c) (cadr c) cut fill (nth 2 v) p)
                                     *gc-kg-vols*))
            ;; Подписываем обе части, если квадрат переходный: одно число
@@ -4157,7 +4202,8 @@
            (if (gc-kg-vol-label p cut fill h prec sep lay stl mn use-mn)
              (setq cnt (1+ cnt))))))
      (command "_.UNDO" "_END")
-     (setq *gc-kg-vol-cut* tcut *gc-kg-vol-fill* tfill *gc-kg-vol-area* tarea)
+     (setq *gc-kg-vol-cut* tcut *gc-kg-vol-fill* tfill *gc-kg-vol-area* tarea
+           *gc-kg-area-cut* sacut *gc-kg-area-fill* safill)
      (setq *gc-kg-vols* (reverse *gc-kg-vols*))
      (princ "\n\n--- ОБЪЁМЫ ПОСЧИТАНЫ ---")
      (princ (strcat "\n  квадратов подписано : " (itoa cnt)))
@@ -4166,7 +4212,8 @@
                       "  (поверхность не дала отметку в вершине)")))
      (princ (strcat "\n  ВЫЕМКА              : " (gc-kg-fmt tcut) " м3"))
      (princ (strcat "\n  НАСЫПЬ              : " (gc-kg-fmt tfill) " м3"))
-     (princ (strcat "\n  баланс (выемка-нас.): " (gc-kg-fmt (- tcut tfill)) " м3"))
+     (princ (strcat "\n  баланс (выемка-нас.): " (gc-kg-fmt (- tcut tfill)) " м3"
+                    "  (плюс - грунт вывозят, минус - привозят)"))
      (princ (strcat "\n  площадь             : " (gc-kg-fmt tarea) " м2"))
      (if use-mn
        (princ (strcat "\n  порог подписи       : " (gc-kg-fmt mn) " м3")))
@@ -4183,31 +4230,179 @@
 ;; на такой квадрат было бы неправдой - там и срезают, и досыпают.
 (defun gc-kg-vol-label (p cut fill h prec sep lay stl mn use-mn / any dy)
   (setq any nil)
-  (setq dy (if (and (> (abs cut) 1.0e-9) (> (abs fill) 1.0e-9)) (* 0.7 h) 0.0))
-  (if (and (> (abs cut) 1.0e-9)
-           (or (null use-mn) (>= (abs cut) mn)))
+  (setq dy (if (and (> cut 1.0e-9) (> fill 1.0e-9)) (* 0.7 h) 0.0))
+  (if (and (> cut 1.0e-9) (or (null use-mn) (>= cut mn)))
     (progn
       (gc-kg-text (list (car p) (+ (cadr p) dy))
-                  (gc-kg-vol-str cut prec sep)
+                  (gc-kg-vol-str cut T prec sep)
                   h (gc-kg-get "c-minus") lay stl 1)
       (setq any T)))
-  (if (and (> (abs fill) 1.0e-9)
-           (or (null use-mn) (>= (abs fill) mn)))
+  (if (and (> fill 1.0e-9) (or (null use-mn) (>= fill mn)))
     (progn
       (gc-kg-text (list (car p) (- (cadr p) dy))
-                  (gc-kg-vol-str (- fill) prec sep)
+                  (gc-kg-vol-str fill nil prec sep)
                   h (gc-kg-get "c-plus") lay stl 1)
       (setq any T)))
   any)
 
-;; Объём строкой со знаком. Знак тот же, что у рабочих отметок: если
-;; плюс означает выемку, то и объём выемки идёт с плюсом. Разнобой
-;; между отметкой и объёмом на одном чертеже читался бы как ошибка.
-(defun gc-kg-vol-str (v prec sep)
-  (strcat (if (> v 0.0) "+" "") (gc-kg-fmt-p v prec sep)))
+;; Объём строкой со знаком. cut = T, если это выемка.
+;;
+;; Знак берётся из той же конвенции, что и у рабочих отметок: если плюс
+;; означает выемку, то и объём выемки идёт с плюсом. Разнобой между
+;; отметкой и объёмом на одном чертеже читался бы как ошибка расчёта.
+(defun gc-kg-vol-str (v cut prec sep / plus)
+  (setq plus (if (= "1" (gc-kg-get "wsign")) cut (not cut)))
+  (strcat (if plus "+" "-") (gc-kg-fmt-p (abs v) prec sep)))
 
 ;; K -> Л, M -> Ь
 (defun c:лпь ( / ) (c:kgm))
+
+;;; ====================================================================
+;;; ВЕДОМОСТЬ ОБЪЁМОВ
+;;;
+;;; Таблица встаёт ПОД картограммой, и каждый её столбец точно равен
+;;; колонке квадратов сетки: в столбце - сумма объёмов всех квадратов,
+;;; стоящих над ним. Поэтому ведомость читается прямо с чертежа - видно,
+;;; из чего сложилась каждая цифра, и не нужно искать соответствие между
+;;; номером графы и местом на площадке.
+;;;
+;;; Совпадение столбцов с колонками - не оформление, а суть: разъехавшись
+;;; на полклетки, таблица начнёт врать глазу, оставаясь верной по числам.
+;;; Поэтому она строится в СИСТЕМЕ СЕТКИ и поворачивается вместе с ней.
+;;; ====================================================================
+
+;; Сколько линий ведомости не создалось. Молчащий entmake мы уже
+;; проходили дважды (П4, П59) - считаем и говорим вслух.
+(setq *gc-kg-tab-fail* 0)
+
+;; Отрезок ведомости. Координаты приходят в системе сетки.
+(defun gc-kg-tab-line (a b lay / p q r)
+  (setq p (gc-kg-to-wcs a) q (gc-kg-to-wcs b))
+  (setq r (entmake (list '(0 . "LINE") '(100 . "AcDbEntity") (cons 8 lay)
+                         '(100 . "AcDbLine")
+                         (cons 10 (list (car p) (cadr p) 0.0))
+                         (cons 11 (list (car q) (cadr q) 0.0)))))
+  (if (null r) (setq *gc-kg-tab-fail* (1+ *gc-kg-tab-fail*)))
+  r)
+
+;; Текст ведомости по центру ячейки. Координаты в системе сетки.
+(defun gc-kg-tab-text (p txt h col lay stl just)
+  (gc-kg-text (gc-kg-to-wcs p) txt h col lay stl just))
+
+;; Число в ячейку ведомости: прочерк, если объёма нет.
+;;
+;; Прочерк, а не «0,00»: ноль означал бы, что объём считали и он вышел
+;; нулевым, а на деле в этой колонке работ такого рода просто нет.
+(defun gc-kg-tab-num (v cut prec sep)
+  (if (< v 1.0e-9) "-" (gc-kg-vol-str v cut prec sep)))
+
+;; Построить ведомость под картограммой.
+(defun c:kgt ( / par base ang sx sy lay stl h prec sep env
+               i0 i1 j0 xl xr ytop hr wl wr i y1 y2 yb
+               ccut cfill tcut tfill n txt)
+  (princ "\n\n=== KGT - ведомость объёмов ===")
+  (setq par *gc-kg-grid-par*)
+  (cond
+    ((null par)
+     (princ "\n[!] Сетки нет - сначала постройте её (KG -> «Сетка»)."))
+    ((null *gc-kg-vols*)
+     (princ "\n[!] Объёмы не посчитаны - ведомость складывать не из чего.")
+     (princ "\n    KG -> «оБъёмы», затем «Таблица»."))
+    (T
+     (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
+     (gc-kg-set-frame base ang)
+     (setq env (gc-kg-mark-env) stl (nth 1 env) sep (nth 4 env))
+     (setq h (gc-kg-num (gc-kg-get "h-vol")))
+     (if (or (null h) (<= h 0.0)) (setq h 0.5))
+     (setq prec (gc-kg-get "p-vol"))
+     (if (not (numberp prec)) (setq prec 1))
+     (setq lay (gc-kg-layer "GC-Картограмма-Ведомость" 7))
+     ;; Границы по колонкам сетки: ведомость ровно под ними.
+     (setq i0 nil i1 nil j0 nil)
+     (foreach v *gc-kg-vols*
+       (if (or (null i0) (< (car v) i0))  (setq i0 (car v)))
+       (if (or (null i1) (> (car v) i1))  (setq i1 (car v)))
+       (if (or (null j0) (< (cadr v) j0)) (setq j0 (cadr v))))
+     (setq xl (* i0 sx) xr (* (1+ i1) sx))
+     (setq hr (* 2.0 h))                 ; высота строки
+     (setq wl (* 1.8 h))                 ; колонка с названиями строк
+     (setq wr (* 7.0 h))                 ; колонка «Всего»
+     (setq ytop (- (* j0 sy) (* 3.0 h))) ; отступ от нижнего ряда квадратов
+     (setq y1 (- ytop hr) y2 (- ytop (* 2.0 hr)))
+     (setq *gc-kg-tab-fail* 0)
+     (setvar "CMDECHO" 0)
+     (command "_.UNDO" "_BEGIN")
+     ;; Текст ведомости поворачивается вместе с сеткой.
+     (setq *gc-kg-txt-ang* (if ang ang 0.0))
+     ;; --- сетка таблицы
+     (foreach y (list ytop y1 y2)
+       (gc-kg-tab-line (list (- xl wl) y) (list (+ xr wr) y) lay))
+     (gc-kg-tab-line (list (- xl wl) ytop) (list (- xl wl) y2) lay)
+     (setq i i0)
+     (while (<= i (1+ i1))
+       (gc-kg-tab-line (list (* i sx) ytop) (list (* i sx) y2) lay)
+       (setq i (1+ i)))
+     (gc-kg-tab-line (list (+ xr wr) ytop) (list (+ xr wr) y2) lay)
+     ;; --- названия строк, вдоль колонки
+     (setq *gc-kg-txt-ang* (+ *gc-kg-txt-ang* (/ pi 2.0)))
+     (gc-kg-tab-text (list (- xl (* 0.9 h)) (- ytop (* 0.5 hr)))
+                     "Насыпь" (* 0.7 h) (gc-kg-get "c-plus") lay stl 1)
+     (gc-kg-tab-text (list (- xl (* 0.9 h)) (- y1 (* 0.5 hr)))
+                     "Выемка" (* 0.7 h) (gc-kg-get "c-minus") lay stl 1)
+     (gc-kg-tab-text (list (+ xr (* 0.6 h)) (- ytop hr))
+                     "Всего, м3" (* 0.7 h) 7 lay stl 1)
+     (setq *gc-kg-txt-ang* (- *gc-kg-txt-ang* (/ pi 2.0)))
+     ;; --- числа по колонкам
+     (setq i i0 tcut 0.0 tfill 0.0 n 0)
+     (while (<= i i1)
+       (setq ccut 0.0 cfill 0.0)
+       (foreach v *gc-kg-vols*
+         (if (= (car v) i)
+           (setq ccut (+ ccut (nth 2 v)) cfill (+ cfill (nth 3 v)))))
+       (setq tcut (+ tcut ccut) tfill (+ tfill cfill))
+       (gc-kg-tab-text (list (* (+ i 0.5) sx) (- ytop (* 0.62 hr)))
+                       (gc-kg-tab-num cfill nil prec sep)
+                       h (gc-kg-get "c-plus") lay stl 1)
+       (gc-kg-tab-text (list (* (+ i 0.5) sx) (- y1 (* 0.62 hr)))
+                       (gc-kg-tab-num ccut T prec sep)
+                       h (gc-kg-get "c-minus") lay stl 1)
+       (setq n (1+ n))
+       (setq i (1+ i)))
+     ;; --- итоги
+     (gc-kg-tab-text (list (+ xr (* 0.5 wr)) (- ytop (* 0.62 hr)))
+                     (gc-kg-tab-num tfill nil prec sep)
+                     h (gc-kg-get "c-plus") lay stl 1)
+     (gc-kg-tab-text (list (+ xr (* 0.5 wr)) (- y1 (* 0.62 hr)))
+                     (gc-kg-tab-num tcut T prec sep)
+                     h (gc-kg-get "c-minus") lay stl 1)
+     ;; --- строка о площади под таблицей
+     (setq yb (- y2 (* 1.8 h)))
+     (gc-kg-tab-text (list (- xl wl) yb)
+       (strcat "Площадь картограммы - " (gc-kg-fmt *gc-kg-vol-area*) " м2, в т.ч.:")
+       (* 0.8 h) 7 lay stl 0)
+     (gc-kg-tab-text (list (- xl wl) (- yb (* 1.3 h)))
+       (strcat "насыпь - " (gc-kg-fmt *gc-kg-area-fill*) " м2, выемка - "
+               (gc-kg-fmt *gc-kg-area-cut*) " м2")
+       (* 0.8 h) 7 lay stl 0)
+     (setq *gc-kg-txt-ang* 0.0)
+     (command "_.UNDO" "_END")
+     (princ "\n\n--- ВЕДОМОСТЬ ПОСТРОЕНА ---")
+     (princ (strcat "\n  столбцов          : " (itoa n)
+                    "  (по колонкам квадратов, ширина = шаг сетки)"))
+     (princ (strcat "\n  НАСЫПЬ            : " (gc-kg-fmt tfill) " м3"))
+     (princ (strcat "\n  ВЫЕМКА            : " (gc-kg-fmt tcut) " м3"))
+     (princ (strcat "\n  площадь           : " (gc-kg-fmt *gc-kg-vol-area*) " м2"
+                    "  (насыпь " (gc-kg-fmt *gc-kg-area-fill*)
+                    ", выемка " (gc-kg-fmt *gc-kg-area-cut*) ")"))
+     (princ (strcat "\n  слой              : " lay))
+     (if (> *gc-kg-tab-fail* 0)
+       (princ (strcat "\n  [!] линий не создалось: " (itoa *gc-kg-tab-fail*)
+                      " - таблица нарисована не полностью")))
+     (princ "\n[i] Один Ctrl+Z убирает ведомость целиком.")
+     T)))
+
+;; K -> Л, T -> Е
+(defun c:лпе ( / ) (c:kgt))
 
 ;;; ====================================================================
 ;;; ПРАВКА ПОДПИСЕЙ
