@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v52)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v53)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -17,6 +17,31 @@
 ;;;   KGQ / ЛПЙ   -- RAZOBRAT ODIN KVADRAT: ploshchad, otmetki, obem
 ;;;                   tremya metodami. Dlya sverki s chuzhim raschetom.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v53: POROG OTBRASYVANIYA RABOTAET V RASCHETE, A NE TOLKO V PODPISI.
+;;;      Ostavalos rashozhdenie po VYEMKE: u nas 10,292 m2, u etalona
+;;;      7,32 m2 pri pochti odinakovom obeme (1,03 protiv 1,05 m3).
+;;;
+;;;      OTVET BYL PRYAMO V VEDOMOSTI. U nas v chetyreh stolbcah stoyalo
+;;;      "-0,00" - obem est, no menshe poloviny sotoy, - a u etalona
+;;;      v teh zhe stolbcah PROCHERK. On otbrasyvaet takie kuski celikom:
+;;;      ni obema, ni ploshchadi.
+;;;
+;;;      Skladyvaetsya vsyo: 10,292 - 7,32 = 2,97 m2 otbroshennoy melochi,
+;;;      a raznica obshchey ploshchadi 1105,357 - 1103,10 = 2,26 m2. I
+;;;      glavnoe podtverzhdenie: u etalona ploshchad ZAVISIT OT METODA -
+;;;      1103,10 pri kvadratah i 1105,33 pri triangulyacii. Porog zhivet
+;;;      v ego .arx (metod kvadratov), a triangulyaciya schitaetsya v
+;;;      Civil 3D i poroga ne znaet. Nasha polnaya ploshchad 1105,357
+;;;      shoditsya s ego triangulyacionnoy do 0,027 m2.
+;;;
+;;;      Teper porog primenyaetsya k RASCHETU: kusok tonshe poroga ne idet
+;;;      ni v obem, ni v ploshchad. Tumbler pereimenovan iz "ne podpisyvat"
+;;;      v "ne uchityvat" - eto raznye veshchi, i nazyvat ih odinakovo bylo
+;;;      by lozhyu.
+;;;
+;;;      V otchete teper dve ploshchadi: kartogrammy (uchtennaya) i po setke
+;;;      (polnaya), plus stroka "otbrosheno melochi".
 ;;;
 ;;; v52: POTERYA VYREZOV I LISHNIH KONTUROV YACHEYKI.
 ;;;      V nashey zhe vedomosti stoyalo: nasyp 1095,621 + vyemka 10,292 =
@@ -892,7 +917,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v52")
+(setq *gc-kg-ver* "v53")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -1432,7 +1457,7 @@
 "      : text { label = \" ноль\"; }"
 "      : image_button { key = \"c_zero\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } }"
 "    : row {"
-"      : toggle   { key = \"v_min\"; label = \"Не подписывать объём меньше \"; }"
+"      : toggle   { key = \"v_min\"; label = \"Не учитывать объём меньше \"; }"
 "      : edit_box { key = \"v_minv\"; edit_width = 6; }"
 "      : text     { label = \" м3\"; } } }"
 "  : boxed_column { label = \" Ведомость \";"
@@ -4498,7 +4523,7 @@
 ;; и выемки перестаёт сходиться с площадью картограммы (П63).
 ;;
 ;; nil, если хоть в одной вершине отметки нет.
-(defun gc-kg-cell-vol (c sx sy / full loops holes fill sf cut sc r pts any)
+(defun gc-kg-cell-vol (c sx sy / full loops holes fill sf cut sc r pts any mn)
   (setq full (> (nth 2 c) (- (* sx sy) (* 1.0e-6 sx sy))))
   (setq loops (if full (list (nth 3 c)) (cons (nth 4 c) (nth 5 c))))
   (setq holes (nth 6 c))
@@ -4523,8 +4548,21 @@
                 cut  (- cut  (nth 2 r)) sc (- sc (nth 3 r)))))))
   (if (null any)
     nil
-    ;; h = проект - земля, поэтому часть с h>0 это НАСЫПЬ, с h<0 - ВЫЕМКА.
-    (list (abs cut) fill (nth 2 c) (gc-kg-centroid pts) sc sf)))
+    (progn
+      ;; ПОРОГ. Кусок, где грунта меньше порога, не идёт в расчёт вовсе -
+      ;; ни объёмом, ни площадью. Так делает эталонный инструмент, и
+      ;; отсюда вся разница по выемке: у нас набиралось 2,97 м2 кусочков
+      ;; со средней глубиной около нуля, у него они отброшены.
+      ;;
+      ;; Видно это было прямо в ведомости: у нас в четырёх столбцах
+      ;; стояло «-0,00» - объём есть, но меньше половины сотой, - а у него
+      ;; в тех же столбцах прочерк (docs/pitfalls.md -> П64).
+      (setq mn (gc-kg-num (gc-kg-get "min-vol")))
+      (if (or (null mn) (not (= "1" (gc-kg-get "use-min")))) (setq mn 0.0))
+      (if (< (abs cut) mn) (setq cut 0.0 sc 0.0))
+      (if (< (abs fill) mn) (setq fill 0.0 sf 0.0))
+      ;; h = проект - земля, поэтому часть с h>0 это НАСЫПЬ, с h<0 - ВЫЕМКА.
+      (list (abs cut) fill (nth 2 c) (gc-kg-centroid pts) sc sf))))
 
 ;; Название метода для отчёта.
 (defun gc-kg-method-name ( / m)
@@ -4639,9 +4677,10 @@
      (princ (strcat "\n  НАСЫПЬ              : " (gc-kg-fmt tfill) " м3"))
      (princ (strcat "\n  баланс (выемка-нас.): " (gc-kg-fmt (- tcut tfill)) " м3"
                     "  (плюс - грунт вывозят, минус - привозят)"))
-     (princ (strcat "\n  площадь             : " (gc-kg-fmt tarea) " м2"
-                    "  (насыпь " (gc-kg-fmt safill)
+     (princ (strcat "\n  площадь картограммы : " (gc-kg-fmt (+ safill sacut))
+                    " м2  (насыпь " (gc-kg-fmt safill)
                     ", выемка " (gc-kg-fmt sacut) ")"))
+     (princ (strcat "\n  площадь по сетке    : " (gc-kg-fmt tarea) " м2"))
      ;; КОНТРОЛЬ: объём, делённый на площадь, это средняя рабочая отметка
      ;; части. Она обязана быть в метрах - таких же, как отметки площадки.
      ;; Сотни метров означают, что объём и площадь посчитаны в РАЗНЫХ
@@ -4656,17 +4695,19 @@
      ;; Именно так нашлась потеря вырезов: сумма частей выходила больше
      ;; целого на 0,556 м2, и это было видно прямо в нашей же ведомости,
      ;; без всякого сравнения с чужой (docs/pitfalls.md -> П63).
-     (princ (strcat "\n  насыпь + выемка     : " (gc-kg-fmt (+ safill sacut))
-                    " м2"))
-     (if (> (abs (- (+ safill sacut) tarea))
+     (if (> (- tarea (+ safill sacut))
             (if (> (* 1.0e-4 tarea) 0.001) (* 1.0e-4 tarea) 0.001))
        (progn
-         (princ (strcat "\n  [!] НЕ СХОДИТСЯ с площадью на "
+         (princ (strcat "\n  отброшено мелочи    : "
+                        (gc-kg-fmt (- tarea (+ safill sacut))) " м2"))
+         (princ (strcat "\n                        (куски тоньше порога "
+                        (gc-kg-fmt mn) " м3 - в расчёт не идут)"))))
+     ;; Части НЕ МОГУТ быть больше целого: это уже не порог, а ошибка.
+     (if (> (- (+ safill sacut) tarea) 0.001)
+       (progn
+         (princ (strcat "\n  [!] части БОЛЬШЕ целого на "
                         (gc-kg-fmt (- (+ safill sacut) tarea)) " м2."))
-         (princ "\n      Части площадки должны в сумме давать её целиком.")
-         (princ "\n      Значит что-то посчитано дважды или потеряно,")
-         (princ "\n      и объёмы тоже неверны."))
-       (princ "  (сходится)"))
+         (princ "\n      Что-то посчитано дважды - объёмы неверны.")))
      (gc-kg-vs-check "насыпь" tfill safill)
      (gc-kg-vs-check "выемка" tcut  sacut)
      (if use-mn
@@ -4945,7 +4986,8 @@
      ;; --- строка о площади под таблицей
      (setq yb (- y2 (* 1.8 h)))
      (gc-kg-tab-text (list (- xl wl) yb)
-       (strcat "Площадь картограммы - " (gc-kg-fmt *gc-kg-vol-area*) " м2, в т.ч.:")
+       (strcat "Площадь картограммы - "
+              (gc-kg-fmt (+ *gc-kg-area-fill* *gc-kg-area-cut*)) " м2, в т.ч.:")
        (* 0.8 h) 7 lay stl 0)
      (gc-kg-tab-text (list (- xl wl) (- yb (* 1.3 h)))
        (strcat "насыпь - " (gc-kg-fmt *gc-kg-area-fill*) " м2, выемка - "
@@ -5009,8 +5051,9 @@
                              (+ *gc-kg-tab-h* (* 1.5 h))
                              (* 5.2 h)))))
          (gc-kg-tab-text pt
-           (strcat "Площадь картограммы - " (gc-kg-fmt *gc-kg-vol-area*)
-                   " м2, в т.ч.:")
+           (strcat "Площадь картограммы - "
+               (gc-kg-fmt (+ *gc-kg-area-fill* *gc-kg-area-cut*))
+               " м2, в т.ч.:")
            (* 0.8 h) 7 lay stl 0)
          (gc-kg-tab-text (list (car pt) (- (cadr pt) (* 1.3 h)))
            (strcat "насыпь - " (gc-kg-fmt *gc-kg-area-fill*) " м2, выемка - "
