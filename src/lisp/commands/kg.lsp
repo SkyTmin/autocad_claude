@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v48)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v49)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -14,7 +14,25 @@
 ;;;   KGW / ЛПЦ   -- perestroit vynoski posle ruchnogo peremeshcheniya.
 ;;;   KGM / ЛПЬ   -- OBEMY zemlyanyh mass.
 ;;;   KGT / ЛПЕ   -- VEDOMOST obemov pod kartogrammoy.
+;;;   KGQ / ЛПЙ   -- RAZOBRAT ODIN KVADRAT: ploshchad, otmetki, obem
+;;;                   tremya metodami. Dlya sverki s chuzhim raschetom.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v49: KGQ - RAZOBRAT ODIN KVADRAT.
+;;;      Otmetki posle v48 SOSHLIS s obrazcom polnostyu: tot zhe kvadrat
+;;;      daet +3,08 | 6,34 / 3,26 i u nego, i u nas. Ostalsya tolko obem
+;;;      (u nego +35,87, u nas okolo 35,6).
+;;;
+;;;      Sporit ob itogah vedomosti bespolezno: v nih slozheno vsyo srazu.
+;;;      Raznica vidna tolko na ODNOM kvadrate. KGQ pechataet o nem vsyo:
+;;;      ploshchad, koordinaty i otmetki KAZHDOY vershiny, i obem TREMYA
+;;;      metodami srazu - chtoby ne gadat, kakim schital chuzhoy
+;;;      instrument.
+;;;
+;;;      Razoydetsya ploshchad - delo v granice; razoydutsya otmetki -
+;;;      v poverhnostyah; soydetsya vsyo, krome obema - v metode.
+;;;
+;;;      Cveta obemov po obrazcu: nasyp krasnaya, vyemka sinyaya.
 ;;;
 ;;; v48: PORYADOK CHISEL V PODPISI BYL ZERKALNYY.
 ;;;      Shamil prislal odin i tot zhe kvadrat u obrazca i u nas:
@@ -811,7 +829,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v48")
+(setq *gc-kg-ver* "v49")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -870,8 +888,11 @@
     ;; они работать не могут - непонятно, какие три числа образуют одну
     ;; подпись. Текстом остаётся запасной путь.
     (cons "use-blk"  "1")
-    (cons "c-plus"   5)           ; цвет насыпи  (+)
-    (cons "c-minus"  1)           ; цвет выемки  (-)
+    ;; Цвета объёмов по образцу: НАСЫПЬ КРАСНАЯ, выемка синяя. На чертеже
+    ;; насыпи обычно подавляющее большинство, и красным она читается
+    ;; сразу - так у образца, с которым Шамиль сверяется.
+    (cons "c-plus"   1)           ; цвет насыпи
+    (cons "c-minus"  5)           ; цвет выемки
     (cons "c-zero"   7)           ; цвет нулевой зоны
     ;; Метод расчёта объёмов. 0 - квадратов, 1 - триангуляция обычная,
     ;; 2 - триангуляция по другой диагонали. Разница между ними реальна:
@@ -5718,6 +5739,104 @@
   (if (= cnt 0)
     (princ "\n  [i] Ни одна подпись не сдвинута со своего узла - вести нечего."))
   (princ))
+
+;;; --------------------------------------------------------------------
+;;; KGQ - РАЗОБРАТЬ ОДИН КВАДРАТ
+;;;
+;;; ЗАЧЕМ. Когда наша ведомость расходится с чужой, спорить об итогах
+;;; бесполезно: в них сложено всё сразу. Разница видна только на ОДНОМ
+;;; квадрате, где можно сверить по числам площадь, отметки в каждой
+;;; вершине и объём - и сразу понять, где расходимся: в геометрии,
+;;; в отметках или в формуле.
+;;;
+;;; Команда печатает всё, что знает о квадрате, и считает его тремя
+;;; методами сразу - чтобы не гадать, каким считал чужой инструмент.
+;;; --------------------------------------------------------------------
+(defun c:kgq ( / p w cells par base ang sx sy c found pts hs i n
+               m old r prec sep env)
+  (princ "\n\n=== KGQ - разобрать один квадрат ===")
+  (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
+  (cond
+    ((or (null cells) (null par))
+     (princ "\n[!] Сетки нет - сначала постройте её (KG -> «Сетка»)."))
+    ((null (gc-kg-surf-ready)))
+    (T
+     (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
+     (gc-kg-set-frame base ang)
+     (setq env (gc-kg-mark-env) sep (nth 4 env))
+     (setq prec 4)
+     (setq p (getpoint "\nУкажите точку внутри квадрата: "))
+     (if (null p)
+       (princ "\n[i] Отмена.")
+       (progn
+         (setq w (gc-kg-to-grid (trans p 1 0)))
+         ;; Ищем ячейку, которой принадлежит точка.
+         (setq found nil)
+         (foreach c cells
+           (if (and (null found)
+                    (>= (car w) (* (car c) sx))
+                    (<  (car w) (* (1+ (car c)) sx))
+                    (>= (cadr w) (* (cadr c) sy))
+                    (<  (cadr w) (* (1+ (cadr c)) sy)))
+             (setq found c)))
+         (if (null found)
+           (princ "\n[!] В этой точке квадрата сетки нет.")
+           (progn
+             (setq pts (if (> (nth 2 found) (- (* sx sy) (* 1.0e-6 sx sy)))
+                         (nth 3 found)
+                         (nth 4 found)))
+             (princ (strcat "\n\n  квадрат          : i=" (itoa (car found))
+                            "  j=" (itoa (cadr found))))
+             (princ (strcat "\n  вид              : "
+                            (if (> (nth 2 found) (- (* sx sy) (* 1.0e-6 sx sy)))
+                              "целый" "краевой (обрезан границей)")))
+             (princ (strcat "\n  площадь          : "
+                            (rtos (nth 2 found) 2 4) " м2"
+                            "  (целый был бы " (rtos (* sx sy) 2 4) ")"))
+             (princ (strcat "\n  вершин в контуре : " (itoa (length pts))))
+             (princ "\n\n  ВЕРШИНЫ (X, Y в МСК; земля, проект, рабочая):")
+             (setq hs nil i 0 n (length pts))
+             (while (< i n)
+               (setq w (gc-kg-to-wcs (nth i pts)))
+               (setq r (gc-kg-hw-at w))
+               (setq hs (cons r hs))
+               (princ (strcat "\n   " (itoa (1+ i)) ") "
+                              (rtos (car w) 2 3) "  " (rtos (cadr w) 2 3)
+                              "   земля "
+                              (if (gc-kg-elev *gc-kg-sb* (car w) (cadr w))
+                                (rtos (gc-kg-elev *gc-kg-sb* (car w) (cadr w)) 2 3)
+                                "нет")
+                              "   проект "
+                              (if (gc-kg-elev *gc-kg-sr* (car w) (cadr w))
+                                (rtos (gc-kg-elev *gc-kg-sr* (car w) (cadr w)) 2 3)
+                                "нет")
+                              "   рабочая "
+                              (if r (rtos r 2 3) "нет")))
+               (setq i (1+ i)))
+             (setq hs (reverse hs))
+             (if (member nil hs)
+               (princ "\n\n  [!] В части вершин отметки нет - объём не считается.")
+               (progn
+                 (princ "\n\n  ОБЪЁМ ТРЕМЯ МЕТОДАМИ (насыпь / выемка, м3):")
+                 (setq old (gc-kg-get "vmethod"))
+                 (foreach m '(0 1 2)
+                   (gc-kg-set "vmethod" m)
+                   (setq r (gc-kg-vol-parts pts hs))
+                   (princ (strcat "\n   " (gc-kg-method-name) ": "
+                                  "\n      насыпь " (rtos (nth 0 r) 2 3)
+                                  " м3 на площади " (rtos (nth 1 r) 2 3) " м2"
+                                  "\n      выемка " (rtos (abs (nth 2 r)) 2 3)
+                                  " м3 на площади " (rtos (nth 3 r) 2 3) " м2")))
+                 (gc-kg-set "vmethod" old)
+                 (princ (strcat "\n\n  сейчас выбран    : " (gc-kg-method-name)))
+                 (princ "\n[i] Сверьте эти числа с чужим расчётом по ЭТОМУ квадрату.")
+                 (princ "\n    Разойдётся площадь - дело в границе;")
+                 (princ "\n    разойдутся отметки - в поверхностях;")
+                 (princ "\n    сойдётся всё, кроме объёма - в методе.")))))))))
+  (princ))
+
+;; K -> Л, Q -> Й
+(defun c:лпй ( / ) (c:kgq))
 
 ;;; --------------------------------------------------------------------
 ;;; ЧТО НА ЧЕРТЕЖЕ - диагностика одной командой
