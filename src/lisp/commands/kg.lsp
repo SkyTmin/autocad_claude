@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v54)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v55)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -17,6 +17,27 @@
 ;;;   KGQ / ЛПЙ   -- RAZOBRAT ODIN KVADRAT: ploshchad, otmetki, obem
 ;;;                   tremya metodami. Dlya sverki s chuzhim raschetom.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v55: FIKSIROVANNAYA DIAGONAL NA NEVYPUKLOM CHETYREHUGOLNIKE.
+;;;      Shamil pokazal kraevoy kvadrat: u etalona +24,43, u nas +12,2 -
+;;;      rovno vdvoe menshe.
+;;;
+;;;      1. gc-kg-cell-tris dlya chetyrehugolnika bral FIKSIROVANNUYU
+;;;         diagonal. U NEVYPUKLOGO odna iz diagonaley lezhit SNARUZHI,
+;;;         i treugolniki po ney nakryvayut ne tu oblast: na proverennom
+;;;         primere ploshchad vyhodila 17,5 vmesto 7,5 - vtroe bolshe.
+;;;         Teper fiksirovannaya diagonal beretsya tolko dlya vypuklogo,
+;;;         a nevypuklyy rezhetsya ushnym otsecheniem (P66).
+;;;
+;;;      2. TREUGOLNIK, u kotorogo hot odna vershina ne nashlas v spiske
+;;;         otmetok, propuskalsya MOLCHA - vmeste so svoey ploshchadyu
+;;;         i obemom. Poteryat polovinu kvadrata tak mozhno bylo
+;;;         nezametno. Teper eto schitaetsya i pechataetsya.
+;;;
+;;;      3. KGQ teper pokazyvaet, vypuklyy li kontur, i po KAZHDOMU
+;;;         metodu - shodyatsya li chasti s ploshchadyu kvadrata. Na odnom
+;;;         kvadrate eto vidno srazu, a v itoge po ploshchadke oshibki
+;;;         raznyh znakov gasyat drug druga.
 ;;;
 ;;; v54: OTSECHENIE PO ZNAKU VRALO NA NEVYPUKLOM KONTURE.
 ;;;      Ostavalos: summa ploshchadey chastey byla BOLSHE ploshchadi
@@ -941,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v54")
+(setq *gc-kg-ver* "v55")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -4462,6 +4483,11 @@
       (setq th nil)
       (foreach p tri (setq th (cons (gc-kg-h-of p pts hs) th)))
       (setq th (reverse th))
+      ;; Треугольник, у которого хоть одна вершина не нашлась в списке
+      ;; отметок, раньше пропускался МОЛЧА - вместе со своей площадью
+      ;; и объёмом. Потерять половину квадрата так можно было незаметно.
+      (if (member nil th)
+        (setq *gc-kg-tri-lost* (1+ *gc-kg-tri-lost*)))
       (if (not (member nil th))
         (progn
           (setq prt (gc-kg-clip-sign tri th  1))
@@ -4502,6 +4528,10 @@
             (/ (+ (cadr bb) (cadddr bb)) 2.0)))
     (list (/ cx (* 3.0 sa)) (/ cy (* 3.0 sa)))))
 
+;; Сколько треугольников потеряно из-за ненайденных отметок в вершинах.
+;; Ноль - норма; всё прочее означает потерянную площадь и объём.
+(setq *gc-kg-tri-lost* 0)
+
 ;; Разбить контур на треугольники для метода триангуляции.
 ;;
 ;; У квадрата две диагонали, и результат от выбора зависит: на контрольном
@@ -4512,7 +4542,13 @@
 ;; Контур не о четырёх вершинах режется ушным отсечением: там диагональ
 ;; выбирать не из чего.
 (defun gc-kg-cell-tris (pts alt / a b c d)
-  (if (= 4 (length pts))
+  ;; Фиксированная диагональ годится ТОЛЬКО для выпуклого четырёхугольника.
+  ;; У невыпуклого одна из диагоналей лежит СНАРУЖИ, и треугольники по ней
+  ;; накрывают не ту область: на проверенном примере площадь выходила
+  ;; 17,5 вместо 7,5 - втрое больше настоящей (docs/pitfalls.md -> П66).
+  ;; Невыпуклый режем ушным отсечением: оно проверяет каждое ухо на то,
+  ;; что внутри него нет других вершин.
+  (if (and (= 4 (length pts)) (gc-kg-convex-p pts))
     (progn
       (setq a (nth 0 pts) b (nth 1 pts) c (nth 2 pts) d (nth 3 pts))
       (if alt
@@ -4704,7 +4740,7 @@
      (setq lay (gc-kg-layer "GC-Картограмма-Объёмы" 7))
      (setq *gc-kg-hw-cache* nil *gc-kg-vols* nil)
      (setq cnt 0 skip 0 tcut 0.0 tfill 0.0 tarea 0.0 sacut 0.0 safill 0.0
-           nbad 0 dbad 0.0 dmax 0.0 ibad nil)
+           nbad 0 dbad 0.0 dmax 0.0 ibad nil *gc-kg-tri-lost* 0)
      (princ (strcat "\n[i] Квадратов: " (itoa (length cells)) ". Считаю..."))
      (setvar "CMDECHO" 0)
      (command "_.UNDO" "_BEGIN")
@@ -4785,6 +4821,11 @@
                           ", площадь " (rtos (caddr ibad) 2 4)
                           ", части " (rtos (cadddr ibad) 2 4))))
          (princ "\n      Разберите его командой KGQ.")))
+     (if (> *gc-kg-tri-lost* 0)
+       (progn
+         (princ (strcat "\n  [!] потеряно треугольников: " (itoa *gc-kg-tri-lost*)))
+         (princ "\n      У них не нашлась отметка в вершине - вместе с ними")
+         (princ "\n      потеряна их площадь и объём.")))
      ;; Части НЕ МОГУТ быть больше целого: это уже не порог, а ошибка.
      (if (> (- (+ safill sacut) tarea) 0.001)
        (progn
@@ -6073,16 +6114,35 @@
              (if (member nil hs)
                (princ "\n\n  [!] В части вершин отметки нет - объём не считается.")
                (progn
+                 (princ (strcat "\n\n  ВЫПУКЛЫЙ КОНТУР : "
+                                (if (gc-kg-convex-p pts) "да"
+                                  "НЕТ (режется на треугольники)")))
                  (princ "\n\n  ОБЪЁМ ТРЕМЯ МЕТОДАМИ (насыпь / выемка, м3):")
                  (setq old (gc-kg-get "vmethod"))
                  (foreach m '(0 1 2)
                    (gc-kg-set "vmethod" m)
+                   (setq *gc-kg-tri-lost* 0)
                    (setq r (gc-kg-vol-parts pts hs))
                    (princ (strcat "\n   " (gc-kg-method-name) ": "
                                   "\n      насыпь " (rtos (nth 0 r) 2 3)
                                   " м3 на площади " (rtos (nth 1 r) 2 3) " м2"
                                   "\n      выемка " (rtos (abs (nth 2 r)) 2 3)
-                                  " м3 на площади " (rtos (nth 3 r) 2 3) " м2")))
+                                  " м3 на площади " (rtos (nth 3 r) 2 3) " м2"))
+                   ;; КОНТРОЛЬ ПО ЭТОМУ КВАДРАТУ: части обязаны дать целое.
+                   ;; Здесь он виден сразу, а не суммой по всей площадке,
+                   ;; где ошибки разных знаков гасят друг друга.
+                   (princ (strcat "\n      части в сумме "
+                                  (rtos (+ (nth 1 r) (nth 3 r)) 2 3)
+                                  " м2 против площади "
+                                  (rtos (nth 2 found) 2 3) " м2"))
+                   (if (> (abs (- (+ (nth 1 r) (nth 3 r)) (nth 2 found))) 0.001)
+                     (princ (strcat "  [!] расходится на "
+                                    (rtos (- (+ (nth 1 r) (nth 3 r))
+                                             (nth 2 found)) 2 3) " м2"))
+                     (princ "  (сходится)"))
+                   (if (> *gc-kg-tri-lost* 0)
+                     (princ (strcat "\n      [!] потеряно треугольников: "
+                                    (itoa *gc-kg-tri-lost*)))))
                  (gc-kg-set "vmethod" old)
                  (princ (strcat "\n\n  сейчас выбран    : " (gc-kg-method-name)))
                  (princ "\n[i] Сверьте эти числа с чужим расчётом по ЭТОМУ квадрату.")
