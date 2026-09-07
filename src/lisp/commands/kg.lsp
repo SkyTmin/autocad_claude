@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v45)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v46)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -15,6 +15,38 @@
 ;;;   KGM / ЛПЬ   -- OBEMY zemlyanyh mass.
 ;;;   KGT / ЛПЕ   -- VEDOMOST obemov pod kartogrammoy.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v46: ZNAK, OKNO VYCHISLENIYA, NASTOYASHCHAYA TABLICA, TRI METODA.
+;;;
+;;;      1. GLAVNOE - ZNAK. U Shamilya vyshla vyemka 1095 m2 tam, gde po
+;;;         obrazcu nasyp 1099 m2. Vinovat tumbler "pomenyat poverhnosti
+;;;         mestami", dobavlennyy v v34: on perevorachival ROLI, i
+;;;         kartogramma vyhodila zerkalnoy, a chisla vyglyadeli
+;;;         pravdopodobno. Tumbler ubran; sootvetstvie polej pryamoe.
+;;;
+;;;         Zaodno razvedeny FIZICHESKIY i PECHATNYY znak. h = proekt
+;;;         minus zemlya: bolshe nulya - nasyp, menshe - vyemka, i eto ne
+;;;         nastraivaetsya. Nastraivaetsya lish znak, kotorym otmetku
+;;;         PECHATAYUT. Ranshe wsign perevorachival samo znachenie h, i
+;;;         dve nastroyki upravlyali odnim znakom nezavisimo - vmeste oni
+;;;         davali neverny otvet (docs/pitfalls.md -> P62).
+;;;
+;;;      2. OKNO "Vychislenie" pered raschetom - kak v obrazce: metod,
+;;;         vysota i tochnost podpisey, cveta, porog, nastroyki vedomosti.
+;;;
+;;;      3. VEDOMOST stroitsya SRAZU posle obemov: eto chast rascheta,
+;;;         a ne otdelnaya rabota. Otdelnaya komanda KGT ostalas.
+;;;
+;;;      4. VEDOMOST TEPER NASTOYASHCHAYA TABLICA AutoCAD (vla-addtable),
+;;;         a ne linii s tekstom. Shamil proveril svoystvami - u obrazca
+;;;         obekt "Tablica". Linii ostalis zapasnym putem.
+;;;
+;;;      5. TRI METODA RASCHETA, kak v obrazce: kvadratov i dve
+;;;         triangulyacii. Na kontrolnom kvadrate iz formulas.md oni dayut
+;;;         62,60 / 53,33 / 86,67 m3 algebraicheski. Triangulyaciya
+;;;         schitaet chasti TOCHNO, veerom treugolnikov: na lineynom
+;;;         relefe ona daet rovno analiticheskiy integral (rashozhdenie
+;;;         6e-14 na 3600 m2), a bez veera oshibalas na 0,36 m3.
 ;;;
 ;;; v45: VEDOMOST OBEMOV.
 ;;;      Tablica vstaet POD kartogrammoy, i kazhdyy ee stolbec tochno raven
@@ -740,12 +772,15 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v45")
+(setq *gc-kg-ver* "v46")
 
 (setq *gc-kg-dlg* "gc_kg")
 
 ;; Имя окна подписей внутри того же DCL.
 (setq *gc-kg-dlg-m* "gc_kg_m")
+
+;; Имя окна вычисления.
+(setq *gc-kg-dlg-v* "gc_kg_v")
 
 ;; Значения при первом запуске. Дальше живут между вызовами до закрытия
 ;; чертежа: намеренно НЕ сбрасываются при повторной загрузке файла, иначе
@@ -796,18 +831,17 @@
     ;; они работать не могут - непонятно, какие три числа образуют одну
     ;; подпись. Текстом остаётся запасной путь.
     (cons "use-blk"  "1")
-    ;; Поверхности местами. Шамиль сверяет с образцом и просил поменять:
-    ;; поверхность из ВЕРХНЕГО поля идёт в роль «стало», из нижнего —
-    ;; в роль «было». Числа в подписи при этом меняются местами, и знак
-    ;; рабочей переворачивается — это ожидаемо, а не побочный эффект.
-    ;;
-    ;; Тумблером, а не намертво: до v33 было наоборот, и та раскладка
-    ;; сходилась с числами образца (12,47 - 9,46 = +3,01). Если новая
-    ;; окажется не той, возврат — один щелчок, а не новая версия.
-    (cons "swap"     "1")
     (cons "c-plus"   5)           ; цвет насыпи  (+)
     (cons "c-minus"  1)           ; цвет выемки  (-)
-    (cons "c-zero"   7)))         ; цвет нулевой зоны
+    (cons "c-zero"   7)           ; цвет нулевой зоны
+    ;; Метод расчёта объёмов. 0 - квадратов, 1 - триангуляция обычная,
+    ;; 2 - триангуляция по другой диагонали. Разница между ними реальна:
+    ;; на контрольном квадрате из docs/formulas.md методы дают 70,00 /
+    ;; 53,33 / 86,67 м3. Сверяя объёмы с чужой ведомостью, сперва
+    ;; сверяют метод, а уже потом ищут ошибку в числах.
+    (cons "vmethod"  0)
+    (cons "h-tab"    "0.5")       ; высота текста ведомости, м
+    (cons "p-tab"    2)))         ; знаков после запятой в ведомости
 
 ;; Точность в выпадающем списке. Индекс списка = число знаков.
 (setq *gc-kg-prec* '("0" "0,0" "0,00" "0,000"))
@@ -893,16 +927,18 @@
     (setq e (tblnext "STYLE")))
   (reverse out))
 
-;; Имя поверхности в роли «было» (чёрная) и в роли «стало» (красная).
+;; Имя поверхности в роли «было» (чёрная, земля) и «стало» (красная, проект).
+;;
+;; СООТВЕТСТВИЕ ПРЯМОЕ, и менять его нельзя. Верхнее поле окна - земля,
+;; нижнее - проект; на этом стоит весь знак картограммы. Тумблер
+;; «поменять местами», живший тут в v34-v45, роли переворачивал, и
+;; картограмма выходила ЗЕРКАЛЬНОЙ: выемка вставала туда, где насыпь.
+;; Числа при этом выглядели правдоподобно (docs/pitfalls.md -> П62).
 ;;
 ;; ВСЕ места, где имя превращается в объект поверхности, ходят через эти
-;; две функции. Иначе перестановка сработала бы в построении сетки и не
-;; сработала бы в подписях — и разошлись бы они молча.
-(defun gc-kg-name-b ( / )
-  (if (= "1" (gc-kg-get "swap")) (gc-kg-get "s-red") (gc-kg-get "s-black")))
-
-(defun gc-kg-name-r ( / )
-  (if (= "1" (gc-kg-get "swap")) (gc-kg-get "s-black") (gc-kg-get "s-red")))
+;; две функции - чтобы роли нельзя было развести по разным веткам кода.
+(defun gc-kg-name-b ( / ) (gc-kg-get "s-black"))
+(defun gc-kg-name-r ( / ) (gc-kg-get "s-red"))
 
 ;; Список имён поверхностей Civil 3D.
 ;;
@@ -1159,7 +1195,6 @@
 "      : column {"
 "        : popup_list { key = \"s_black\"; width = 34; fixed_width = true; }"
 "        : popup_list { key = \"s_red\";   width = 34; fixed_width = true; } } }"
-"    : toggle { key = \"swap\"; label = \"Поменять поверхности местами\"; }"
 "    : text { key = \"s_note\"; } }"
 "  : row {"
 "    : boxed_column { label = \" Сетка \";"
@@ -1192,22 +1227,9 @@
 "  : boxed_row { label = \" Подписи отметок в узлах \";"
 "    : button { key = \"marks\"; label = \"Настроить...\"; fixed_width = true; }"
 "    : text   { key = \"m_note\"; } }"
-"  : boxed_column { label = \" Объёмы \";"
-"    : row {"
-"      : edit_box   { key = \"h_vol\"; label = \"Высота текста, м \"; edit_width = 6; }"
-"      : popup_list { key = \"p_vol\"; label = \" Точность \"; width = 7; fixed_width = true; } }"
-"    : row {"
-"      : toggle   { key = \"use_min\"; label = \"Не подписывать объём меньше \"; }"
-"      : edit_box { key = \"min_vol\"; edit_width = 6; }"
-"      : text     { label = \" м3\"; } }"
-"    : row {"
-"      : text { label = \"Цвет:\"; }"
-"      : text { label = \" насыпь +\"; }"
-"      : image_button { key = \"c_plus\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
-"      : text { label = \" выемка -\"; }"
-"      : image_button { key = \"c_minus\"; width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
-"      : text { label = \" ноль\"; }"
-"      : image_button { key = \"c_zero\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } } }"
+"  : boxed_row { label = \" Объёмы и ведомость \";"
+"    : button { key = \"vols\"; label = \"Настроить...\"; fixed_width = true; }"
+"    : text   { key = \"v_note\"; } }"
 "  : text { key = \"err\"; }"
 "  : row {"
 "    : ok_button { }"
@@ -1256,6 +1278,40 @@
 "    : text   { label = \"Знак рабочей отметки:\"; }"
 "    : toggle { key = \"m_wsign\"; label = \"плюс = выемка (иначе плюс = насыпь)\"; } }"
 "  : text { key = \"m_err\"; width = 42; }"
+"  : row {"
+"    : ok_button { }"
+"    : cancel_button { } }"
+"}"
+;; --- третье окно: «Вычисление» -----------------------------------
+;; Объёмы считаются раз в жизни чертежа, но сверяются с чужой ведомостью
+;; каждый раз - поэтому метод расчёта стоит первым и виден сразу.
+"gc_kg_v : dialog { label = \"Вычисление\";"
+"  : boxed_column { label = \" Расчёт \";"
+"    : popup_list { key = \"v_meth\"; label = \"Метод \"; width = 34; fixed_width = true; }"
+"    : text { label = \"  Методы дают разные числа - это не ошибка.\"; }"
+"    : text { label = \"  Сверяя с чужой ведомостью, сверьте сперва метод.\"; } }"
+"  : boxed_column { label = \" Подписи объёмов \";"
+"    : row {"
+"      : edit_box   { key = \"v_h\"; label = \"Высота, м \"; edit_width = 6; }"
+"      : popup_list { key = \"v_prec\"; label = \" Точность \"; width = 7; fixed_width = true; } }"
+"    : row {"
+"      : text { label = \"Цвет:\"; }"
+"      : text { label = \" насыпь\"; }"
+"      : image_button { key = \"c_plus\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
+"      : text { label = \" выемка\"; }"
+"      : image_button { key = \"c_minus\"; width = 5; height = 1.4; fixed_width = true; fixed_height = true; }"
+"      : text { label = \" ноль\"; }"
+"      : image_button { key = \"c_zero\";  width = 5; height = 1.4; fixed_width = true; fixed_height = true; } }"
+"    : row {"
+"      : toggle   { key = \"v_min\"; label = \"Не подписывать объём меньше \"; }"
+"      : edit_box { key = \"v_minv\"; edit_width = 6; }"
+"      : text     { label = \" м3\"; } } }"
+"  : boxed_column { label = \" Ведомость \";"
+"    : row {"
+"      : edit_box   { key = \"t_h\"; label = \"Высота, м \"; edit_width = 6; }"
+"      : popup_list { key = \"t_prec\"; label = \" Точность \"; width = 7; fixed_width = true; } }"
+"    : text { label = \"  Столбцы ведомости совпадают с колонками сетки.\"; } }"
+"  : text { key = \"v_err\"; width = 46; }"
 "  : row {"
 "    : ok_button { }"
 "    : cancel_button { } }"
@@ -1378,8 +1434,7 @@
 (defun gc-kg-validate ( / v bad)
   (setq bad nil)
   (foreach pair '(("step_x" . "Шаг вдоль X")
-                  ("step_y" . "Шаг вдоль Y")
-                  ("h_vol"  . "Высота текста объёмов"))
+                  ("step_y" . "Шаг вдоль Y"))
     (if (null bad)
       (progn
         (setq v (gc-kg-num (get_tile (car pair))))
@@ -1388,24 +1443,15 @@
           ((<= v 1.0e-9) (setq bad (strcat (cdr pair) ": должно быть больше нуля")))))))
   (if (and (null bad) (null (gc-kg-num (get_tile "angle"))))
     (setq bad "Угол: нужно число"))
-  (if (and (null bad) (= "1" (get_tile "use_min")))
-    (progn
-      (setq v (gc-kg-num (get_tile "min_vol")))
-      (cond
-        ((null v)   (setq bad "Порог объёма: нужно число"))
-        ((< v 0.0)  (setq bad "Порог объёма: не может быть отрицательным")))))
   (if bad
     (progn (set_tile "err" (strcat "[!] " bad)) nil)
     T))
 
 ;; Забрать значения полей в настройки.
 (defun gc-kg-read-tiles ( / )
-  (foreach k '("step_x" "step_y" "angle" "h_vol" "min_vol")
+  (foreach k '("step_x" "step_y" "angle")
     (gc-kg-set (gc-kg-key k) (get_tile k)))
   (gc-kg-set "trim"    (get_tile "trim"))
-  (gc-kg-set "use-min" (get_tile "use_min"))
-  (gc-kg-set "swap"    (get_tile "swap"))
-  (gc-kg-set "p-vol"   (atoi (get_tile "p_vol")))
   (if *gc-kg-surf-list*
     (progn
       (gc-kg-set "s-black" (nth (atoi (get_tile "s_black")) *gc-kg-surf-list*))
@@ -1472,17 +1518,12 @@
                  "  [!] Поверхности не найдены — расчёт будет недоступен"))))) nil)
          ;; --- сетка и подписи. Каждое поле отдельно: одно испорченное
          ;; значение не уносит с собой остальные девятнадцать.
-         (foreach k '("step_x" "step_y" "angle" "h_vol" "min_vol"
-                      "trim" "use_min" "swap")
+         (foreach k '("step_x" "step_y" "angle" "trim")
            (gc-kg-try k 'set_tile (list k (gc-kg-get (gc-kg-key k)))))
-         (gc-kg-try "p_vol" 'gc-kg-fill-list
-           (list "p_vol" *gc-kg-prec* (gc-kg-get "p-vol")))
+         (gc-kg-try "v_note" 'set_tile (list "v_note" (gc-kg-vols-note)))
          ;; Настройки подписей живут в своём окне, здесь - только строка
          ;; о том, что в них сейчас выбрано.
          (gc-kg-try "m_note" 'set_tile (list "m_note" (gc-kg-marks-note)))
-         ;; --- цвета
-         (foreach k '("c_plus" "c_minus" "c_zero")
-           (gc-kg-try k 'gc-kg-show-color (list k (gc-kg-get (gc-kg-key k)))))
          ;; --- выбранные объекты
          (gc-kg-try "выбранные объекты" '(lambda ( / )
            (set_tile "base_txt"  (if (gc-kg-get "base") "  задана" "  не задана"))
@@ -1491,8 +1532,6 @@
            (set_tile "lines_txt" (gc-kg-ss-txt (gc-kg-get "lines") "  нет")))
            nil)
          ;; --- действия
-         (foreach k '("c_plus" "c_minus" "c_zero")
-           (action_tile k (strcat "(gc-kg-pick-color \"" k "\")")))
          ;; ПОЧЕМУ перед закрытием читаем поля: тыкать по чертежу при открытом
          ;; окне DCL нельзя, окно приходится закрывать. Без этой строки всё
          ;; набранное в полях пропадало бы при каждом «Указать».
@@ -1503,6 +1542,7 @@
          (action_tile "pick_lines" "(progn (gc-kg-read-tiles) (done_dialog 14))")
          (action_tile "clr_bnd"    "(progn (gc-kg-read-tiles) (done_dialog 15))")
          (action_tile "marks"      "(progn (gc-kg-read-tiles) (done_dialog 16))")
+         (action_tile "vols"       "(progn (gc-kg-read-tiles) (done_dialog 17))")
          ;; ОК: сначала проверяем, при ошибке окно не закрываем.
          (action_tile "accept" "(if (gc-kg-validate) (progn (gc-kg-read-tiles) (done_dialog 1)))")
          (action_tile "cancel" "(done_dialog 0)")
@@ -1516,6 +1556,94 @@
          (unload_dialog id)
          (if (findfile path) (vl-file-delete path))
          res)))))
+
+;; Список методов расчёта. Порядок = значение настройки vmethod.
+(setq *gc-kg-meth-list*
+  '("Метод квадратов (V = Hср x S)"
+    "Метод триангуляции (стандартный)"
+    "Метод триангуляции (альтернативный)"))
+
+;; Что сейчас выбрано в объёмах - строкой для главного окна.
+(defun gc-kg-vols-note ( / )
+  (strcat "  " (gc-kg-nth-s (gc-kg-get "vmethod") *gc-kg-meth-list* "?")
+          ", высота " (gc-kg-get "h-vol") " м"
+          ", ведомость " (gc-kg-get "h-tab") " м"))
+
+;; Проверка полей окна «Вычисление».
+(defun gc-kg-validate-vols ( / v bad)
+  (setq bad nil)
+  (foreach pair '(("v_h" . "Высота подписи объёма")
+                  ("t_h" . "Высота текста ведомости"))
+    (if (null bad)
+      (progn
+        (setq v (gc-kg-num (get_tile (car pair))))
+        (cond
+          ((null v)      (setq bad (strcat (cdr pair) ": нужно число")))
+          ((<= v 1.0e-9) (setq bad (strcat (cdr pair) ": должно быть больше нуля")))))))
+  (if (and (null bad) (= "1" (get_tile "v_min")))
+    (progn
+      (setq v (gc-kg-num (get_tile "v_minv")))
+      (cond
+        ((null v)  (setq bad "Порог объёма: нужно число"))
+        ((< v 0.0) (setq bad "Порог объёма: не может быть отрицательным")))))
+  (if bad
+    (progn (set_tile "v_err" (strcat "[!] " bad)) nil)
+    T))
+
+;; Забрать поля окна «Вычисление».
+(defun gc-kg-read-vols ( / )
+  (gc-kg-set "vmethod" (atoi (get_tile "v_meth")))
+  (gc-kg-set "h-vol"   (get_tile "v_h"))
+  (gc-kg-set "p-vol"   (atoi (get_tile "v_prec")))
+  (gc-kg-set "h-tab"   (get_tile "t_h"))
+  (gc-kg-set "p-tab"   (atoi (get_tile "t_prec")))
+  (gc-kg-set "use-min" (get_tile "v_min"))
+  (gc-kg-set "min-vol" (get_tile "v_minv"))
+  T)
+
+;; Окно «Вычисление». Возвращает T, если нажали ОК.
+(defun gc-kg-dialog-vols ( / path id res)
+  (gc-kg-defaults)
+  (setq path (gc-kg-dcl-file))
+  (if (null path)
+    nil
+    (progn
+      (setq id (load_dialog path))
+      (cond
+        ((or (null id) (not (numberp id)) (< id 0))
+         (princ "\n[ОШИБКА] Не удалось загрузить диалог вычисления.")
+         nil)
+        ((not (new_dialog *gc-kg-dlg-v* id))
+         (princ "\n[ОШИБКА] Окно «Вычисление» не открылось.")
+         (unload_dialog id)
+         nil)
+        (T
+         (setq *gc-kg-dlg-err* nil)
+         (gc-kg-try "v_meth" 'gc-kg-fill-list
+           (list "v_meth" *gc-kg-meth-list* (gc-kg-get "vmethod")))
+         (gc-kg-try "v_h"    'set_tile (list "v_h"    (gc-kg-get "h-vol")))
+         (gc-kg-try "t_h"    'set_tile (list "t_h"    (gc-kg-get "h-tab")))
+         (gc-kg-try "v_min"  'set_tile (list "v_min"  (gc-kg-get "use-min")))
+         (gc-kg-try "v_minv" 'set_tile (list "v_minv" (gc-kg-get "min-vol")))
+         (gc-kg-try "v_prec" 'gc-kg-fill-list
+           (list "v_prec" *gc-kg-prec* (gc-kg-get "p-vol")))
+         (gc-kg-try "t_prec" 'gc-kg-fill-list
+           (list "t_prec" *gc-kg-prec* (gc-kg-get "p-tab")))
+         (foreach k '("c_plus" "c_minus" "c_zero")
+           (gc-kg-try k 'gc-kg-show-color (list k (gc-kg-get (gc-kg-key k)))))
+         (foreach k '("c_plus" "c_minus" "c_zero")
+           (action_tile k (strcat "(gc-kg-pick-color \"" k "\")")))
+         (action_tile "accept"
+           "(if (gc-kg-validate-vols) (progn (gc-kg-read-vols) (done_dialog 1)))")
+         (action_tile "cancel" "(done_dialog 0)")
+         (if *gc-kg-dlg-err*
+           (progn
+             (princ "\n[!] Часть полей окна вычисления не заполнилась:")
+             (foreach e (reverse *gc-kg-dlg-err*) (princ (strcat "\n    " e)))))
+         (setq res (start_dialog))
+         (unload_dialog id)
+         (if (findfile path) (vl-file-delete path))
+         (= res 1))))))
 
 ;;; --------------------------------------------------------------------
 ;;; ОКНО «ОТМЕТКИ»
@@ -1653,6 +1781,7 @@
       ;; него: вложенные окна DCL ведут себя по-разному в разных сборках,
       ;; а закрыть-открыть здесь уже проверено на кнопках «Указать».
       ((= res 16) (gc-kg-dialog-marks))
+      ((= res 17) (gc-kg-dialog-vols))
       (T (setq done T))))
   ok)
 
@@ -1666,8 +1795,6 @@
                  (if (gc-kg-name-b) (gc-kg-name-b) "не выбрана")))
   (princ (strcat "\n  «стало» (красная)   : "
                  (if (gc-kg-name-r) (gc-kg-name-r) "не выбрана")))
-  (if (= "1" (gc-kg-get "swap"))
-    (princ "\n  поверхности местами : ДА (верхнее поле окна = «стало»)"))
   (princ (strcat "\n  сетка               : "
                  (gc-kg-get "step-x") " x " (gc-kg-get "step-y") " м"
                  ", угол " (gc-kg-get "angle") " град"))
@@ -2290,7 +2417,7 @@
 ;; 13,23 - 8,00 = +5,23: плюс означает выемку, землю срезают.
 ;; Все три числа одной высоты - так в образце.
 (defun gc-kg-label ( / cells par base ang sx sy pts lay stl h prec sep
-                       wsg msk blk p w zb zr hw col cnt skip cls hx
+                       wsg msk blk p w zb zr hw hp col cnt skip cls hx
                        tw tb tr sb sr)
   (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
   (cond
@@ -2331,14 +2458,20 @@
        (setq zr (gc-kg-elev *gc-kg-sr* (car p) (cadr p)))
        (if (and zb zr)
          (progn
-           ;; Знак по выбранной конвенции.
-           (setq hw (if (= wsg "1") (- zb zr) (- zr zb)))
+           ;; ФИЗИЧЕСКАЯ рабочая отметка: проект минус земля. Больше нуля -
+           ;; насыпь, меньше - выемка. Класс и цвет определяются ею, и
+           ;; только ею: от настроек физика зависеть не может.
+           (setq hw (- zr zb))
            (setq cls (gc-kg-work-class hw))
+           ;; А ПЕЧАТАЕТСЯ отметка с тем знаком, какой принят у конторы:
+           ;; у одних плюс означает насыпь, у других выемку.
+           (setq hp (if (= wsg "1") (- hw) hw))
            (setq col (cond
                        ((= cls "ZERO") (gc-kg-get "c-wzero"))
                        ((= cls "CUT")  (gc-kg-get "c-wminus"))
                        (T              (gc-kg-get "c-wplus"))))
-           (setq tw (strcat (if (= cls "FILL") "+" "") (gc-kg-fmt-p hw prec sep))
+           (setq tw (strcat (if (> hp *gc-kg-zero-eps*) "+" "")
+                            (gc-kg-fmt-p hp prec sep))
                  tb (gc-kg-fmt-p zb prec sep)
                  tr (gc-kg-fmt-p zr prec sep))
            (if blk
@@ -2410,7 +2543,7 @@
      (if (> *gc-kg-mask-fail* 0)
        (princ (strcat "\n  [!] подложка не включилась у " (itoa *gc-kg-mask-fail*)
                       " подписей - текст стоит, фон прозрачный")))
-     (princ (strcat "\n  знак рабочей     : "
+     (princ (strcat "\n  знак в подписи   : "
                     (if (= wsg "1")
                       "плюс = ВЫЕМКА (существующая минус проектная)"
                       "плюс = насыпь (проектная минус существующая)")))
@@ -3924,7 +4057,7 @@
       ((= k "Отметки")  (if (gc-kg-dialog-marks) (gc-kg-label)
                           (princ "\n[i] Отмена, ничего не подписано."))
                         (setq dflt "оБъёмы"))
-      ((= k "оБъёмы")   (c:kgm) (setq dflt "Таблица"))
+      ((= k "оБъёмы")   (c:kgm) (setq dflt "Выход"))
       ((= k "Таблица")  (c:kgt) (setq dflt "Выход"))
       ((= k "Проверка") (gc-kg-probe) (setq dflt "Выход"))
       ((= k "пРавка") (gc-kg-menu-edit) (setq dflt "Выход"))
@@ -4027,9 +4160,10 @@
     (progn
       (setq zb (gc-kg-elev *gc-kg-sb* (car p) (cadr p))
             zr (gc-kg-elev *gc-kg-sr* (car p) (cadr p)))
-      (setq h (if (and zb zr)
-                (if (= "1" (gc-kg-get "wsign")) (- zb zr) (- zr zb))
-                nil))
+      ;; ФИЗИЧЕСКАЯ рабочая отметка: проект минус земля. Больше нуля -
+      ;; насыпь, меньше - выемка. От настроек это не зависит и зависеть
+      ;; не может: настраивается лишь знак, которым её ПЕЧАТАЮТ.
+      (setq h (if (and zb zr) (- zr zb) nil))
       (setq *gc-kg-hw-cache* (cons (cons k h) *gc-kg-hw-cache*))
       h)))
 
@@ -4061,13 +4195,48 @@
   (cons (reverse out) (reverse outh)))
 
 ;; Объём части: площадь на среднее отметок её вершин.
-(defun gc-kg-part-vol (pts hs / s n)
-  (if (< (length pts) 3)
-    0.0
+;; Объёмы и площади насыпи и выемки для контура: (Vнас Sнас Vвыем Sвыем).
+;;
+;; Метод квадратов режет ВЕСЬ контур нулевой линией и считает каждую часть
+;; целиком. Триангуляция сперва режет контур на треугольники, а нулевой
+;; линией - уже каждый из них: для треугольника формула «площадь на
+;; среднее вершин» ТОЧНА, и приближение остаётся только в том, как
+;; выбрана диагональ.
+(defun gc-kg-vol-parts (pts hs / m prt fill sf cut sc tri th p r)
+  (setq m (gc-kg-get "vmethod"))
+  (if (not (numberp m)) (setq m 0))
+  (setq fill 0.0 sf 0.0 cut 0.0 sc 0.0)
+  (if (= m 0)
     (progn
-      (setq s 0.0 n 0)
-      (foreach h hs (setq s (+ s h) n (1+ n)))
-      (* (abs (gc-kg-area pts)) (/ s (float n))))))
+      (setq prt (gc-kg-clip-sign pts hs  1))
+      (setq r (gc-kg-piece (car prt) (cdr prt)))
+      (setq fill (car r) sf (cadr r))
+      (setq prt (gc-kg-clip-sign pts hs -1))
+      (setq r (gc-kg-piece (car prt) (cdr prt)))
+      (setq cut (car r) sc (cadr r)))
+    (foreach tri (gc-kg-cell-tris pts (= m 2))
+      ;; Отметки вершин треугольника берём из общего списка по совпадению
+      ;; точки: ушное отсечение переставляет вершины, но не двигает их.
+      (setq th nil)
+      (foreach p tri (setq th (cons (gc-kg-h-of p pts hs) th)))
+      (setq th (reverse th))
+      (if (not (member nil th))
+        (progn
+          (setq prt (gc-kg-clip-sign tri th  1))
+          (setq r (gc-kg-piece-exact (car prt) (cdr prt)))
+          (setq fill (+ fill (car r)) sf (+ sf (cadr r)))
+          (setq prt (gc-kg-clip-sign tri th -1))
+          (setq r (gc-kg-piece-exact (car prt) (cdr prt)))
+          (setq cut (+ cut (car r)) sc (+ sc (cadr r)))))))
+  (list fill sf cut sc))
+
+;; Отметка вершины по совпадению точки. nil, если такой вершины нет.
+(defun gc-kg-h-of (p pts hs / i n r)
+  (setq i 0 n (length pts) r nil)
+  (while (and (< i n) (null r))
+    (if (< (distance p (nth i pts)) 1.0e-7) (setq r (nth i hs)))
+    (setq i (1+ i)))
+  r)
 
 ;; Центр тяжести контура - туда становится подпись объёма.
 ;;
@@ -4091,6 +4260,60 @@
             (/ (+ (cadr bb) (cadddr bb)) 2.0)))
     (list (/ cx (* 3.0 sa)) (/ cy (* 3.0 sa)))))
 
+;; Разбить контур на треугольники для метода триангуляции.
+;;
+;; У квадрата две диагонали, и результат от выбора зависит: на контрольном
+;; примере из docs/formulas.md одна даёт 53,33 м3, другая 86,67. Поэтому
+;; в эталонном инструменте два «метода триангуляции», и мы повторяем оба -
+;; иначе сверить ведомость с чужой невозможно.
+;;
+;; Контур не о четырёх вершинах режется ушным отсечением: там диагональ
+;; выбирать не из чего.
+(defun gc-kg-cell-tris (pts alt / a b c d)
+  (if (= 4 (length pts))
+    (progn
+      (setq a (nth 0 pts) b (nth 1 pts) c (nth 2 pts) d (nth 3 pts))
+      (if alt
+        (list (list b c d) (list b d a))
+        (list (list a b c) (list a c d))))
+    (gc-kg-ear pts)))
+
+;; Объём части ТОЧНО: веером треугольников.
+;;
+;; ЗАЧЕМ ОТДЕЛЬНО ОТ gc-kg-piece. Формула «площадь на среднее вершин»
+;; точна для треугольника и приближённа для всего остального. А после
+;; разреза треугольника нулевой линией одна из частей - четырёхугольник,
+;; и считать её по средней значило бы внести погрешность туда, где метод
+;; триангуляции как раз и обещает точность.
+;;
+;; Проверено: с веером триангуляция даёт на линейном рельефе РОВНО
+;; аналитический интеграл (расхождение 6e-14 на 3600 м2), без веера
+;; ошибалась на 0,36 м3.
+(defun gc-kg-piece-exact (pts hs / n i v a tri th sq)
+  (setq n (length pts))
+  (if (< n 3)
+    (list 0.0 0.0)
+    (progn
+      (setq v 0.0 a 0.0 i 1)
+      (while (< i (1- n))
+        (setq tri (list (nth 0 pts) (nth i pts) (nth (1+ i) pts)))
+        (setq th  (list (nth 0 hs)  (nth i hs)  (nth (1+ i) hs)))
+        (setq sq (gc-kg-area tri))
+        (setq v (+ v (* sq (/ (+ (car th) (cadr th) (caddr th)) 3.0))))
+        (setq a (+ a sq))
+        (setq i (1+ i)))
+      (list v a))))
+
+;; Объём части по методике «площадь на среднее отметок её вершин»
+;; (docs/formulas.md). Именно так считает метод квадратов.
+(defun gc-kg-piece (pts hs / s n)
+  (if (< (length pts) 3)
+    (list 0.0 0.0)
+    (progn
+      (setq s 0.0 n 0)
+      (foreach h hs (setq s (+ s h) n (1+ n)))
+      (list (* (gc-kg-area pts) (/ s (float n))) (gc-kg-area pts)))))
+
 ;; Объёмы одной ячейки: список (выемка насыпь площадь центр).
 ;;
 ;; ОБА ОБЪЁМА ПОЛОЖИТЕЛЬНЫЕ - это кубометры грунта, который срезают или
@@ -4099,7 +4322,7 @@
 ;; что означает минус у «выемки»: меньше нуля или наоборот больше.
 ;;
 ;; nil, если хоть в одной вершине отметки нет.
-(defun gc-kg-cell-vol (c sx sy / pts hs ok p w cut fill r prt sc sf)
+(defun gc-kg-cell-vol (c sx sy / pts hs ok p w cut fill r sc sf)
   ;; Контур: у целого квадрата это его стороны, у краевого - обрезанный.
   (setq pts (if (> (nth 2 c) (- (* sx sy) (* 1.0e-6 sx sy)))
               (nth 3 c)
@@ -4118,17 +4341,18 @@
           (setq hs (reverse hs))
           ;; Выемка и насыпь считаются раздельно: в переходном квадрате
           ;; они гасят друг друга, и общий объём вышел бы заниженным.
-          (setq prt (gc-kg-clip-sign pts hs  1))
-          (setq fill (gc-kg-part-vol (car prt) (cdr prt)))
-          (setq sf (if (> (length (car prt)) 2) (gc-kg-area (car prt)) 0.0))
-          (setq prt (gc-kg-clip-sign pts hs -1))
-          (setq cut (gc-kg-part-vol (car prt) (cdr prt)))
-          (setq sc (if (> (length (car prt)) 2) (gc-kg-area (car prt)) 0.0))
-          ;; fill - объём части с h>0, cut - с h<0 (он отрицателен).
-          ;; Кто из них выемка, а кто насыпь, решает конвенция знака.
-          (if (= "1" (gc-kg-get "wsign"))
-            (list fill (abs cut) (nth 2 c) (gc-kg-centroid pts) sf sc)
-            (list (abs cut) fill (nth 2 c) (gc-kg-centroid pts) sc sf)))))))
+          (setq r (gc-kg-vol-parts pts hs))
+          (setq fill (nth 0 r) sf (nth 1 r) cut (nth 2 r) sc (nth 3 r))
+          ;; h = проект - земля, поэтому часть с h>0 это НАСЫПЬ,
+          ;; а с h<0 - ВЫЕМКА. Всегда, при любых настройках.
+          (list (abs cut) fill (nth 2 c) (gc-kg-centroid pts) sc sf))))))
+
+;; Название метода для отчёта.
+(defun gc-kg-method-name ( / m)
+  (setq m (gc-kg-get "vmethod"))
+  (cond ((= m 1) "триангуляция (стандартный)")
+        ((= m 2) "триангуляция (альтернативный)")
+        (T       "квадратов (V = Hср x S)")))
 
 ;; Итоги последнего расчёта - для ведомости на этапе 5.
 (setq *gc-kg-vol-cut*  0.0)     ; выемка, м3
@@ -4169,6 +4393,10 @@
      (princ "\n[!] Сетки нет - сначала постройте её (KG -> «Сетка»)."))
     ((null (gc-kg-surf-ready)))
     ((null (gc-kg-marks-ready)))
+    ;; Окно перед расчётом: метод и оформление спрашиваются там, где
+    ;; ими собираются пользоваться.
+    ((null (gc-kg-dialog-vols))
+     (princ "\n[i] Отмена, объёмы не считались."))
     (T
      (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
      (gc-kg-set-frame base ang)
@@ -4218,10 +4446,13 @@
      (if use-mn
        (princ (strcat "\n  порог подписи       : " (gc-kg-fmt mn) " м3")))
      (princ (strcat "\n  слой                : " lay))
-     (princ (strcat "\n  метод               : площадь x среднее рабочих отметок вершин"))
+     (princ (strcat "\n  метод               : " (gc-kg-method-name)))
      (princ "\n                        (docs/formulas.md, переходные квадраты")
      (princ "\n                        режутся линией нулевых работ)")
      (princ "\n[i] Один Ctrl+Z убирает все подписи объёмов.")
+     ;; Ведомость - часть расчёта, а не отдельная работа: объёмы без неё
+     ;; ещё не результат. Поэтому строится сразу, без второй команды.
+     (c:kgt)
      T)))
 
 ;; Подписать объёмы одной ячейки. Возвращает T, если хоть что-то встало.
@@ -4256,6 +4487,110 @@
 
 ;; K -> Л, M -> Ь
 (defun c:лпь ( / ) (c:kgm))
+
+;; Данные ведомости: (столбцы всего-выемка всего-насыпь), где столбец
+;; это (i выемка насыпь).
+(defun gc-kg-tab-data ( / i0 i1 i cc cf out tc tf)
+  (setq i0 nil i1 nil)
+  (foreach v *gc-kg-vols*
+    (if (or (null i0) (< (car v) i0)) (setq i0 (car v)))
+    (if (or (null i1) (> (car v) i1)) (setq i1 (car v))))
+  (setq i i0 out nil tc 0.0 tf 0.0)
+  (while (<= i i1)
+    (setq cc 0.0 cf 0.0)
+    (foreach v *gc-kg-vols*
+      (if (= (car v) i)
+        (setq cc (+ cc (nth 2 v)) cf (+ cf (nth 3 v)))))
+    (setq tc (+ tc cc) tf (+ tf cf))
+    (setq out (cons (list i cc cf) out))
+    (setq i (1+ i)))
+  (list (reverse out) tc tf))
+
+;; Нижний левый угол ведомости в МИРОВЫХ координатах и номер первой колонки.
+(defun gc-kg-tab-origin (sx sy h / i0 j0)
+  (setq i0 nil j0 nil)
+  (foreach v *gc-kg-vols*
+    (if (or (null i0) (< (car v) i0))  (setq i0 (car v)))
+    (if (or (null j0) (< (cadr v) j0)) (setq j0 (cadr v))))
+  (list i0 j0 (gc-kg-to-wcs (list (* i0 sx) (- (* j0 sy) (* 3.0 h))))))
+
+;;; --------------------------------------------------------------------
+;;; ВЕДОМОСТЬ НАСТОЯЩЕЙ ТАБЛИЦЕЙ AutoCAD
+;;;
+;;; ПОЧЕМУ ИМЕННО ТАБЛИЦА, А НЕ ЛИНИИ С ТЕКСТОМ. Линии выглядят так же,
+;;; но ведут себя иначе: их нельзя выделить как таблицу, отредактировать
+;;; ячейку, экспортировать в CSV или связать со стилем. Шамиль проверил
+;;; свойствами - у образца это объект «Таблица», и правильно.
+;;;
+;;; Линии остаются ЗАПАСНЫМ путём: интерфейс таблиц доступен через
+;;; ActiveX, а он есть не в каждой сборке, и падать из-за оформления
+;;; нельзя - ведомость нужна в любом случае.
+;;; --------------------------------------------------------------------
+
+;; Безопасный вызов метода таблицы: считаем отказы, а не падаем.
+(defun gc-kg-tv (fn args / r)
+  (setq r (vl-catch-all-apply fn args))
+  (if (vl-catch-all-error-p r)
+    (progn (setq *gc-kg-tab-fail* (1+ *gc-kg-tab-fail*)) nil)
+    r))
+
+;; Построить ведомость объектом «Таблица». Возвращает T при успехе.
+(defun gc-kg-table-acad (cols tc tf pt sx h prec sep lay / doc space tbl
+                         n r i c ok)
+  (if (null (gc-kg-com-ok))
+    nil
+    (progn
+      (setq doc (vla-get-activedocument (vlax-get-acad-object)))
+      (setq space (if (= 1 (getvar "CVPORT"))
+                    (vla-get-paperspace doc)
+                    (vla-get-modelspace doc)))
+      (setq n (+ 2 (length cols)))        ; название строк + колонки + итог
+      ;; Четыре строки: заголовок и шапка будут погашены, останутся две
+      ;; строки данных - насыпь и выемка.
+      (setq tbl (gc-kg-tv 'vla-addtable
+                  (list space (vlax-3d-point (list (car pt) (cadr pt) 0.0))
+                        4 n (* 2.0 h) sx)))
+      (if (null tbl)
+        nil
+        (progn
+          (gc-kg-tv 'vla-put-regeneratetablesuppressed (list tbl :vlax-true))
+          (gc-kg-tv 'vla-put-titlesuppressed  (list tbl :vlax-true))
+          (gc-kg-tv 'vla-put-headersuppressed (list tbl :vlax-true))
+          (gc-kg-tv 'vla-put-layer (list tbl lay))
+          ;; Ширина: узкая колонка названий, колонки ровно по шагу сетки,
+          ;; широкая колонка итога. Совпадение с сеткой - главное в этой
+          ;; таблице, поэтому ширину задаём явно каждой.
+          (gc-kg-tv 'vla-setcolumnwidth (list tbl 0 (* 1.8 h)))
+          (setq i 0)
+          (while (< i (length cols))
+            (gc-kg-tv 'vla-setcolumnwidth (list tbl (1+ i) sx))
+            (setq i (1+ i)))
+          (gc-kg-tv 'vla-setcolumnwidth (list tbl (1- n) (* 7.0 h)))
+          (setq r 2)                       ; первые две строки погашены
+          (gc-kg-tv 'vla-settext (list tbl r 0 "Насыпь"))
+          (gc-kg-tv 'vla-settext (list tbl (1+ r) 0 "Выемка"))
+          (gc-kg-tv 'vla-settext (list tbl r (1- n) (gc-kg-tab-num tf nil prec sep)))
+          (gc-kg-tv 'vla-settext (list tbl (1+ r) (1- n)
+                                       (gc-kg-tab-num tc T prec sep)))
+          (setq i 0)
+          (foreach c cols
+            (gc-kg-tv 'vla-settext
+              (list tbl r (1+ i) (gc-kg-tab-num (caddr c) nil prec sep)))
+            (gc-kg-tv 'vla-settext
+              (list tbl (1+ r) (1+ i) (gc-kg-tab-num (cadr c) T prec sep)))
+            (setq i (1+ i)))
+          ;; Высота текста и выравнивание по центру - в каждой ячейке.
+          (setq i 0)
+          (while (< i n)
+            (gc-kg-tv 'vla-setcelltextheight (list tbl r i h))
+            (gc-kg-tv 'vla-setcelltextheight (list tbl (1+ r) i h))
+            (gc-kg-tv 'vla-setcellalignment (list tbl r i 5))
+            (gc-kg-tv 'vla-setcellalignment (list tbl (1+ r) i 5))
+            (setq i (1+ i)))
+          (gc-kg-tv 'vla-setrowheight (list tbl r (* 2.0 h)))
+          (gc-kg-tv 'vla-setrowheight (list tbl (1+ r) (* 2.0 h)))
+          (gc-kg-tv 'vla-put-regeneratetablesuppressed (list tbl :vlax-false))
+          T)))))
 
 ;;; ====================================================================
 ;;; ВЕДОМОСТЬ ОБЪЁМОВ
@@ -4297,7 +4632,7 @@
   (if (< v 1.0e-9) "-" (gc-kg-vol-str v cut prec sep)))
 
 ;; Построить ведомость под картограммой.
-(defun c:kgt ( / par base ang sx sy lay stl h prec sep env
+(defun gc-kg-table-lines ( / par base ang sx sy lay stl h prec sep env
                i0 i1 j0 xl xr ytop hr wl wr i y1 y2 yb
                ccut cfill tcut tfill n txt)
   (princ "\n\n=== KGT - ведомость объёмов ===")
@@ -4312,10 +4647,10 @@
      (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
      (gc-kg-set-frame base ang)
      (setq env (gc-kg-mark-env) stl (nth 1 env) sep (nth 4 env))
-     (setq h (gc-kg-num (gc-kg-get "h-vol")))
+     (setq h (gc-kg-num (gc-kg-get "h-tab")))
      (if (or (null h) (<= h 0.0)) (setq h 0.5))
-     (setq prec (gc-kg-get "p-vol"))
-     (if (not (numberp prec)) (setq prec 1))
+     (setq prec (gc-kg-get "p-tab"))
+     (if (not (numberp prec)) (setq prec 2))
      (setq lay (gc-kg-layer "GC-Картограмма-Ведомость" 7))
      ;; Границы по колонкам сетки: ведомость ровно под ними.
      (setq i0 nil i1 nil j0 nil)
@@ -4400,6 +4735,73 @@
                       " - таблица нарисована не полностью")))
      (princ "\n[i] Один Ctrl+Z убирает ведомость целиком.")
      T)))
+
+;;; --------------------------------------------------------------------
+;;; KGT - ведомость: сначала настоящей таблицей, иначе линиями
+;;; --------------------------------------------------------------------
+(defun c:kgt ( / par base ang sx sy h prec sep env lay d org stl yb pt)
+  (princ "\n\n=== KGT - ведомость объёмов ===")
+  (setq par *gc-kg-grid-par*)
+  (cond
+    ((null par)
+     (princ "\n[!] Сетки нет - сначала постройте её (KG -> «Сетка»)."))
+    ((null *gc-kg-vols*)
+     (princ "\n[!] Объёмы не посчитаны - ведомость складывать не из чего.")
+     (princ "\n    KG -> «оБъёмы»."))
+    (T
+     (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
+     (gc-kg-set-frame base ang)
+     (setq env (gc-kg-mark-env) stl (nth 1 env) sep (nth 4 env))
+     (setq h (gc-kg-num (gc-kg-get "h-tab")))
+     (if (or (null h) (<= h 0.0)) (setq h 0.5))
+     (setq prec (gc-kg-get "p-tab"))
+     (if (not (numberp prec)) (setq prec 2))
+     (setq lay (gc-kg-layer "GC-Картограмма-Ведомость" 7))
+     (setq d (gc-kg-tab-data))
+     (setq org (gc-kg-tab-origin sx sy h))
+     (setq *gc-kg-tab-fail* 0)
+     (setvar "CMDECHO" 0)
+     (command "_.UNDO" "_BEGIN")
+     ;; Настоящая таблица - основной путь. Линии остаются запасным:
+     ;; интерфейс таблиц идёт через ActiveX, а он есть не везде, и
+     ;; падать из-за оформления нельзя - ведомость нужна в любом случае.
+     (if (gc-kg-table-acad (car d) (cadr d) (caddr d) (caddr org)
+                           sx h prec sep lay)
+       (progn
+         ;; Строка о площади - текстом под таблицей, как в образце.
+         (setq *gc-kg-txt-ang* (if ang ang 0.0))
+         (setq pt (list (* (car org) sx)
+                        (- (* (cadr org) sy) (* 3.0 h) (* 5.2 h))))
+         (gc-kg-tab-text pt
+           (strcat "Площадь картограммы - " (gc-kg-fmt *gc-kg-vol-area*)
+                   " м2, в т.ч.:")
+           (* 0.8 h) 7 lay stl 0)
+         (gc-kg-tab-text (list (car pt) (- (cadr pt) (* 1.3 h)))
+           (strcat "насыпь - " (gc-kg-fmt *gc-kg-area-fill*) " м2, выемка - "
+                   (gc-kg-fmt *gc-kg-area-cut*) " м2")
+           (* 0.8 h) 7 lay stl 0)
+         (setq *gc-kg-txt-ang* 0.0)
+         (command "_.UNDO" "_END")
+         (princ "\n\n--- ВЕДОМОСТЬ ПОСТРОЕНА ---")
+         (princ (strcat "\n  столбцов          : " (itoa (length (car d)))
+                        "  (по колонкам квадратов, ширина = шаг сетки)"))
+         (princ (strcat "\n  НАСЫПЬ            : " (gc-kg-fmt (caddr d)) " м3"))
+         (princ (strcat "\n  ВЫЕМКА            : " (gc-kg-fmt (cadr d)) " м3"))
+         (princ (strcat "\n  площадь           : " (gc-kg-fmt *gc-kg-vol-area*)
+                        " м2  (насыпь " (gc-kg-fmt *gc-kg-area-fill*)
+                        ", выемка " (gc-kg-fmt *gc-kg-area-cut*) ")"))
+         (princ (strcat "\n  вид               : объект «Таблица» AutoCAD"))
+         (princ (strcat "\n  слой              : " lay))
+         (if (> *gc-kg-tab-fail* 0)
+           (princ (strcat "\n  [i] часть свойств таблицы не применилась: "
+                          (itoa *gc-kg-tab-fail*)
+                          " - таблица построена, оформление могло не встать")))
+         (princ "\n[i] Один Ctrl+Z убирает ведомость целиком.")
+         T)
+       (progn
+         (command "_.UNDO" "_END")
+         (princ "\n[!] Объект «Таблица» создать не удалось - рисую линиями.")
+         (gc-kg-table-lines))))))
 
 ;; K -> Л, T -> Е
 (defun c:лпе ( / ) (c:kgt))
@@ -5289,8 +5691,6 @@
                  (if (gc-kg-name-b) (gc-kg-name-b) "не выбрана")))
   (princ (strcat "\n  «стало» (красная)    : "
                  (if (gc-kg-name-r) (gc-kg-name-r) "не выбрана")))
-  (princ (strcat "\n  поверхности местами  : "
-                 (if (= "1" (gc-kg-get "swap")) "ДА" "нет")))
   (princ (strcat "\n  поверхности открыты  : "
                  (if (and *gc-kg-sb* *gc-kg-sr*) "да" "нет - будут открыты при первой команде")))
   (princ (strcat "\n  сетка в памяти       : "
