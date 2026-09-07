@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v55")
+(setq *gc-kg-ver* "v56")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -4408,12 +4408,13 @@
 ;; и есть линия нулевых работ внутри квадрата.
 ;;
 ;; Возвращает (точки . отметки).
-(defun gc-kg-clip-sign (pts hs sgn / n i j a b ha hb tt p out outh)
-  (setq n (length pts) i 0 out nil outh nil)
+(defun gc-kg-clip-sign (pts hs sgn / n i j a b ha hb tt p out outh any)
+  (setq n (length pts) i 0 out nil outh nil any nil)
   (while (< i n)
     (setq j (rem (1+ i) n))
     (setq a (nth i pts) ha (* sgn (nth i hs))
           b (nth j pts) hb (* sgn (nth j hs)))
+    (if (> ha 0.0) (setq any T))
     (if (>= ha 0.0)
       (progn (setq out (cons a out))
              (setq outh (cons (nth i hs) outh))))
@@ -4425,7 +4426,12 @@
         (setq out (cons p out))
         (setq outh (cons 0.0 outh))))
     (setq i (1+ i)))
-  (cons (reverse out) (reverse outh)))
+  ;; Часть, в которой НЕТ НИ ОДНОЙ вершины своего знака, целиком лежит
+  ;; на нулевой линии: объём её нулевой, а площадь уже вошла в другую
+  ;; часть - там вершины с нулём тоже оставлены (условие >=). Вернуть её
+  ;; значило бы посчитать одну и ту же площадь дважды, и сумма частей
+  ;; перестала бы сходиться с целым (docs/pitfalls.md -> П67).
+  (if any (cons (reverse out) (reverse outh)) (cons nil nil)))
 
 ;; Объём части: площадь на среднее отметок её вершин.
 ;; Выпуклый ли контур: все повороты в одну сторону.
@@ -4453,6 +4459,68 @@
         (setq i (1+ i)))
       (not (and pos neg)))))
 
+(setq *gc-kg-par-tol* 1.0e-6)
+
+;; Параллелограмм ли четырёхугольник.
+;;
+;; ЗАЧЕМ. «Площадь на среднее отметок вершин» считает вершины равноправными,
+;; а это верно ровно тогда, когда они и распределены равномерно: у
+;; треугольника и у параллелограмма (целый квадрат сетки - его частный
+;; случай). На любой другой фигуре густо насаженные вершины одной стороны
+;; перетягивают среднее на себя - см. docs/formulas.md, «формула зависит
+;; от ЧИСЛА вершин».
+(defun gc-kg-par-p (pts / a b c d)
+  (if (/= 4 (length pts))
+    nil
+    (progn
+      (setq a (nth 0 pts) b (nth 1 pts) c (nth 2 pts) d (nth 3 pts))
+      ;; B-A равно C-D - значит противоположные стороны параллельны и равны.
+      (and (< (abs (- (- (car  b) (car  a)) (- (car  c) (car  d))))
+              *gc-kg-par-tol*)
+           (< (abs (- (- (cadr b) (cadr a)) (- (cadr c) (cadr d))))
+              *gc-kg-par-tol*)))))
+
+;; Сколько раз рабочая отметка меняет знак при обходе контура. Нули
+;; пропускаем: вершина на нулевой линии знака не имеет.
+;;
+;; ЗАЧЕМ. Отсечение целого контура нулевой линией даёт ДВЕ части, и это
+;; верно, пока знак меняется не больше двух раз. При четырёх сменах -
+;; «переходный квадрат по диагонали» из docs/formulas.md - частей четыре,
+;; а отсечение склеит их в бабочку. Формулы прямо требуют резать такой
+;; квадрат диагональю на треугольники.
+(defun gc-kg-sgn-changes (hs / n i h z prev first cnt)
+  (setq n (length hs) i 0 prev 0 first 0 cnt 0)
+  (while (< i n)
+    (setq h (nth i hs))
+    (setq z (cond ((> h 0.0) 1) ((< h 0.0) -1) (T 0)))
+    (if (/= z 0)
+      (progn
+        (if (= first 0) (setq first z))
+        (if (and (/= prev 0) (/= prev z)) (setq cnt (1+ cnt)))
+        (setq prev z)))
+    (setq i (1+ i)))
+  ;; Замыкание обхода: последний знак против первого.
+  (if (and (/= prev 0) (/= first 0) (/= prev first)) (setq cnt (1+ cnt)))
+  cnt)
+
+;; Обе части фигуры одним вызовом: (Vнас Sнас Vвыем Sвыем).
+;; exact = T - части считать веером треугольников (точно для линейного
+;; рельефа), nil - по среднему отметок вершин.
+(defun gc-kg-split2 (pts hs exact / prt r fill sf cut sc)
+  (setq prt (gc-kg-clip-sign pts hs 1))
+  (setq r (if exact (gc-kg-piece-exact (car prt) (cdr prt))
+                    (gc-kg-piece       (car prt) (cdr prt))))
+  (setq fill (car r) sf (cadr r))
+  (setq prt (gc-kg-clip-sign pts hs -1))
+  (setq r (if exact (gc-kg-piece-exact (car prt) (cdr prt))
+                    (gc-kg-piece       (car prt) (cdr prt))))
+  (setq cut (car r) sc (cadr r))
+  ;; Фигура целиком на нулевой линии: обеих частей нет, а площадь есть.
+  ;; Отдаём её насыпи с нулевым объёмом - иначе площадь пропадёт молча,
+  ;; и это опять «части не дают целого» (П63).
+  (if (and (<= sf 0.0) (<= sc 0.0)) (setq sf (gc-kg-area pts)))
+  (list fill sf cut sc))
+
 ;; Объёмы и площади насыпи и выемки для контура: (Vнас Sнас Vвыем Sвыем).
 ;;
 ;; Метод квадратов режет ВЕСЬ контур нулевой линией и считает каждую часть
@@ -4460,23 +4528,29 @@
 ;; линией - уже каждый из них: для треугольника формула «площадь на
 ;; среднее вершин» ТОЧНА, и приближение остаётся только в том, как
 ;; выбрана диагональ.
-(defun gc-kg-vol-parts (pts hs / m prt fill sf cut sc tri th p r)
+(defun gc-kg-vol-parts (pts hs / m fill sf cut sc tri th p r)
   (setq m (gc-kg-get "vmethod"))
   (if (not (numberp m)) (setq m 0))
   (setq fill 0.0 sf 0.0 cut 0.0 sc 0.0)
-  ;; Невыпуклый контур режем на треугольники ДАЖЕ в методе квадратов:
-  ;; иначе деление по знаку даст самопересечение и завысит площадь.
-  ;; На выпуклом (а целый квадрат всегда выпуклый) идём прежним путём,
-  ;; и контрольный пример из docs/formulas.md остаётся точным.
-  (if (and (= m 0) (not (gc-kg-convex-p pts))) (setq m 1))
+  ;; КЛАССИЧЕСКИЙ ХОД «КВАДРАТОВ» - резать нулевой линией ВЕСЬ контур
+  ;; и считать каждую часть по среднему отметок её вершин - годится
+  ;; только для настоящего квадрата сетки, то есть параллелограмма,
+  ;; и только пока знак меняется не больше двух раз.
+  ;;
+  ;; На краевом куске, обрезанном границей поверхности, вершин бывает
+  ;; восемь и больше, и почти все они сидят подряд на одной стороне.
+  ;; Среднее считает их наравне с настоящими углами и проваливается:
+  ;; на проверенном квадрате 12,2 м3 вместо 23-25 (docs/pitfalls.md -> П67).
+  ;; Такой контур режем на треугольники, а нулевой линией - уже каждый
+  ;; из них: для треугольника «площадь на среднее вершин» ТОЧНА.
+  (if (and (= m 0)
+           (or (not (gc-kg-par-p pts))
+               (> (gc-kg-sgn-changes hs) 2)))
+    (setq m 1))
   (if (= m 0)
     (progn
-      (setq prt (gc-kg-clip-sign pts hs  1))
-      (setq r (gc-kg-piece (car prt) (cdr prt)))
-      (setq fill (car r) sf (cadr r))
-      (setq prt (gc-kg-clip-sign pts hs -1))
-      (setq r (gc-kg-piece (car prt) (cdr prt)))
-      (setq cut (car r) sc (cadr r)))
+      (setq r (gc-kg-split2 pts hs nil))
+      (setq fill (car r) sf (cadr r) cut (caddr r) sc (cadddr r)))
     (foreach tri (gc-kg-cell-tris pts (= m 2))
       ;; Отметки вершин треугольника берём из общего списка по совпадению
       ;; точки: ушное отсечение переставляет вершины, но не двигает их.
@@ -4490,12 +4564,9 @@
         (setq *gc-kg-tri-lost* (1+ *gc-kg-tri-lost*)))
       (if (not (member nil th))
         (progn
-          (setq prt (gc-kg-clip-sign tri th  1))
-          (setq r (gc-kg-piece-exact (car prt) (cdr prt)))
-          (setq fill (+ fill (car r)) sf (+ sf (cadr r)))
-          (setq prt (gc-kg-clip-sign tri th -1))
-          (setq r (gc-kg-piece-exact (car prt) (cdr prt)))
-          (setq cut (+ cut (car r)) sc (+ sc (cadr r)))))))
+          (setq r (gc-kg-split2 tri th T))
+          (setq fill (+ fill (car   r)) sf (+ sf (cadr   r))
+                cut  (+ cut  (caddr r)) sc (+ sc (cadddr r)))))))
   (list fill sf cut sc))
 
 ;; Отметка вершины по совпадению точки. nil, если такой вершины нет.
@@ -6115,8 +6186,15 @@
                (princ "\n\n  [!] В части вершин отметки нет - объём не считается.")
                (progn
                  (princ (strcat "\n\n  ВЫПУКЛЫЙ КОНТУР : "
-                                (if (gc-kg-convex-p pts) "да"
-                                  "НЕТ (режется на треугольники)")))
+                                (if (gc-kg-convex-p pts) "да" "НЕТ")))
+                 (princ (strcat "\n  ВЕРШИНЫ РОВНО   : "
+                                (if (gc-kg-par-p pts)
+                                  "да (параллелограмм - среднее честно)"
+                                  "НЕТ - среднее вершин врёт, режем на треугольники")))
+                 (princ (strcat "\n  СМЕН ЗНАКА      : "
+                                (itoa (gc-kg-sgn-changes hs))
+                                (if (> (gc-kg-sgn-changes hs) 2)
+                                  "  (больше двух - частей больше двух)" "")))
                  (princ "\n\n  ОБЪЁМ ТРЕМЯ МЕТОДАМИ (насыпь / выемка, м3):")
                  (setq old (gc-kg-get "vmethod"))
                  (foreach m '(0 1 2)
