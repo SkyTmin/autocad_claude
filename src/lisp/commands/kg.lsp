@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v51)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v52)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -17,6 +17,24 @@
 ;;;   KGQ / ЛПЙ   -- RAZOBRAT ODIN KVADRAT: ploshchad, otmetki, obem
 ;;;                   tremya metodami. Dlya sverki s chuzhim raschetom.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v52: POTERYA VYREZOV I LISHNIH KONTUROV YACHEYKI.
+;;;      V nashey zhe vedomosti stoyalo: nasyp 1095,621 + vyemka 10,292 =
+;;;      1105,913 m2, a ploshchad kartogrammy 1105,357. Chasti bolshe
+;;;      celogo na 0,556 m2. U etalona te zhe dve stroki shodyatsya v nol.
+;;;
+;;;      Eto NASHA oshibka, i vidna ona byla BEZ vsyakogo etalona - prosto
+;;;      slozheniem dvuh chisel iz sobstvennoy tablicy.
+;;;
+;;;      PRICHINA. Yacheyka hranit ploshchad ar UZHE s vychetom vyrezov,
+;;;      a raschet obema bral tolko PERVYY kontur i schital po nemu vsyo.
+;;;      Vyrezy pri etom voobshche ne sohranyalis v yacheyke, a esli oblast
+;;;      v kvadrate raspalas na dva kuska - vtoroy propadal.
+;;;
+;;;      Teper vyrezy lezhat v yacheyke sedmym elementom, obem schitaetsya
+;;;      po VSEM konturam i vyrezy vychitayutsya. Dobavlen kontrol:
+;;;      ploshchad nasypi plyus ploshchad vyemki obyazana ravnyatsya
+;;;      ploshchadi kartogrammy, i komanda govorit vsluh, esli net.
 ;;;
 ;;; v51: METOD KVADRATOV SOVPAL S OBRAZCOM. NAZVANIYA METODOV ISPRAVLENY.
 ;;;
@@ -874,7 +892,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v51")
+(setq *gc-kg-ver* "v52")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -3717,7 +3735,7 @@
               ;; чем на точном пути (П56).
               (setq parts (gc-kg-clean-loops parts))))
           (if (> ar eps)
-            (setq cells (cons (list i j ar cs (car parts) (cdr parts)) cells)))))
+            (setq cells (cons (list i j ar cs (car parts) (cdr parts) nil) cells)))))
       (setq i (1+ i)))
     (setq j (1+ j)))
   (reverse cells))
@@ -3920,7 +3938,14 @@
           ;; вместо квадрата нельзя. Сшиваем ОДИН раз - повторный вызов
           ;; и считал бы вдвое, и счётчик отказов задваивал.
           (setq lo (gc-kg-outline-or cur))
-          (setq cells (cons (list i j ar rect (car lo) (cdr lo)) cells))))
+          ;; ВЫРЕЗЫ кладём в ячейку седьмым элементом. Раньше они
+          ;; вычитались из площади ar и на этом терялись: расчёт объёма
+          ;; брал наружный контур и считал по нему всё, включая дырки.
+          ;; Сумма площадей насыпи и выемки выходила БОЛЬШЕ площади
+          ;; картограммы - на 0,556 м2 у Шамиля (П63).
+          (setq cells (cons (list i j ar rect (car lo) (cdr lo)
+                                  (gc-kg-clean-loops (reverse hs)))
+                            cells))))
       (setq i (1+ i)))
     (setq j (1+ j)))
   (reverse cells))
@@ -4448,20 +4473,10 @@
       (foreach h hs (setq s (+ s h) n (1+ n)))
       (list (* (gc-kg-area pts) (/ s (float n))) (gc-kg-area pts)))))
 
-;; Объёмы одной ячейки: список (выемка насыпь площадь центр).
-;;
-;; ОБА ОБЪЁМА ПОЛОЖИТЕЛЬНЫЕ - это кубометры грунта, который срезают или
-;; досыпают. Знак приписывается позже, при подписи, по выбранной конвенции
-;; (*gc-kg-wsign*). Держать знак внутри расчёта - значит каждый раз гадать,
-;; что означает минус у «выемки»: меньше нуля или наоборот больше.
-;;
-;; nil, если хоть в одной вершине отметки нет.
-(defun gc-kg-cell-vol (c sx sy / pts hs ok p w cut fill r sc sf)
-  ;; Контур: у целого квадрата это его стороны, у краевого - обрезанный.
-  (setq pts (if (> (nth 2 c) (- (* sx sy) (* 1.0e-6 sx sy)))
-              (nth 3 c)
-              (nth 4 c)))
-  (if (or (null pts) (< (length pts) 3))
+;; Вклад одного контура: (насыпь Sнасыпи выемка Sвыемки) либо nil,
+;; если отметку дала не каждая поверхность.
+(defun gc-kg-loop-vol (pts / hs ok w p r)
+  (if (or (null pts) (not (listp (car pts))) (< (length pts) 3))
     nil
     (progn
       (setq hs nil ok T)
@@ -4469,17 +4484,47 @@
         (setq p (gc-kg-to-wcs w))
         (setq r (gc-kg-hw-at p))
         (if (null r) (setq ok nil) (setq hs (cons r hs))))
-      (if (null ok)
-        nil
-        (progn
-          (setq hs (reverse hs))
-          ;; Выемка и насыпь считаются раздельно: в переходном квадрате
-          ;; они гасят друг друга, и общий объём вышел бы заниженным.
-          (setq r (gc-kg-vol-parts pts hs))
-          (setq fill (nth 0 r) sf (nth 1 r) cut (nth 2 r) sc (nth 3 r))
-          ;; h = проект - земля, поэтому часть с h>0 это НАСЫПЬ,
-          ;; а с h<0 - ВЫЕМКА. Всегда, при любых настройках.
-          (list (abs cut) fill (nth 2 c) (gc-kg-centroid pts) sc sf))))))
+      (if ok (gc-kg-vol-parts pts (reverse hs)) nil))))
+
+;; Объёмы одной ячейки: список (выемка насыпь площадь центр Sвыем Sнас).
+;;
+;; ОБА ОБЪЁМА ПОЛОЖИТЕЛЬНЫЕ - это кубометры грунта, который срезают или
+;; досыпают. Знак приписывается позже, при подписи, по выбранной конвенции.
+;;
+;; СЧИТАЕМ ПО ВСЕМ КОНТУРАМ ячейки и ВЫЧИТАЕМ ВЫРЕЗЫ. Раньше брался
+;; только первый контур: если область в квадрате распалась на два куска,
+;; второй пропадал, а если в ней была дырка - она считалась заполненной.
+;; Обе ошибки тихие, и заметны только по тому, что сумма площадей насыпи
+;; и выемки перестаёт сходиться с площадью картограммы (П63).
+;;
+;; nil, если хоть в одной вершине отметки нет.
+(defun gc-kg-cell-vol (c sx sy / full loops holes fill sf cut sc r pts any)
+  (setq full (> (nth 2 c) (- (* sx sy) (* 1.0e-6 sx sy))))
+  (setq loops (if full (list (nth 3 c)) (cons (nth 4 c) (nth 5 c))))
+  (setq holes (nth 6 c))
+  (setq fill 0.0 sf 0.0 cut 0.0 sc 0.0 any nil pts nil)
+  (foreach r loops
+    (if (and (listp r) (listp (car r)))
+      (progn
+        (if (null pts) (setq pts r))       ; для центра подписи
+        (setq r (gc-kg-loop-vol r))
+        (if r
+          (progn
+            (setq any T)
+            (setq fill (+ fill (nth 0 r)) sf (+ sf (nth 1 r))
+                  cut  (+ cut  (nth 2 r)) sc (+ sc (nth 3 r))))))))
+  ;; Вырезы вычитаем: их грунт не наш.
+  (foreach r holes
+    (if (and (listp r) (listp (car r)))
+      (progn
+        (setq r (gc-kg-loop-vol r))
+        (if r
+          (setq fill (- fill (nth 0 r)) sf (- sf (nth 1 r))
+                cut  (- cut  (nth 2 r)) sc (- sc (nth 3 r)))))))
+  (if (null any)
+    nil
+    ;; h = проект - земля, поэтому часть с h>0 это НАСЫПЬ, с h<0 - ВЫЕМКА.
+    (list (abs cut) fill (nth 2 c) (gc-kg-centroid pts) sc sf)))
 
 ;; Название метода для отчёта.
 (defun gc-kg-method-name ( / m)
@@ -4603,6 +4648,25 @@
      ;; ориентациях знака, и одно из двух относится не к той категории.
      ;; Ошибка это тихая: каждое число по отдельности правдоподобно
      ;; (docs/pitfalls.md -> П62).
+     ;; КОНТРОЛЬ ВТОРОЙ: площадь насыпи плюс площадь выемки обязана
+     ;; равняться площади картограммы. Величины считаются разными кусками
+     ;; кода - одна по контуру ячейки, другая по частям после разреза
+     ;; нулевой линией, - и разойтись могут только от ошибки.
+     ;;
+     ;; Именно так нашлась потеря вырезов: сумма частей выходила больше
+     ;; целого на 0,556 м2, и это было видно прямо в нашей же ведомости,
+     ;; без всякого сравнения с чужой (docs/pitfalls.md -> П63).
+     (princ (strcat "\n  насыпь + выемка     : " (gc-kg-fmt (+ safill sacut))
+                    " м2"))
+     (if (> (abs (- (+ safill sacut) tarea))
+            (if (> (* 1.0e-4 tarea) 0.001) (* 1.0e-4 tarea) 0.001))
+       (progn
+         (princ (strcat "\n  [!] НЕ СХОДИТСЯ с площадью на "
+                        (gc-kg-fmt (- (+ safill sacut) tarea)) " м2."))
+         (princ "\n      Части площадки должны в сумме давать её целиком.")
+         (princ "\n      Значит что-то посчитано дважды или потеряно,")
+         (princ "\n      и объёмы тоже неверны."))
+       (princ "  (сходится)"))
      (gc-kg-vs-check "насыпь" tfill safill)
      (gc-kg-vs-check "выемка" tcut  sacut)
      (if use-mn
