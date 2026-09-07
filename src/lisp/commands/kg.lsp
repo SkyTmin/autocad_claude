@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v50)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v51)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -17,6 +17,27 @@
 ;;;   KGQ / ЛПЙ   -- RAZOBRAT ODIN KVADRAT: ploshchad, otmetki, obem
 ;;;                   tremya metodami. Dlya sverki s chuzhim raschetom.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v51: METOD KVADRATOV SOVPAL S OBRAZCOM. NAZVANIYA METODOV ISPRAVLENY.
+;;;
+;;;      Shamil sveril odin i tot zhe kvadrat METOD V METOD:
+;;;        metod kvadratov:  obrazec 165,44   my 165,31   raznica 0,08 %
+;;;        "triangulyaciya": obrazec 173,49   my 160,7
+;;;
+;;;      1. METOD KVADRATOV SOVPADAET. 0,08 % - eto okruglenie otmetok
+;;;         na sotyh (u nego 6,85, u nas 6,84), a ne raznica v raschete.
+;;;         Po vsey ploshchadke metod v metod: 3820,82 protiv 3773,54,
+;;;         to est 1,2 %, i vsya ona na KRAEVYH stolbcah - srednie
+;;;         sovpadayut do 0,03 %.
+;;;
+;;;      2. NASHA "TRIANGULYACIYA" - NE TO ZHE SAMOE, i nazyvat ee tak
+;;;         bylo nechestno. My delim KVADRAT na dva treugolnika po tem zhe
+;;;         chetyrem uglam: dve diagonali dayut 170,08 i 160,79, a ih
+;;;         srednee i est metod kvadratov 165,44. Obrazec zhe daet 173,49 -
+;;;         bolshe obeih, iz chetyreh uglov takoe ne vyvoditsya voobshche.
+;;;         Znachit on schitaet po relefu VNUTRI kvadrata.
+;;;         Metody pereimenovany v "Po treugolnikam kvadrata, diagonal
+;;;         1-3 / 2-4" - chestno i bez obeshchaniy.
 ;;;
 ;;; v50: NAYDENA PRICHINA RASHOZHDENIYA OBEMOV. ODNA PODPIS. SBROS NASTROEK.
 ;;;
@@ -853,7 +874,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v50")
+(setq *gc-kg-ver* "v51")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -1376,7 +1397,10 @@
 "  : boxed_column { label = \" Расчёт \";"
 "    : popup_list { key = \"v_meth\"; label = \"Метод \"; width = 34; fixed_width = true; }"
 "    : text { label = \"  Методы дают разные числа - это не ошибка.\"; }"
-"    : text { label = \"  Сверяя с чужой ведомостью, сверьте сперва метод.\"; } }"
+"    : text { label = \"  Для сверки с эталоном берите МЕТОД КВАДРАТОВ:\"; }"
+"    : text { label = \"  на нём сходимся до сотых долей процента.\"; }"
+"    : text { label = \"  «Триангуляция» эталона считает по рельефу внутри\"; }"
+"    : text { label = \"  квадрата - у нас такого пока нет.\"; } }"
 "  : boxed_column { label = \" Подписи объёмов \";"
 "    : row {"
 "      : edit_box   { key = \"v_h\"; label = \"Высота, м \"; edit_width = 6; }"
@@ -1646,10 +1670,26 @@
          res)))))
 
 ;; Список методов расчёта. Порядок = значение настройки vmethod.
+;; НАЗВАНИЯ ЧЕСТНЫЕ, а не «как у образца».
+;;
+;; Наши второй и третий методы делят КВАДРАТ на два треугольника по тем же
+;; четырём углам - это другой способ усреднить те же данные. У образца
+;; «метод триангуляции» означает совсем иное: он считает по поверхности
+;; объёмов Civil 3D и видит рельеф ВНУТРИ квадрата.
+;;
+;; Сверено на одном квадрате (отметки +6,85 +6,64 +5,48 +7,50):
+;;   метод квадратов     образец 165,44   мы 165,31   расходимся на 0,08 %
+;;                                                    (округление отметок)
+;;   наши диагонали      170,08 и 160,79
+;;   «триангуляция» обр. 173,49  - больше обеих, из четырёх углов
+;;                                 такое не выводится вовсе
+;;
+;; Называть наш способ «методом триангуляции» значило бы обещать
+;; совпадение, которого он дать не может.
 (setq *gc-kg-meth-list*
   '("Метод квадратов (V = Hср x S)"
-    "Метод триангуляции (стандартный)"
-    "Метод триангуляции (альтернативный)"))
+    "По треугольникам квадрата, диагональ 1-3"
+    "По треугольникам квадрата, диагональ 2-4"))
 
 ;; Что сейчас выбрано в объёмах - строкой для главного окна.
 (defun gc-kg-vols-note ( / )
@@ -4444,8 +4484,8 @@
 ;; Название метода для отчёта.
 (defun gc-kg-method-name ( / m)
   (setq m (gc-kg-get "vmethod"))
-  (cond ((= m 1) "триангуляция (стандартный)")
-        ((= m 2) "триангуляция (альтернативный)")
+  (cond ((= m 1) "по треугольникам квадрата, диагональ 1-3")
+        ((= m 2) "по треугольникам квадрата, диагональ 2-4")
         (T       "квадратов (V = Hср x S)")))
 
 ;; Итоги последнего расчёта - для ведомости на этапе 5.
