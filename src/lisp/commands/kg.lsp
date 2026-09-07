@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v43)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v44)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -12,7 +12,27 @@
 ;;;   KGD / ЛПВ   -- udalit vse otmetki.
 ;;;   KGV / ЛПМ   -- VYNOSKA: otodvinut podpis, ostaviv liniyu k uzlu.
 ;;;   KGW / ЛПЦ   -- perestroit vynoski posle ruchnogo peremeshcheniya.
+;;;   KGM / ЛПЬ   -- OBEMY zemlyanyh mass.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v44: ETAP 4 - OBEMY.
+;;;      Metodika - docs/formulas.md: obem figury = ee ploshchad na SREDNEE
+;;;      rabochih otmetok EE vershin. Kvadrat, gde otmetka menyaet znak,
+;;;      rezhetsya nulevoy liniey na chasti odnogo znaka, i kazhdaya
+;;;      schitaetsya otdelno - inache vyemka i nasyp vzaimno pogasilis by.
+;;;
+;;;      PROVERENO na kontrolnom primere iz formulas.md: kvadrat 20 m,
+;;;      otmetki +0,30 / +0,50 / -0,20 / +0,10. Vyemka S=38,095 V=2,540;
+;;;      nasyp S=361,905 V=65,143; summa ploshchadey rovno 400. Shoditsya.
+;;;
+;;;      BEZ PODPISANNYH OTMETOK KOMANDA NE RABOTAET. Ne potomu, chto ne
+;;;      iz chego schitat - otmetki berutsya s poverhnostey napryamuyu.
+;;;      Delo v drugom: nepodpisannyy raschet nechem proverit. Shamil
+;;;      sveryaet obem s otmetkami v uglah glazami, i bez podpisey oshibku
+;;;      v znake ili v vybore poverhnostey nikto ne zametit.
+;;;
+;;;      Perehodnyy kvadrat poluchaet DVE podpisi - vyemku i nasyp:
+;;;      odno chislo na takoy kvadrat bylo by nepravdoy.
 ;;;
 ;;; v43: LINIYA PRIHODIT V KONEC KRESTIKA; plecho 1200 mm.
 ;;;      1. Plecho 2,4 vysoty teksta - eto 1200 mm pri vysote 500 mm,
@@ -694,7 +714,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v43")
+(setq *gc-kg-ver* "v44")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -3861,9 +3881,9 @@
 (defun gc-kg-menu ( / k dflt done)
   (setq done nil dflt "Выход")
   (while (not done)
-    (initget "Сетка Отметки пРавка Проверка Выход")
+    (initget "Сетка Отметки оБъёмы пРавка Проверка Выход")
     (setq k (getkword
-              (strcat "\nЧто делаем? [Сетка/Отметки/пРавка/Проверка/Выход] <"
+              (strcat "\nЧто делаем? [Сетка/Отметки/оБъёмы/пРавка/Проверка/Выход] <"
                       dflt ">: ")))
     (if (null k) (setq k dflt))
     (cond
@@ -3872,7 +3892,8 @@
       ;; ровно там, где ими собираются пользоваться.
       ((= k "Отметки")  (if (gc-kg-dialog-marks) (gc-kg-label)
                           (princ "\n[i] Отмена, ничего не подписано."))
-                        (setq dflt "Выход"))
+                        (setq dflt "оБъёмы"))
+      ((= k "оБъёмы")   (c:kgm) (setq dflt "Выход"))
       ((= k "Проверка") (gc-kg-probe) (setq dflt "Выход"))
       ((= k "пРавка") (gc-kg-menu-edit) (setq dflt "Выход"))
       (T (setq done T))))
@@ -3940,6 +3961,253 @@
 
 ;; K -> Л, G -> П, B -> И
 (defun c:лпи ( / ) (c:kgb))
+
+;;; ====================================================================
+;;; ЭТАП 4. ОБЪЁМЫ
+;;;
+;;; МЕТОДИКА - docs/formulas.md: объём фигуры = её площадь, умноженная на
+;;; СРЕДНЕЕ рабочих отметок ЕЁ вершин. У вершин, попавших на линию нулевых
+;;; работ, отметка равна нулю.
+;;;
+;;; Квадрат, где рабочая отметка меняет знак, режется нулевой линией на
+;;; части одного знака, и каждая считается отдельно. Иначе выемка и насыпь
+;;; взаимно погасились бы, и объём вышел бы заниженным - а на ведомости
+;;; это не видно, там просто число.
+;;;
+;;; ПРОВЕРЕНО на контрольном примере из docs/formulas.md: квадрат 20 м,
+;;; отметки +0,30 / +0,50 / -0,20 / +0,10. Выемка S=38,095 V=2,540;
+;;; насыпь S=361,905 V=65,143; сумма площадей ровно 400. Сходится до
+;;; третьего знака - то есть до последнего, который печатается.
+;;; ====================================================================
+
+;; Кэш рабочих отметок: одна и та же вершина принадлежит нескольким
+;; квадратам, а опрос поверхности - самая дорогая операция во всей
+;; команде (ADR-0005).
+(setq *gc-kg-hw-cache* nil)
+
+;; Рабочая отметка в точке, по выбранной конвенции знака. nil, если
+;; отметку дала не каждая поверхность.
+(defun gc-kg-hw-at (p / k v zb zr h)
+  (setq k (strcat (rtos (car p) 2 4) "|" (rtos (cadr p) 2 4)))
+  (setq v (assoc k *gc-kg-hw-cache*))
+  (if v
+    (cdr v)
+    (progn
+      (setq zb (gc-kg-elev *gc-kg-sb* (car p) (cadr p))
+            zr (gc-kg-elev *gc-kg-sr* (car p) (cadr p)))
+      (setq h (if (and zb zr)
+                (if (= "1" (gc-kg-get "wsign")) (- zb zr) (- zr zb))
+                nil))
+      (setq *gc-kg-hw-cache* (cons (cons k h) *gc-kg-hw-cache*))
+      h)))
+
+;; Часть контура, где знак рабочей отметки совпадает с sgn.
+;; Вершины, попавшие на нулевую линию, получают отметку 0.
+;;
+;; Обычное отсечение полуплоскостью, только граница задана не прямой,
+;; а сменой знака на ребре: точка берётся линейной интерполяцией. Это
+;; и есть линия нулевых работ внутри квадрата.
+;;
+;; Возвращает (точки . отметки).
+(defun gc-kg-clip-sign (pts hs sgn / n i j a b ha hb tt p out outh)
+  (setq n (length pts) i 0 out nil outh nil)
+  (while (< i n)
+    (setq j (rem (1+ i) n))
+    (setq a (nth i pts) ha (* sgn (nth i hs))
+          b (nth j pts) hb (* sgn (nth j hs)))
+    (if (>= ha 0.0)
+      (progn (setq out (cons a out))
+             (setq outh (cons (nth i hs) outh))))
+    (if (or (and (> ha 0.0) (< hb 0.0)) (and (< ha 0.0) (> hb 0.0)))
+      (progn
+        (setq tt (/ ha (- ha hb)))
+        (setq p (list (+ (car a) (* tt (- (car b) (car a))))
+                      (+ (cadr a) (* tt (- (cadr b) (cadr a))))))
+        (setq out (cons p out))
+        (setq outh (cons 0.0 outh))))
+    (setq i (1+ i)))
+  (cons (reverse out) (reverse outh)))
+
+;; Объём части: площадь на среднее отметок её вершин.
+(defun gc-kg-part-vol (pts hs / s n)
+  (if (< (length pts) 3)
+    0.0
+    (progn
+      (setq s 0.0 n 0)
+      (foreach h hs (setq s (+ s h) n (1+ n)))
+      (* (abs (gc-kg-area pts)) (/ s (float n))))))
+
+;; Центр тяжести контура - туда становится подпись объёма.
+;;
+;; Именно центр тяжести, а не середина габарита: у краевого куска
+;; серпом середина габарита лежит вне фигуры, и подпись оказалась бы
+;; в соседнем квадрате.
+(defun gc-kg-centroid (pts / n i j a b cr sa cx cy bb)
+  (setq n (length pts) i 0 sa 0.0 cx 0.0 cy 0.0)
+  (while (< i n)
+    (setq j (rem (1+ i) n) a (nth i pts) b (nth j pts))
+    (setq cr (- (* (car a) (cadr b)) (* (car b) (cadr a))))
+    (setq sa (+ sa cr))
+    (setq cx (+ cx (* cr (+ (car a) (car b)))))
+    (setq cy (+ cy (* cr (+ (cadr a) (cadr b)))))
+    (setq i (1+ i)))
+  (if (< (abs sa) 1.0e-12)
+    ;; Вырожденный контур - берём середину габарита, лучше чем ничего.
+    (progn
+      (setq bb (gc-kg-bbox pts))
+      (list (/ (+ (car bb) (caddr bb)) 2.0)
+            (/ (+ (cadr bb) (cadddr bb)) 2.0)))
+    (list (/ cx (* 3.0 sa)) (/ cy (* 3.0 sa)))))
+
+;; Объёмы одной ячейки: список (выемка насыпь площадь центр).
+;; nil, если хоть в одной вершине отметки нет.
+(defun gc-kg-cell-vol (c sx sy / pts hs ok p w cut fill r prt)
+  ;; Контур: у целого квадрата это его стороны, у краевого - обрезанный.
+  (setq pts (if (> (nth 2 c) (- (* sx sy) (* 1.0e-6 sx sy)))
+              (nth 3 c)
+              (nth 4 c)))
+  (if (or (null pts) (< (length pts) 3))
+    nil
+    (progn
+      (setq hs nil ok T)
+      (foreach w pts
+        (setq p (gc-kg-to-wcs w))
+        (setq r (gc-kg-hw-at p))
+        (if (null r) (setq ok nil) (setq hs (cons r hs))))
+      (if (null ok)
+        nil
+        (progn
+          (setq hs (reverse hs))
+          ;; Выемка и насыпь считаются раздельно: в переходном квадрате
+          ;; они гасят друг друга, и общий объём вышел бы заниженным.
+          (setq prt (gc-kg-clip-sign pts hs  1))
+          (setq fill (gc-kg-part-vol (car prt) (cdr prt)))
+          (setq prt (gc-kg-clip-sign pts hs -1))
+          (setq cut (gc-kg-part-vol (car prt) (cdr prt)))
+          ;; При wsign=1 плюс означает выемку, при 0 - насыпь.
+          (if (= "1" (gc-kg-get "wsign"))
+            (list fill cut (nth 2 c) (gc-kg-centroid pts))
+            (list (- cut) (- fill) (nth 2 c) (gc-kg-centroid pts))))))))
+
+;; Итоги последнего расчёта - для ведомости на этапе 5.
+(setq *gc-kg-vol-cut*  0.0)     ; выемка, м3
+(setq *gc-kg-vol-fill* 0.0)     ; насыпь, м3
+(setq *gc-kg-vol-area* 0.0)     ; площадь, м2
+(setq *gc-kg-vols*     nil)     ; по ячейкам: (i j выемка насыпь площадь центр)
+
+;; Подписаны ли отметки. Без них объёмы считать нельзя - и не потому,
+;; что не из чего: отметки берутся с поверхностей напрямую. Дело в другом:
+;; неподписанный расчёт нечем проверить. Шамиль сверяет объём с отметками
+;; в углах глазами, и если подписей нет - ошибку в знаке или в выборе
+;; поверхностей никто не заметит, пока не построят.
+(defun gc-kg-marks-ready ( / ss n)
+  (setq ss (gc-kg-blk-ss))
+  (setq n (if ss (gc-kg-ss-len ss) nil))
+  (if (and n (> n 0))
+    T
+    (progn
+      (princ "\n[!] ОТМЕТКИ НЕ ПОДПИСАНЫ - объёмы считать рано.")
+      (princ "\n    Сначала «Отметки»: объём проверяют по отметкам в углах,")
+      (princ "\n    и без них ошибку в знаке или в выборе поверхностей")
+      (princ "\n    заметить будет нечем.")
+      (princ "\n    KG -> «Отметки», затем «Объёмы».")
+      nil)))
+
+;;; --------------------------------------------------------------------
+;;; KGM - рассчитать объёмы
+;;; --------------------------------------------------------------------
+(defun c:kgm ( / cells par base ang sx sy lay stl h prec sep env
+               v cut fill cnt skip lo mn use-mn tcut tfill tarea p)
+  (princ "\n\n=== KGM - объёмы земляных масс ===")
+  (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
+  (cond
+    ((or (null cells) (null par))
+     (princ "\n[!] Сетки нет - сначала постройте её (KG -> «Сетка»)."))
+    ((null (gc-kg-surf-ready)))
+    ((null (gc-kg-marks-ready)))
+    (T
+     (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
+     (gc-kg-set-frame base ang)
+     (setq env (gc-kg-mark-env) stl (nth 1 env) sep (nth 4 env))
+     (setq h (gc-kg-num (gc-kg-get "h-vol")))
+     (if (or (null h) (<= h 0.0)) (setq h 0.5))
+     (setq prec (gc-kg-get "p-vol"))
+     (if (not (numberp prec)) (setq prec 1))
+     (setq mn (gc-kg-num (gc-kg-get "min-vol")))
+     (if (null mn) (setq mn 0.0))
+     (setq use-mn (= "1" (gc-kg-get "use-min")))
+     (setq lay (gc-kg-layer "GC-Картограмма-Объёмы" 7))
+     (setq *gc-kg-hw-cache* nil *gc-kg-vols* nil)
+     (setq cnt 0 skip 0 tcut 0.0 tfill 0.0 tarea 0.0)
+     (princ (strcat "\n[i] Квадратов: " (itoa (length cells)) ". Считаю..."))
+     (setvar "CMDECHO" 0)
+     (command "_.UNDO" "_BEGIN")
+     (foreach c cells
+       (setq v (gc-kg-cell-vol c sx sy))
+       (if (null v)
+         (setq skip (1+ skip))
+         (progn
+           (setq cut (car v) fill (cadr v) p (gc-kg-to-wcs (nth 3 v)))
+           (setq tcut (+ tcut cut) tfill (+ tfill fill)
+                 tarea (+ tarea (nth 2 v)))
+           (setq *gc-kg-vols* (cons (list (car c) (cadr c) cut fill (nth 2 v) p)
+                                    *gc-kg-vols*))
+           ;; Подписываем обе части, если квадрат переходный: одно число
+           ;; на такой квадрат врало бы - выемка и насыпь в нём разные.
+           (if (gc-kg-vol-label p cut fill h prec sep lay stl mn use-mn)
+             (setq cnt (1+ cnt))))))
+     (command "_.UNDO" "_END")
+     (setq *gc-kg-vol-cut* tcut *gc-kg-vol-fill* tfill *gc-kg-vol-area* tarea)
+     (setq *gc-kg-vols* (reverse *gc-kg-vols*))
+     (princ "\n\n--- ОБЪЁМЫ ПОСЧИТАНЫ ---")
+     (princ (strcat "\n  квадратов подписано : " (itoa cnt)))
+     (if (> skip 0)
+       (princ (strcat "\n  пропущено           : " (itoa skip)
+                      "  (поверхность не дала отметку в вершине)")))
+     (princ (strcat "\n  ВЫЕМКА              : " (gc-kg-fmt tcut) " м3"))
+     (princ (strcat "\n  НАСЫПЬ              : " (gc-kg-fmt tfill) " м3"))
+     (princ (strcat "\n  баланс (выемка-нас.): " (gc-kg-fmt (- tcut tfill)) " м3"))
+     (princ (strcat "\n  площадь             : " (gc-kg-fmt tarea) " м2"))
+     (if use-mn
+       (princ (strcat "\n  порог подписи       : " (gc-kg-fmt mn) " м3")))
+     (princ (strcat "\n  слой                : " lay))
+     (princ (strcat "\n  метод               : площадь x среднее рабочих отметок вершин"))
+     (princ "\n                        (docs/formulas.md, переходные квадраты")
+     (princ "\n                        режутся линией нулевых работ)")
+     (princ "\n[i] Один Ctrl+Z убирает все подписи объёмов.")
+     T)))
+
+;; Подписать объёмы одной ячейки. Возвращает T, если хоть что-то встало.
+;;
+;; Переходный квадрат получает ДВЕ подписи: выемку и насыпь. Одно число
+;; на такой квадрат было бы неправдой - там и срезают, и досыпают.
+(defun gc-kg-vol-label (p cut fill h prec sep lay stl mn use-mn / any dy)
+  (setq any nil)
+  (setq dy (if (and (> (abs cut) 1.0e-9) (> (abs fill) 1.0e-9)) (* 0.7 h) 0.0))
+  (if (and (> (abs cut) 1.0e-9)
+           (or (null use-mn) (>= (abs cut) mn)))
+    (progn
+      (gc-kg-text (list (car p) (+ (cadr p) dy))
+                  (gc-kg-vol-str cut prec sep)
+                  h (gc-kg-get "c-minus") lay stl 1)
+      (setq any T)))
+  (if (and (> (abs fill) 1.0e-9)
+           (or (null use-mn) (>= (abs fill) mn)))
+    (progn
+      (gc-kg-text (list (car p) (- (cadr p) dy))
+                  (gc-kg-vol-str (- fill) prec sep)
+                  h (gc-kg-get "c-plus") lay stl 1)
+      (setq any T)))
+  any)
+
+;; Объём строкой со знаком. Знак тот же, что у рабочих отметок: если
+;; плюс означает выемку, то и объём выемки идёт с плюсом. Разнобой
+;; между отметкой и объёмом на одном чертеже читался бы как ошибка.
+(defun gc-kg-vol-str (v prec sep)
+  (strcat (if (> v 0.0) "+" "") (gc-kg-fmt-p v prec sep)))
+
+;; K -> Л, M -> Ь
+(defun c:лпь ( / ) (c:kgm))
 
 ;;; ====================================================================
 ;;; ПРАВКА ПОДПИСЕЙ
