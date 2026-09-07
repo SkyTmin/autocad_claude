@@ -1,4 +1,4 @@
-;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v49)
+;;; kg.lsp -- kartogramma zemlyanyh mass (SPEC-009 v50)
 ;;; Komandy:
 ;;;   KG          -- osnovnaya komanda.
 ;;;   GC-CARTOGRAM -- polnoe imya toy zhe komandy.
@@ -17,6 +17,30 @@
 ;;;   KGQ / ЛПЙ   -- RAZOBRAT ODIN KVADRAT: ploshchad, otmetki, obem
 ;;;                   tremya metodami. Dlya sverki s chuzhim raschetom.
 ;;;   KGI / ЛПШ   -- CHTO NA CHERTEZHE: diagnostika odnoy komandoy.
+;;;
+;;; v50: NAYDENA PRICHINA RASHOZHDENIYA OBEMOV. ODNA PODPIS. SBROS NASTROEK.
+;;;
+;;;      1. PRICHINA NAYDENA. Obrazec schitaet obemy CHEREZ POVERHNOST
+;;;         OBEMOV Civil 3D (v ego module - CreateTinVolumeSurface,
+;;;         GetBorderedVolumes), a my - po chetyrem uglam kvadrata.
+;;;         Raznica ne v formule, a v ISHODNYH DANNYH: poverhnost obemov
+;;;         vidit relef VNUTRI kvadrata, a chetyre ugla - net.
+;;;
+;;;         Na kvadrate so skrinshota Shamilya vse chetyre otmetki
+;;;         polozhitelnye (+6,85 +6,64 +5,48 +7,50), deleniya net, i
+;;;         metod kvadratov daet rovno 25 x 6,6175 = 165,44 - nash
+;;;         otvet. U obrazca 173,49: eto +4,9 %, kotorye daet relef
+;;;         vnutri kvadrata. Zapisano v status/ISSUES.md #003.
+;;;
+;;;      2. ODNA PODPIS OBEMA na kvadrat, a ne dve. U obrazca odno chislo
+;;;         so znakom, i eto chestnee: grunt v perehodnom kvadrate vse
+;;;         ravno vozyat odin raz. Razdelnye summy ostalis v vedomosti.
+;;;
+;;;      3. NASTROYKI SBRASYVAYUTSYA PRI SMENE VERSII. Oni zhivut do
+;;;         zakrytiya chertezha i perezhivayut obnovlenie - poetomu pravka
+;;;         UMOLCHANIY sama po sebe do polzovatelya ne doezzhaet. U
+;;;         Shamilya posle obnovleniya na v49 v otchete stoyalo
+;;;         "plyus = VYEMKA", hotya umolchanie smenili eshche v v48.
 ;;;
 ;;; v49: KGQ - RAZOBRAT ODIN KVADRAT.
 ;;;      Otmetki posle v48 SOSHLIS s obrazcom polnostyu: tot zhe kvadrat
@@ -829,7 +853,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v49")
+(setq *gc-kg-ver* "v50")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -901,7 +925,10 @@
     ;; сверяют метод, а уже потом ищут ошибку в числах.
     (cons "vmethod"  0)
     (cons "h-tab"    "0.5")       ; высота текста ведомости, м
-    (cons "p-tab"    2)))         ; знаков после запятой в ведомости
+    (cons "p-tab"    2)          ; знаков после запятой в ведомости
+    ;; Версия, при которой набор настроек был создан. Нужна, чтобы
+    ;; смена умолчаний доезжала до открытого чертежа.
+    (cons "ver"      "")))
 
 ;; Точность в выпадающем списке. Индекс списка = число знаков.
 (setq *gc-kg-prec* '("0" "0,0" "0,00" "0,000"))
@@ -1511,6 +1538,7 @@
 (defun gc-kg-read-tiles ( / )
   (foreach k '("step_x" "step_y" "angle")
     (gc-kg-set (gc-kg-key k) (get_tile k)))
+  (gc-kg-set "ver"     *gc-kg-ver*)
   (gc-kg-set "trim"    (get_tile "trim"))
   (if *gc-kg-surf-list*
     (progn
@@ -2613,8 +2641,8 @@
                     (if (= wsg "1")
                       "плюс = ВЫЕМКА (существующая минус проектная)"
                       "плюс = насыпь (проектная минус существующая)")))
-     (princ "\n  расположение     : слева рабочая, справа сверху существующая,")
-     (princ "\n                     справа снизу проектная")
+     (princ "\n  расположение     : слева рабочая, справа сверху ПРОЕКТ,")
+     (princ "\n                     справа снизу ЗЕМЛЯ (рабочая = верхнее минус нижнее)")
      ;; ПРОВЕРКА НА ПЕРЕПУТАННЫЕ ПОВЕРХНОСТИ. Выбрать их местами - ошибка
      ;; тихая: числа выглядят правдоподобно, знак у всей ведомости просто
      ;; зеркальный. Средние отметки её показывают: земля обычно выше
@@ -4549,26 +4577,24 @@
      (c:kgt)
      T)))
 
-;; Подписать объёмы одной ячейки. Возвращает T, если хоть что-то встало.
+;; Подписать объём ячейки. Возвращает T, если подпись встала.
 ;;
-;; Переходный квадрат получает ДВЕ подписи: выемку и насыпь. Одно число
-;; на такой квадрат было бы неправдой - там и срезают, и досыпают.
-(defun gc-kg-vol-label (p cut fill h prec sep lay stl mn use-mn / any dy)
-  (setq any nil)
-  (setq dy (if (and (> cut 1.0e-9) (> fill 1.0e-9)) (* 0.7 h) 0.0))
-  (if (and (> cut 1.0e-9) (or (null use-mn) (>= cut mn)))
+;; ОДНО ЧИСЛО НА КВАДРАТ - алгебраический объём, насыпь минус выемка.
+;; Так в образце, и так честнее: в переходном квадрате грунт всё равно
+;; возят один раз, и в ведомость идёт итог. Две подписи (я делал так
+;; в v44-v49) загромождали чертёж и заставляли складывать глазами.
+;;
+;; Раздельные суммы никуда не делись - они в ведомости, где им и место.
+(defun gc-kg-vol-label (p cut fill h prec sep lay stl mn use-mn / v)
+  (setq v (- fill cut))                 ; насыпь минус выемка
+  (if (or (< (abs v) 1.0e-9)
+          (and use-mn (< (abs v) mn)))
+    nil
     (progn
-      (gc-kg-text (list (car p) (+ (cadr p) dy))
-                  (gc-kg-vol-str cut T prec sep)
-                  h (gc-kg-get "c-minus") lay stl 1)
-      (setq any T)))
-  (if (and (> fill 1.0e-9) (or (null use-mn) (>= fill mn)))
-    (progn
-      (gc-kg-text (list (car p) (- (cadr p) dy))
-                  (gc-kg-vol-str fill nil prec sep)
-                  h (gc-kg-get "c-plus") lay stl 1)
-      (setq any T)))
-  any)
+      (gc-kg-text p (gc-kg-vol-str (abs v) (< v 0.0) prec sep)
+                  h (if (< v 0.0) (gc-kg-get "c-minus") (gc-kg-get "c-plus"))
+                  lay stl 1)
+      T)))
 
 ;; Объём строкой со знаком. cut = T, если это выемка.
 ;;
@@ -5918,8 +5944,29 @@
 ;;; ЯДРО КОМАНДЫ
 ;;; ====================================================================
 
-(defun gc-kg-defaults ( / )
-  (if (null *gc-kg-cfg*) (setq *gc-kg-cfg* *gc-kg-def*)))
+(defun gc-kg-defaults ( / v)
+  (cond
+    ((null *gc-kg-cfg*)
+     (setq *gc-kg-cfg* *gc-kg-def*)
+     (gc-kg-set "ver" *gc-kg-ver*))
+    ;; Настройки живут до закрытия чертежа и переживают обновление
+    ;; команды. Значит правка УМОЛЧАНИЙ сама по себе до пользователя
+    ;; не доедет: он обновится, а в памяти останется прежнее значение.
+    ;; Именно так вышло с конвенцией знака - в отчёте стояло «плюс =
+    ;; ВЫЕМКА» через две версии после того, как умолчание сменили.
+    ;; Поэтому версия хранится ВМЕСТЕ с настройками и сверяется.
+    ;; = вместо /=: у /= в AutoLISP числовое происхождение, и на строках
+    ;; полагаться на него не стоит.
+    ((not (= (gc-kg-get "ver") *gc-kg-ver*))
+     (setq v (gc-kg-get "ver"))
+     (setq *gc-kg-cfg* *gc-kg-def*)
+     ;; Версию записываем СРАЗУ, иначе сброс повторится при каждом
+     ;; вызове, а сообщение будет сыпаться на каждом шаге команды.
+     (gc-kg-set "ver" *gc-kg-ver*)
+     (princ (strcat "\n[i] Команда обновилась ("
+                    (if (and v (not (= v ""))) v "прежняя версия")
+                    " -> " *gc-kg-ver* ") - настройки сброшены"))
+     (princ "\n    к новым умолчаниям. Проверьте их в окне перед расчётом."))))
 
 (defun gc-kg-intro ( / )
   (princ "\n\n=== KG — картограмма земляных масс ===")
@@ -5934,7 +5981,8 @@
   (princ "\n    отметка есть только там, где отметку дают обе поверхности.")
   (princ "\n    Границы, добавленные в саму поверхность, тоже учтутся.")
   (princ "\n    После сетки — «Отметки»: в каждом узле три числа,")
-  (princ "\n    красная сверху, чёрная снизу, рабочая справа цветом по знаку.")
+  (princ "\n    красная (проект) сверху, чёрная (земля) снизу,")
+  (princ "\n    рабочая слева цветом по знаку.")
   (princ "\n    Объёмы и ведомость — этапы 4–5."))
 
 (defun gc-kg-run ( / )
