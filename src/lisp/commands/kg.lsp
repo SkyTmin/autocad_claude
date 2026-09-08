@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v62")
+(setq *gc-kg-ver* "v63")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -6514,7 +6514,7 @@
 ;;; методами сразу - чтобы не гадать, каким считал чужой инструмент.
 ;;; --------------------------------------------------------------------
 (defun c:kgq ( / p w cells par base ang sx sy c found pts hs i n
-               m old r prec sep env nm q mp nl)
+               m old r prec sep env nm q mp nl og bn)
   (princ "\n\n=== KGQ - разобрать один квадрат ===")
   (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
   (cond
@@ -6561,11 +6561,20 @@
              ;; чужие числа - в инструменте сверки это худшее из возможного
              ;; (docs/pitfalls.md -> П70).
              (setq *gc-kg-hw-cache* nil)
+             ;; Подписи нужны ДО таблицы вершин: по каждой вершине печатаем,
+             ;; подписана она или нет и ПОЧЕМУ. Вся оставшаяся разница с
+             ;; образцом - в отборе точек, и решается она сравнением этой
+             ;; таблицы с тем, где у него стоят подписи.
+             (gc-kg-marks-collect)
              (setq hs nil i 0 n (length pts))
              (while (< i n)
                (setq w (gc-kg-to-wcs (nth i pts)))
                (setq r (gc-kg-hw-at w))
                (setq hs (cons r hs))
+               (setq og (gc-kg-on-grid (nth i pts) sx sy *gc-kg-col-tol*))
+               (setq bn (gc-kg-bend (nth (rem (+ i (1- n)) n) pts)
+                                    (nth i pts)
+                                    (nth (rem (1+ i) n) pts)))
                (princ (strcat "\n   " (itoa (1+ i)) ") "
                               (rtos (car w) 2 3) "  " (rtos (cadr w) 2 3)
                               "   земля "
@@ -6578,12 +6587,18 @@
                                 "нет")
                               "   рабочая "
                               (if r (rtos r 2 3) "нет")))
+               (princ (strcat "\n      подпись "
+                              (if (gc-kg-marked-p w) "ЕСТЬ" "нет ")
+                              " | на линии сетки: "
+                              (if (gc-kg-node-p w) "УЗЕЛ" (if og "да " "нет "))
+                              " | излом " (rtos bn 2 1) " град"
+                              (if (and (not og) (>= bn *gc-kg-bend-min*))
+                                (strcat "  (>= " (rtos *gc-kg-bend-min* 2 0) ")") "")))
                (setq i (1+ i)))
              (setq hs (reverse hs))
              (if (member nil hs)
                (princ "\n\n  [!] В части вершин отметки нет - объём не считается.")
                (progn
-                 (gc-kg-marks-collect)
                  (setq nm 0 mp nil)
                  (setq i 0)
                  (while (< i (length pts))
