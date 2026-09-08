@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v80")
+(setq *gc-kg-ver* "v81")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -7070,6 +7070,38 @@
 ;; Число из чужой подписи объёма.
 (defun gc-kg-txt-num (s) (gc-kg-str-num s))
 
+;; Число из чужого БЛОКА: складываем все числовые атрибуты со знаком.
+;;
+;; У него подпись объёма - блок, а не текст, и значение лежит в атрибуте.
+;; Атрибутов может быть два - выемка и насыпь на переходном квадрате, -
+;; поэтому именно складываем: наша сторона тоже сравнивается суммой.
+(defun gc-kg-blk-num (e / d v sum q)
+  (setq sum nil q (entnext e))
+  (while (and q (setq d (entget q)) (= "ATTRIB" (cdr (assoc 0 d))))
+    (setq v (gc-kg-str-num (cdr (assoc 1 d))))
+    (if v (setq sum (if sum (+ sum v) v)))
+    (setq q (entnext q)))
+  sum)
+
+;; Выбрать чужие подписи объёма: указать ОДНУ, остальные берутся по её слою.
+;;
+;; ЗАЧЕМ ТАК, А НЕ РАМКОЙ. Рамкой вместе с объёмами попадают его же
+;; подписи ОТМЕТОК - они тоже блоки, и их числа ушли бы в сверку как
+;; объёмы. А слой у объёмов свой («ПЗМ_15_Объём» против «ПЗМ_15_Отметки»),
+;; и по нему они отбираются точно. Заодно не надо ничего выцеливать.
+(defun gc-kg-his-pick ( / e lay ss n)
+  (princ "\n[i] Укажите ОДНУ чужую подпись объёма - остальные найду по её слою.")
+  (setq e (car (entsel "\nПодпись объёма: ")))
+  (if (null e)
+    (progn (princ "\n[!] Не указано.") nil)
+    (progn
+      (setq lay (cdr (assoc 8 (entget e))))
+      (princ (strcat "\n  слой чужих объёмов: " lay))
+      (setq ss (ssget "_X" (list (cons 8 lay))))
+      (setq n (if ss (sslength ss) 0))
+      (princ (strcat "\n  на нём объектов   : " (itoa n)))
+      (if (= n 0) nil ss))))
+
 ;; Чужие подписи объёмов -> список (ключ-квадрата . сумма чисел).
 ;;
 ;; Складываем СО ЗНАКОМ: переходный квадрат несёт две подписи, выемку
@@ -7087,8 +7119,10 @@
     (if (gc-kg-ours-p e)
       (setq skip (1+ skip))
       (progn
-        (setq p (gc-kg-txt-pt e))
-        (setq v (gc-kg-txt-num (cdr (assoc 1 (entget e)))))
+        ;; Блок - точка вставки и атрибуты; текст - своя точка и своя строка.
+        (if (= "INSERT" (cdr (assoc 0 (entget e))))
+          (setq p (cdr (assoc 10 (entget e))) v (gc-kg-blk-num e))
+          (setq p (gc-kg-txt-pt e) v (gc-kg-txt-num (cdr (assoc 1 (entget e))))))
         (setq c (if p (gc-kg-cell-near p nil) nil))
         (cond
           ((null v) (setq *gc-kg-his-num* (1+ *gc-kg-his-num*)))
@@ -7124,8 +7158,7 @@
   (if (null *gc-kg-vols*)
     (princ "\n[!] Объёмы не посчитаны - сначала KG -> «оБъёмы».")
     (progn
-      (princ "\n[i] Выберите ЧУЖИЕ подписи объёмов - тексты в середине квадратов.")
-      (setq ss (ssget (list '(0 . "TEXT,MTEXT"))))
+      (setq ss (gc-kg-his-pick))
       (if (null ss)
         (princ "\n[!] Ничего не выбрано.")
         (progn
@@ -7372,8 +7405,7 @@
      (setq acc nil)
      (if (= ans "Да")
        (progn
-         (princ "\n[i] Выберите ЧУЖИЕ подписи объёмов - тексты в середине квадратов.")
-         (setq ss (ssget (list '(0 . "TEXT,MTEXT"))))
+         (setq ss (gc-kg-his-pick))
          (if ss (setq acc (gc-kg-his-acc ss sx sy))
                 (princ "\n[i] Не выбрано - пишу только наш разбор."))))
      (setq path (gc-kg-x-file))
