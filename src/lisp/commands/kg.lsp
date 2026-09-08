@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v72")
+(setq *gc-kg-ver* "v73")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -2241,7 +2241,7 @@
 ;; Прежнее обоснование (30 град по устойчивости числа подписей к густоте
 ;; границы) осталось верным как способ проверки, но задавать порог должен
 ;; образец: с ним сверяют ведомость.
-(setq *gc-kg-bend-min* 15.0)
+(setq *gc-kg-bend-min* 18.0)
 
 ;; Отклонение вершины от хорды, начиная с которого она считается
 ;; РАСЧЁТНЫМ УЗЛОМ. В метрах.
@@ -2348,14 +2348,14 @@
                   ;; сразу большой - контур в нём поворачивает вдоль стороны
                   ;; квадрата, - а касание не даёт (П74).
                   (setq og (gc-kg-grid-node-p q sx sy *gc-kg-col-tol*))
-                  ;; Не угол, а ОТКЛОНЕНИЕ от хорды между соседями:
-                  ;; так отличает расчётные узлы образец (П77).
+                  ;; Излом, порог 18 градусов - снят с образца сверкой
+                  ;; наборов узлов (П77, П78).
                   (setq bn (if og
                              nil
-                             (>= (gc-kg-dev (nth (rem (+ k (1- nn)) nn) lp)
-                                            q
-                                            (nth (rem (1+ k) nn) lp))
-                                 *gc-kg-dev-min*)))
+                             (>= (gc-kg-bend (nth (rem (+ k (1- nn)) nn) lp)
+                                             q
+                                             (nth (rem (1+ k) nn) lp))
+                                 *gc-kg-bend-min*)))
                   (if bn (setq *gc-kg-label-bend* (1+ *gc-kg-label-bend*)))
                   (if (or og bn) (setq p (cons q p)))))
               (setq k (1+ k)))
@@ -2872,7 +2872,7 @@
                     (if (= sep "1") "точка" "запятая")))
      (if (> *gc-kg-label-bend* 0)
        (princ (strcat "\n  изломов края     : " (itoa *gc-kg-label-bend*)
-                      "  (отклонение от " (gc-kg-fmt *gc-kg-dev-min*) " м)")))
+                      "  (от " (gc-kg-fmt *gc-kg-bend-min*) " град)")))
      (if (> *gc-kg-label-island* 0)
        (princ (strcat "\n  кусков внутри кв.: " (itoa *gc-kg-label-island*)
                       "  (не касаются сетки, подписаны все их вершины)")))
@@ -6837,8 +6837,8 @@
                               ;; Признак, по которому вершина взята в расчёт:
                               ;; узел сетки либо отклонение не меньше порога.
                               (if (and (not (gc-kg-node-p w))
-                                       (>= dv *gc-kg-dev-min*))
-                                (strcat "  (>= " (rtos *gc-kg-dev-min* 2 2)
+                                       (>= bn *gc-kg-bend-min*))
+                                (strcat "  (>= " (rtos *gc-kg-bend-min* 2 1)
                                         " - расчётная)") "")))
                (setq i (1+ i)))
              (setq hs (reverse hs))
@@ -6966,6 +6966,33 @@
       (and nm (= "INSERT" (cdr (assoc 0 d)))
            (wcmatch nm *gc-kg-blk-mask*))))
 
+;; Признаки вершины контура: (излом отклонение узел-ли). nil, если такой
+;; вершины в контурах нет.
+;;
+;; ЗАЧЕМ. Сверка наборов узлов (KGC) говорит, ЧТО разошлось, но не ПОЧЕМУ.
+;; А ответ на «почему» - это и есть правило отбора, ради которого сверка
+;; и делается: по одному числу видно, каким порогом вершина взята и каким
+;; её взял бы образец.
+(defun gc-kg-why-node (p / c lp n k q best par)
+  (setq best nil par *gc-kg-grid-par*)
+  (foreach c *gc-kg-cells*
+    (foreach lp (append (list (nth 3 c) (nth 4 c)) (nth 5 c) (nth 6 c))
+      (if (and (null best) (listp lp) (listp (car lp)))
+        (progn
+          (setq n (length lp) k 0)
+          (while (and (< k n) (null best))
+            (setq q (nth k lp))
+            (if (< (distance p (gc-kg-to-wcs q)) 1.0e-3)
+              (setq best
+                (list (gc-kg-bend (nth (rem (+ k (1- n)) n) lp) q
+                                  (nth (rem (1+ k) n) lp))
+                      (gc-kg-dev  (nth (rem (+ k (1- n)) n) lp) q
+                                  (nth (rem (1+ k) n) lp))
+                      (gc-kg-grid-node-p q (caddr par) (cadddr par)
+                                         *gc-kg-col-tol*))))
+            (setq k (1+ k)))))))
+  best)
+
 ;; Есть ли в списке точка, совпадающая с p с допуском tol.
 (defun gc-kg-near-tol (p lst tol / l out)
   (setq l lst out nil)
@@ -6973,6 +7000,15 @@
     (if (< (distance p (car l)) tol) (setq out T))
     (setq l (cdr l)))
   out)
+
+;; Признаки вершины строкой - для отчёта сверки.
+(defun gc-kg-why-str (p / w)
+  (setq w (gc-kg-why-node p))
+  (if (null w)
+    "   (вершины контура не нашлось)"
+    (strcat "   излом " (rtos (car w) 2 1)
+            "  откл " (rtos (cadr w) 2 3)
+            (if (caddr w) "  УЗЕЛ СЕТКИ" ""))))
 
 (defun c:kgc ( / mode par base ang sx sy ss n i e pts a c tot mine
                d worst nb nm his lst q cnt miss extra tol skip half typ)
@@ -7085,7 +7121,8 @@
               (foreach q miss
                 (if (< i 20)
                   (progn (princ (strcat "\n      " (rtos (car q) 2 3) "  "
-                                        (rtos (cadr q) 2 3)))
+                                        (rtos (cadr q) 2 3)
+                                        (gc-kg-why-str q)))
                          (setq i (1+ i)))))
               (if (> nb 20) (princ (strcat "\n      ... и ещё " (itoa (- nb 20)))))
               (princ (strcat "\n  есть у нас, нет у него : " (itoa nm)))
@@ -7093,7 +7130,8 @@
               (foreach q extra
                 (if (< i 20)
                   (progn (princ (strcat "\n      " (rtos (car q) 2 3) "  "
-                                        (rtos (cadr q) 2 3)))
+                                        (rtos (cadr q) 2 3)
+                                        (gc-kg-why-str q)))
                          (setq i (1+ i)))))
               (if (> nm 20) (princ (strcat "\n      ... и ещё " (itoa (- nm 20)))))
               (if (and (= nb 0) (= nm 0))
