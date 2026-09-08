@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v69")
+(setq *gc-kg-ver* "v70")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -6886,6 +6886,164 @@
 (defun c:лпй ( / ) (c:kgq))
 
 ;;; --------------------------------------------------------------------
+;;; KGC - СВЕРКА С ЧУЖИМ РАСЧЁТОМ
+;;;
+;;; ЗАЧЕМ. Догадываться о чужом правиле по скриншотам дорого: каждая
+;;; догадка стоит версии и прогона. А чужая сетка и чужие подписи лежат
+;;; на том же чертеже - их можно измерить и сравнить с нашими напрямую,
+;;; по всем узлам сразу, а не по четырём, что попали в кадр.
+;;;
+;;; Два режима:
+;;;   Сетка   - выбрать чужие квадраты (замкнутые полилинии). Считаем
+;;;             площадь каждого и сверяем с нашим квадратом в том же месте.
+;;;   Отметки - выбрать то, что стоит в чужих узлах (блоки подписей либо
+;;;             точки). Сверяем МНОЖЕСТВА узлов: чьи есть у него и нет
+;;;             у нас, и наоборот.
+;;; --------------------------------------------------------------------
+
+;; Вершины объекта по группам 10. Для замкнутой полилинии этого хватает:
+;; в картограмме дуг не бывает.
+(defun gc-kg-ent-pts (e / d out)
+  (setq out nil)
+  (foreach g (entget e)
+    (if (= 10 (car g)) (setq out (cons (list (cadr g) (caddr g)) out))))
+  (reverse out))
+
+;; Наш квадрат по точке: (i j площадь) либо nil.
+(defun gc-kg-cell-by-pt (p sx sy / g i j out)
+  (setq g (gc-kg-to-grid p))
+  (setq i (gc-kg-ifloor (/ (car g) sx)) j (gc-kg-ifloor (/ (cadr g) sy)))
+  (setq out nil)
+  (foreach c *gc-kg-cells*
+    (if (and (null out) (= (car c) i) (= (cadr c) j))
+      (setq out (list i j (nth 2 c)))))
+  out)
+
+;; Есть ли в списке точка, совпадающая с p с допуском tol.
+(defun gc-kg-near-tol (p lst tol / l out)
+  (setq l lst out nil)
+  (while (and l (null out))
+    (if (< (distance p (car l)) tol) (setq out T))
+    (setq l (cdr l)))
+  out)
+
+(defun c:kgc ( / mode par base ang sx sy ss n i e pts a c our tot mine
+               d worst nb nm his lst q cnt miss extra tol)
+  (princ "\n\n=== KGC - сверка с чужим расчётом ===")
+  (setq par *gc-kg-grid-par*)
+  (if (or (null *gc-kg-cells*) (null par))
+    (princ "\n[!] Сетки нет - сначала постройте её (KG -> «Сетка»).")
+    (progn
+      (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
+      (gc-kg-set-frame base ang)
+      (initget "Сетка Отметки")
+      (setq mode (getkword "\nЧто сверяем? [Сетка/Отметки] <Сетка>: "))
+      (if (null mode) (setq mode "Сетка"))
+      (if (= mode "Сетка")
+        ;; --- СЕТКА -----------------------------------------------------
+        (progn
+          (princ "\n[i] Выберите ЧУЖИЕ квадраты - замкнутые полилинии.")
+          (setq ss (ssget (list '(0 . "LWPOLYLINE,POLYLINE"))))
+          (if (null ss)
+            (princ "\n[!] Ничего не выбрано.")
+            (progn
+              (setq n (sslength ss) i 0 tot 0.0 mine 0.0 cnt 0 miss 0
+                    worst nil)
+              (while (< i n)
+                (setq e (ssname ss i))
+                (setq pts (gc-kg-ent-pts e))
+                (if (> (length pts) 2)
+                  (progn
+                    (setq a (gc-kg-area pts))
+                    (setq tot (+ tot a))
+                    (setq c (gc-kg-cell-by-pt (gc-kg-centroid pts) sx sy))
+                    (if (null c)
+                      (setq miss (1+ miss))
+                      (progn
+                        (setq cnt (1+ cnt))
+                        (setq mine (+ mine (caddr c)))
+                        (setq d (- a (caddr c)))
+                        (if (> (abs d) 0.001)
+                          (setq worst (cons (list (car c) (cadr c) a (caddr c) d)
+                                            worst)))))))
+                (setq i (1+ i)))
+              (princ (strcat "\n  выбрано контуров  : " (itoa n)))
+              (princ (strcat "\n  легло на наши     : " (itoa cnt)))
+              (if (> miss 0)
+                (princ (strcat "\n  [!] не нашли квадрат: " (itoa miss)
+                               "  (центр вне нашей сетки)")))
+              (princ (strcat "\n  ЕГО площадь       : " (rtos tot 2 3) " м2"))
+              (princ (strcat "\n  НАША по тем же    : " (rtos mine 2 3) " м2"))
+              (princ (strcat "\n  разница           : " (rtos (- tot mine) 2 3) " м2"))
+              (if (null worst)
+                (princ "\n  [i] Все квадраты совпали до миллиметра.")
+                (progn
+                  (princ (strcat "\n  расходятся квадраты: " (itoa (length worst))))
+                  (setq i 0)
+                  (foreach q worst
+                    (if (< i 12)
+                      (progn
+                        (princ (strcat "\n      i=" (itoa (car q)) " j=" (itoa (cadr q))
+                                       "  его " (rtos (caddr q) 2 4)
+                                       "  наш " (rtos (cadddr q) 2 4)
+                                       "  разница " (rtos (nth 4 q) 2 4)))
+                        (setq i (1+ i)))))
+                  (if (> (length worst) 12)
+                    (princ (strcat "\n      ... и ещё " (itoa (- (length worst) 12))))))))))
+        ;; --- ОТМЕТКИ ---------------------------------------------------
+        (progn
+          (princ "\n[i] Выберите то, что стоит в ЧУЖИХ узлах: блоки подписей")
+          (princ "\n    либо точки. Берётся точка вставки объекта.")
+          (setq ss (ssget))
+          (if (null ss)
+            (princ "\n[!] Ничего не выбрано.")
+            (progn
+              (setq tol 0.05)
+              (setq n (sslength ss) i 0 his nil)
+              (while (< i n)
+                (setq e (ssname ss i))
+                (setq q (cdr (assoc 10 (entget e))))
+                (if q (setq his (cons (list (car q) (cadr q)) his)))
+                (setq i (1+ i)))
+              (gc-kg-marks-collect)
+              (setq lst nil)
+              (foreach q *gc-kg-marks-pts* (setq lst (cons (car q) lst)))
+              (setq nb 0 nm 0 extra nil miss nil)
+              ;; его узлы, которых нет у нас
+              (foreach q his
+                (if (not (gc-kg-near-tol q lst tol))
+                  (setq nb (1+ nb) miss (cons q miss))))
+              ;; наши узлы, которых нет у него
+              (foreach q lst
+                (if (not (gc-kg-near-tol q his tol))
+                  (setq nm (1+ nm) extra (cons q extra))))
+              (princ (strcat "\n  ЕГО узлов выбрано : " (itoa (length his))))
+              (princ (strcat "\n  НАШИХ подписей    : " (itoa (length lst))))
+              (princ (strcat "\n  допуск совпадения : " (rtos tol 2 3) " м"))
+              (princ (strcat "\n  есть у него, нет у нас : " (itoa nb)))
+              (setq i 0)
+              (foreach q miss
+                (if (< i 15)
+                  (progn (princ (strcat "\n      " (rtos (car q) 2 3) "  "
+                                        (rtos (cadr q) 2 3)))
+                         (setq i (1+ i)))))
+              (if (> nb 15) (princ (strcat "\n      ... и ещё " (itoa (- nb 15)))))
+              (princ (strcat "\n  есть у нас, нет у него : " (itoa nm)))
+              (setq i 0)
+              (foreach q extra
+                (if (< i 15)
+                  (progn (princ (strcat "\n      " (rtos (car q) 2 3) "  "
+                                        (rtos (cadr q) 2 3)))
+                         (setq i (1+ i)))))
+              (if (> nm 15) (princ (strcat "\n      ... и ещё " (itoa (- nm 15)))))
+              (if (and (= nb 0) (= nm 0))
+                (princ "\n  [i] Наборы узлов совпали полностью."))))))))
+  (princ))
+
+;; K -> Л, C -> С
+(defun c:лпс ( / ) (c:kgc))
+
+;;; --------------------------------------------------------------------
 ;;; ЧТО НА ЧЕРТЕЖЕ - диагностика одной командой
 ;;;
 ;;; «Не работает» без подробностей - не сообщение (П24). Эта команда
@@ -7062,5 +7220,6 @@
                " загружен. Команды: KG | KGB границы | KGI что на чертеже"))
 (princ "\n     Правка подписей: KGO обновить | KGA добавить | KGP прорядить")
 (princ "\n                      KGZ обнулить | KGD удалить все")
+(princ "\n     Сверка: KGQ разобрать квадрат | KGC сверить с чужим расчётом")
 (princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
 (princ)
