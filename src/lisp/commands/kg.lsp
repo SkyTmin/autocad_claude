@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v83")
+(setq *gc-kg-ver* "v84")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -7070,16 +7070,45 @@
 ;; Число из чужой подписи объёма.
 (defun gc-kg-txt-num (s) (gc-kg-str-num s))
 
-;; Число из чужого БЛОКА: складываем все числовые атрибуты со знаком.
+;; Значение атрибута КАК ОНО ВИДНО НА ЧЕРТЕЖЕ.
 ;;
-;; У него подпись объёма - блок, а не текст, и значение лежит в атрибуте.
-;; Атрибутов может быть два - выемка и насыпь на переходном квадрате, -
-;; поэтому именно складываем: наша сторона тоже сравнивается суммой.
-(defun gc-kg-blk-num (e / d v sum q)
-  (setq sum nil q (entnext e))
+;; У МНОГОСТРОЧНОГО атрибута обычная группа 1 хранит запасное значение,
+;; а настоящий текст лежит ПОСЛЕ метки (101 . "Embedded Object") - там
+;; своя группа 1. На сверке это стоило четырёх прогонов: атрибут Volume
+;; отдавал «0.0», хотя на чертеже стояло «+40.80» (docs/pitfalls.md -> П82).
+(defun gc-kg-attr-text (e / d emb out g)
+  (setq d (entget e) emb nil out nil)
+  (foreach g d
+    (cond
+      ((and (= 101 (car g)) (= "Embedded Object" (cdr g))) (setq emb T))
+      ((and (= 1 (car g)) emb (null out)) (setq out (cdr g)))))
+  (if (null out) (setq out (cdr (assoc 1 d))))
+  out)
+
+;; Похожа ли метка атрибута на объём.
+(defun gc-kg-tag-vol-p (tag)
+  (or (wcmatch tag "*VOL*") (wcmatch tag "*ОБ*")))
+
+;; Число из чужого БЛОКА.
+;;
+;; ПОЧЕМУ НЕ ВСЕ АТРИБУТЫ ПОДРЯД. У его блока их два - Volume и Area.
+;; Площадь в объём складывать нельзя, выйдет бессмыслица. На его чертеже
+;; Area пуста, и ошибка не проявилась бы - проявилась бы у следующего.
+;; Поэтому: есть метка про объём - берём только её; нет - все числовые.
+(defun gc-kg-blk-num (e / d q tag txt v sum any)
+  (setq sum nil any nil q (entnext e))
   (while (and q (setq d (entget q)) (= "ATTRIB" (cdr (assoc 0 d))))
-    (setq v (gc-kg-str-num (cdr (assoc 1 d))))
-    (if v (setq sum (if sum (+ sum v) v)))
+    (if (gc-kg-tag-vol-p (strcase (if (assoc 2 d) (cdr (assoc 2 d)) "")))
+      (setq any T))
+    (setq q (entnext q)))
+  (setq q (entnext e))
+  (while (and q (setq d (entget q)) (= "ATTRIB" (cdr (assoc 0 d))))
+    (setq tag (strcase (if (assoc 2 d) (cdr (assoc 2 d)) "")))
+    (if (or (null any) (gc-kg-tag-vol-p tag))
+      (progn
+        (setq txt (gc-kg-attr-text q))
+        (setq v (if txt (gc-kg-str-num txt) nil))
+        (if v (setq sum (if sum (+ sum v) v)))))
     (setq q (entnext q)))
   sum)
 
@@ -7116,7 +7145,7 @@
 ;; ЗАЧЕМ. Разбор чужого блока дал нули по всем 56 квадратам, и почему -
 ;; из наших чисел не видно. Гадать о содержимом чужого объекта нельзя
 ;; (CLAUDE.md, R5): пусть покажет сам, одной строкой в отчёте.
-(defun gc-kg-his-peek (e / d typ nm q a out cnt)
+(defun gc-kg-his-peek (e / d typ nm q a out cnt tx)
   (setq d (entget e) typ (cdr (assoc 0 d)) out "")
   (if (= typ "INSERT")
     (progn
@@ -7126,8 +7155,12 @@
                         " атрибуты:"))
       (setq q (entnext e) cnt 0)
       (while (and q (setq a (entget q)) (= "ATTRIB" (cdr (assoc 0 a))))
+        ;; Печатаем ВИДИМОЕ значение, а рядом запасное из группы 1:
+        ;; у многострочного атрибута они разные, и путать их дорого.
+        (setq tx (gc-kg-attr-text q))
         (setq out (strcat out " [" (if (assoc 2 a) (cdr (assoc 2 a)) "?")
-                          "=«" (if (assoc 1 a) (cdr (assoc 1 a)) "") "»]"))
+                          "=«" (if tx tx "") "»"
+                          " запас=«" (if (assoc 1 a) (cdr (assoc 1 a)) "") "»]"))
         (setq cnt (1+ cnt))
         (setq q (entnext q)))
       (if (= cnt 0) (setq out (strcat out " НЕТ НИ ОДНОГО"))))
