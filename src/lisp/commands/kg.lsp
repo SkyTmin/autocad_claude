@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v76")
+(setq *gc-kg-ver* "v77")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -7034,6 +7034,89 @@
     (setq l (cdr l)))
   out)
 
+;; Точка объекта-подписи: у текста с выравниванием настоящее место
+;; лежит в группе 11, а не 10.
+(defun gc-kg-txt-pt (e / d p q)
+  (setq d (entget e))
+  (setq p (cdr (assoc 10 d)) q (cdr (assoc 11 d)))
+  (if (and q (or (> (abs (car q)) 1.0e-6) (> (abs (cadr q)) 1.0e-6))) q p))
+
+;; Число из чужой подписи объёма. Знак плюс/минус, запятая или точка.
+(defun gc-kg-txt-num (s / v)
+  (setq v (gc-kg-num s))
+  (if (and v (vl-string-search "-" s) (> v 0.0)) (- v) v))
+
+;; СВЕРКА ОБЪЁМОВ ПО КВАДРАТАМ.
+;;
+;; ЗАЧЕМ. Итог ведомости сошёлся до сотых долей процента, а один столбец
+;; из восьми расходится. Искать этот квадрат глазами по чертежу - долго
+;; и ненадёжно; его числа лежат на чертеже подписями, и их можно прочитать
+;; и сопоставить с нашими по месту. Один прогон вместо перебора версий.
+;;
+;; Подписей на квадрате может быть две (переходный: выемка и насыпь),
+;; поэтому складываем ВСЕ его числа в этом квадрате СО ЗНАКОМ и сравниваем
+;; с нашей суммой «насыпь минус выемка».
+(defun gc-kg-cmp-vols (sx sy / ss n i e p v c key acc our q d worst tot mine cnt skip)
+  (if (null *gc-kg-vols*)
+    (princ "\n[!] Объёмы не посчитаны - сначала KG -> «оБъёмы».")
+    (progn
+      (princ "\n[i] Выберите ЧУЖИЕ подписи объёмов - тексты в середине квадратов.")
+      (setq ss (ssget (list '(0 . "TEXT,MTEXT"))))
+      (if (null ss)
+        (princ "\n[!] Ничего не выбрано.")
+        (progn
+          (setq n (sslength ss) i 0 acc nil skip 0)
+          (while (< i n)
+            (setq e (ssname ss i))
+            (if (gc-kg-ours-p e)
+              (setq skip (1+ skip))
+              (progn
+                (setq p (gc-kg-txt-pt e))
+                (setq v (gc-kg-txt-num (cdr (assoc 1 (entget e)))))
+                (setq c (if p (gc-kg-cell-near p nil) nil))
+                (if (and v c p (< (distance p (nth 3 c)) (* 0.5 (min sx sy))))
+                  (progn
+                    (setq key (strcat (itoa (car c)) "|" (itoa (cadr c))))
+                    (setq q (assoc key acc))
+                    (if q
+                      (setq acc (subst (cons key (+ (cdr q) v)) q acc))
+                      (setq acc (cons (cons key v) acc)))))))
+            (setq i (1+ i)))
+          ;; Сопоставляем с нашими: (i j выемка насыпь площадь центр)
+          (setq tot 0.0 mine 0.0 cnt 0 worst nil)
+          (foreach v *gc-kg-vols*
+            (setq key (strcat (itoa (car v)) "|" (itoa (cadr v))))
+            (setq our (- (nth 3 v) (nth 2 v)))
+            (setq q (assoc key acc))
+            (if q
+              (progn
+                (setq cnt (1+ cnt) tot (+ tot (cdr q)) mine (+ mine our))
+                (setq d (- (cdr q) our))
+                (if (> (abs d) 0.005)
+                  (setq worst (cons (list (car v) (cadr v) (cdr q) our d) worst))))))
+          (princ (strcat "\n  выбрано подписей  : " (itoa n)))
+          (princ (strcat "\n  наших отброшено   : " (itoa skip)))
+          (princ (strcat "\n  квадратов сошлось : " (itoa cnt) " из " (itoa (length *gc-kg-vols*))))
+          (princ (strcat "\n  ЕГО объём по ним  : " (rtos tot 2 3) " м3"))
+          (princ (strcat "\n  НАШ по тем же     : " (rtos mine 2 3) " м3"))
+          (princ (strcat "\n  разница           : " (rtos (- tot mine) 2 3) " м3"))
+          (if (null worst)
+            (princ "\n  [i] Все квадраты совпали.")
+            (progn
+              (princ (strcat "\n  расходятся квадраты: " (itoa (length worst))))
+              (setq i 0)
+              (foreach q worst
+                (if (< i 20)
+                  (progn
+                    (princ (strcat "\n      i=" (itoa (car q)) " j=" (itoa (cadr q))
+                                   "  его " (rtos (caddr q) 2 3)
+                                   "  наш " (rtos (cadddr q) 2 3)
+                                   "  разница " (rtos (nth 4 q) 2 3)))
+                    (setq i (1+ i)))))
+              (if (> (length worst) 20)
+                (princ (strcat "\n      ... и ещё " (itoa (- (length worst) 20)))))
+              (princ "\n      Разберите любой командой KGQ."))))))))
+
 ;; Признаки вершины строкой - для отчёта сверки.
 (defun gc-kg-why-str (p / w)
   (setq w (gc-kg-why-node p))
@@ -7062,9 +7145,11 @@
       (princ "\n    Шаг обязан совпадать с чужим, иначе сверять нечего.")
       (princ "\n[i] НАШИ объекты из выборки отбрасываются сами - можно")
       (princ "\n    обводить рамкой, не выцеливая чужое.")
-      (initget "Сетка Отметки")
-      (setq mode (getkword "\nЧто сверяем? [Сетка/Отметки] <Сетка>: "))
+      (initget "Сетка Отметки Объёмы")
+      (setq mode (getkword "\nЧто сверяем? [Сетка/Отметки/Объёмы] <Сетка>: "))
       (if (null mode) (setq mode "Сетка"))
+      (if (= mode "Объёмы")
+        (gc-kg-cmp-vols sx sy)
       (if (= mode "Сетка")
         ;; --- СЕТКА -----------------------------------------------------
         (progn
@@ -7187,7 +7272,7 @@
                          (setq i (1+ i)))))
               (if (> nm 20) (princ (strcat "\n      ... и ещё " (itoa (- nm 20)))))
               (if (and (= nb 0) (= nm 0))
-                (princ "\n  [i] Наборы узлов совпали полностью."))))))))
+                (princ "\n  [i] Наборы узлов совпали полностью.")))))))))
   (princ))
 
 ;; K -> Л, C -> С
