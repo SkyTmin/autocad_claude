@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v70")
+(setq *gc-kg-ver* "v71")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -6909,15 +6909,31 @@
     (if (= 10 (car g)) (setq out (cons (list (cadr g) (caddr g)) out))))
   (reverse out))
 
-;; Наш квадрат по точке: (i j площадь) либо nil.
-(defun gc-kg-cell-by-pt (p sx sy / g i j out)
-  (setq g (gc-kg-to-grid p))
-  (setq i (gc-kg-ifloor (/ (car g) sx)) j (gc-kg-ifloor (/ (cadr g) sy)))
-  (setq out nil)
+;; Наш квадрат, ЧЕЙ ЦЕНТР БЛИЖЕ ВСЕГО к точке: (i j площадь центр) либо nil.
+;;
+;; ПОЧЕМУ НЕ ПО НОМЕРУ КЛЕТКИ. Центр тяжести краевого куска лежит близко
+;; к краю, и деление координаты на шаг легко уводит на соседний номер -
+;; на первом прогоне так вышло у трети контуров. Ближайший центр от этого
+;; не зависит вовсе.
+(defun gc-kg-cell-near (p / best bd c q d)
+  (setq best nil bd nil)
   (foreach c *gc-kg-cells*
-    (if (and (null out) (= (car c) i) (= (cadr c) j))
-      (setq out (list i j (nth 2 c)))))
-  out)
+    (setq q (gc-kg-to-wcs (gc-kg-centroid (if (nth 4 c) (nth 4 c) (nth 3 c)))))
+    (setq d (distance p q))
+    (if (or (null bd) (< d bd))
+      (setq bd d best (list (car c) (cadr c) (nth 2 c) q))))
+  best)
+
+;; Наш ли это объект: слой картограммы либо блок подписи.
+(defun gc-kg-ours-p (e / d lay nm)
+  (setq d (entget e))
+  (setq lay (cdr (assoc 8 d)))
+  (setq nm (cdr (assoc 2 d)))
+  (or (and lay (wcmatch (strcase lay) "GC-*"))
+      (and nm (= "INSERT" (cdr (assoc 0 d)))
+           (wcmatch nm (strcase *gc-kg-blk-mask*)))
+      (and nm (= "INSERT" (cdr (assoc 0 d)))
+           (wcmatch nm *gc-kg-blk-mask*))))
 
 ;; Есть ли в списке точка, совпадающая с p с допуском tol.
 (defun gc-kg-near-tol (p lst tol / l out)
@@ -6927,8 +6943,8 @@
     (setq l (cdr l)))
   out)
 
-(defun c:kgc ( / mode par base ang sx sy ss n i e pts a c our tot mine
-               d worst nb nm his lst q cnt miss extra tol)
+(defun c:kgc ( / mode par base ang sx sy ss n i e pts a c tot mine
+               d worst nb nm his lst q cnt miss extra tol skip half typ)
   (princ "\n\n=== KGC - сверка с чужим расчётом ===")
   (setq par *gc-kg-grid-par*)
   (if (or (null *gc-kg-cells*) (null par))
@@ -6936,6 +6952,9 @@
     (progn
       (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
       (gc-kg-set-frame base ang)
+      (setq half (* 0.5 (min sx sy)))
+      (princ "\n[i] НАШИ объекты из выборки отбрасываются сами - можно")
+      (princ "\n    обводить рамкой, не выцеливая чужое.")
       (initget "Сетка Отметки")
       (setq mode (getkword "\nЧто сверяем? [Сетка/Отметки] <Сетка>: "))
       (if (null mode) (setq mode "Сетка"))
@@ -6948,30 +6967,38 @@
             (princ "\n[!] Ничего не выбрано.")
             (progn
               (setq n (sslength ss) i 0 tot 0.0 mine 0.0 cnt 0 miss 0
-                    worst nil)
+                    skip 0 worst nil)
               (while (< i n)
                 (setq e (ssname ss i))
-                (setq pts (gc-kg-ent-pts e))
-                (if (> (length pts) 2)
+                (if (gc-kg-ours-p e)
+                  (setq skip (1+ skip))
                   (progn
-                    (setq a (gc-kg-area pts))
-                    (setq tot (+ tot a))
-                    (setq c (gc-kg-cell-by-pt (gc-kg-centroid pts) sx sy))
-                    (if (null c)
-                      (setq miss (1+ miss))
+                    (setq pts (gc-kg-ent-pts e))
+                    (if (> (length pts) 2)
                       (progn
-                        (setq cnt (1+ cnt))
-                        (setq mine (+ mine (caddr c)))
-                        (setq d (- a (caddr c)))
-                        (if (> (abs d) 0.001)
-                          (setq worst (cons (list (car c) (cadr c) a (caddr c) d)
-                                            worst)))))))
+                        (setq a (gc-kg-area pts))
+                        (setq c (gc-kg-cell-near (gc-kg-centroid pts)))
+                        ;; Контур больше квадрата сетки - это не квадрат,
+                        ;; а обводка площадки: в сверку он не идёт.
+                        (cond
+                          ((> a (* 1.2 sx sy))
+                           (setq miss (1+ miss)))
+                          ((or (null c)
+                               (> (distance (gc-kg-centroid pts) (nth 3 c)) half))
+                           (setq miss (1+ miss)))
+                          (T
+                           (setq cnt (1+ cnt) tot (+ tot a) mine (+ mine (caddr c)))
+                           (setq d (- a (caddr c)))
+                           (if (> (abs d) 0.001)
+                             (setq worst (cons (list (car c) (cadr c) a (caddr c) d)
+                                               worst)))))))))
                 (setq i (1+ i)))
               (princ (strcat "\n  выбрано контуров  : " (itoa n)))
-              (princ (strcat "\n  легло на наши     : " (itoa cnt)))
+              (princ (strcat "\n  наших отброшено   : " (itoa skip)))
+              (princ (strcat "\n  чужих квадратов   : " (itoa cnt)))
               (if (> miss 0)
-                (princ (strcat "\n  [!] не нашли квадрат: " (itoa miss)
-                               "  (центр вне нашей сетки)")))
+                (princ (strcat "\n  не легло на сетку : " (itoa miss)
+                               "  (обводка площадки либо центр далеко)")))
               (princ (strcat "\n  ЕГО площадь       : " (rtos tot 2 3) " м2"))
               (princ (strcat "\n  НАША по тем же    : " (rtos mine 2 3) " м2"))
               (princ (strcat "\n  разница           : " (rtos (- tot mine) 2 3) " м2"))
@@ -6981,61 +7008,63 @@
                   (princ (strcat "\n  расходятся квадраты: " (itoa (length worst))))
                   (setq i 0)
                   (foreach q worst
-                    (if (< i 12)
+                    (if (< i 15)
                       (progn
                         (princ (strcat "\n      i=" (itoa (car q)) " j=" (itoa (cadr q))
                                        "  его " (rtos (caddr q) 2 4)
                                        "  наш " (rtos (cadddr q) 2 4)
                                        "  разница " (rtos (nth 4 q) 2 4)))
                         (setq i (1+ i)))))
-                  (if (> (length worst) 12)
-                    (princ (strcat "\n      ... и ещё " (itoa (- (length worst) 12))))))))))
+                  (if (> (length worst) 15)
+                    (princ (strcat "\n      ... и ещё " (itoa (- (length worst) 15))))))))))
         ;; --- ОТМЕТКИ ---------------------------------------------------
         (progn
-          (princ "\n[i] Выберите то, что стоит в ЧУЖИХ узлах: блоки подписей")
-          (princ "\n    либо точки. Берётся точка вставки объекта.")
-          (setq ss (ssget))
+          (princ "\n[i] Выберите ЧУЖИЕ подписи - берутся только блоки и точки.")
+          (setq ss (ssget (list '(0 . "INSERT,POINT"))))
           (if (null ss)
             (princ "\n[!] Ничего не выбрано.")
             (progn
               (setq tol 0.05)
-              (setq n (sslength ss) i 0 his nil)
+              (setq n (sslength ss) i 0 his nil skip 0)
               (while (< i n)
                 (setq e (ssname ss i))
-                (setq q (cdr (assoc 10 (entget e))))
-                (if q (setq his (cons (list (car q) (cadr q)) his)))
+                (if (gc-kg-ours-p e)
+                  (setq skip (1+ skip))
+                  (progn
+                    (setq q (cdr (assoc 10 (entget e))))
+                    (if q (setq his (cons (list (car q) (cadr q)) his)))))
                 (setq i (1+ i)))
               (gc-kg-marks-collect)
               (setq lst nil)
               (foreach q *gc-kg-marks-pts* (setq lst (cons (car q) lst)))
               (setq nb 0 nm 0 extra nil miss nil)
-              ;; его узлы, которых нет у нас
               (foreach q his
                 (if (not (gc-kg-near-tol q lst tol))
                   (setq nb (1+ nb) miss (cons q miss))))
-              ;; наши узлы, которых нет у него
               (foreach q lst
                 (if (not (gc-kg-near-tol q his tol))
                   (setq nm (1+ nm) extra (cons q extra))))
-              (princ (strcat "\n  ЕГО узлов выбрано : " (itoa (length his))))
+              (princ (strcat "\n  выбрано объектов  : " (itoa n)))
+              (princ (strcat "\n  наших отброшено   : " (itoa skip)))
+              (princ (strcat "\n  ЕГО узлов         : " (itoa (length his))))
               (princ (strcat "\n  НАШИХ подписей    : " (itoa (length lst))))
               (princ (strcat "\n  допуск совпадения : " (rtos tol 2 3) " м"))
               (princ (strcat "\n  есть у него, нет у нас : " (itoa nb)))
               (setq i 0)
               (foreach q miss
-                (if (< i 15)
+                (if (< i 20)
                   (progn (princ (strcat "\n      " (rtos (car q) 2 3) "  "
                                         (rtos (cadr q) 2 3)))
                          (setq i (1+ i)))))
-              (if (> nb 15) (princ (strcat "\n      ... и ещё " (itoa (- nb 15)))))
+              (if (> nb 20) (princ (strcat "\n      ... и ещё " (itoa (- nb 20)))))
               (princ (strcat "\n  есть у нас, нет у него : " (itoa nm)))
               (setq i 0)
               (foreach q extra
-                (if (< i 15)
+                (if (< i 20)
                   (progn (princ (strcat "\n      " (rtos (car q) 2 3) "  "
                                         (rtos (cadr q) 2 3)))
                          (setq i (1+ i)))))
-              (if (> nm 15) (princ (strcat "\n      ... и ещё " (itoa (- nm 15)))))
+              (if (> nm 20) (princ (strcat "\n      ... и ещё " (itoa (- nm 20)))))
               (if (and (= nb 0) (= nm 0))
                 (princ "\n  [i] Наборы узлов совпали полностью."))))))))
   (princ))
