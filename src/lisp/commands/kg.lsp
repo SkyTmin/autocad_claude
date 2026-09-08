@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v95")
+(setq *gc-kg-ver* "v96")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -3210,10 +3210,20 @@
 ;; с разбросом в миллиметр. Микронный допуск их не схлопывал, и хорда
 ;; по-прежнему проходила через саму вершину (docs/pitfalls.md -> П87).
 ;;
-;; Сантиметр: на картограмме 1:500 это 0,02 мм на бумаге - в десять раз
-;; тоньше линии, различить нельзя. Ближайшие настоящие соседи в наших
-;; контурах отстоят на 0,2 м и больше, так что запас двадцатикратный.
-(setq *gc-kg-dup-tol* 0.01)
+;; ЧИСЛО СНЯТО С ДАННЫХ, а не назначено. Сверка узлов на втором чертеже
+;; показала кластер из ДЕВЯТИ наших подписей в одной точке:
+;;
+;;   1449072.547 656494.461 ... 1449072.570 656494.458
+;;
+;; разброс 0,023 м. Сантиметровый допуск их не схлопнул, и квадрат
+;; i=2 j=0 получил 18 узлов вместо 10 (docs/pitfalls.md -> П91).
+;;
+;; Ближайшие НАСТОЯЩИЕ соседи в тех же контурах отстоят на 0,227 м
+;; (i=7 j=4) и 0,359 м (i=5 j=6). Между 0,023 и 0,227 есть где стоять:
+;; берём 0,05 м - вчетверо больше разброса двойников и вчетверо меньше
+;; ближайшего настоящего соседа. На картограмме 1:500 это 0,1 мм
+;; на бумаге, то есть в пределах толщины линии.
+(setq *gc-kg-dup-tol* 0.05)
 
 ;; Ближайший сосед вершины k, НЕ СОВПАДАЮЩИЙ с ней самой.
 ;; d = 1 вперёд по контуру, -1 назад. Если непохожего соседа нет вовсе
@@ -7771,6 +7781,14 @@
 ;; Сверка наборов узлов. lst - список чужих подписей-узлов.
 ;; Возвращает (его-узлы наши-узлы нет-у-нас нет-у-него допуск),
 ;; где два средних - списки точек.
+;; Расстояние до ближайшей точки списка. nil, если список пуст.
+(defun gc-kg-dist-min (p lst / q dd best)
+  (setq best nil)
+  (foreach q lst
+    (setq dd (distance p q))
+    (if (or (null best) (< dd best)) (setq best dd)))
+  best)
+
 (defun gc-kg-cmp-nodes (lst / e q his ours miss extra tol)
   (setq tol 0.05 his nil ours nil miss nil extra nil)
   (foreach e lst
@@ -7780,9 +7798,27 @@
   (gc-kg-marks-collect)
   (foreach q *gc-kg-marks-pts* (setq ours (cons (car q) ours)))
   (setq ours (reverse ours))
-  (foreach q his  (if (not (gc-kg-near-tol q ours tol)) (setq miss  (cons q miss))))
-  (foreach q ours (if (not (gc-kg-near-tol q his  tol)) (setq extra (cons q extra))))
+  ;; К каждой несовпавшей точке добавляем расстояние до ближайшей чужой:
+  ;; без него не различить «он подписал ДРУГУЮ вершину» и «он подписал
+  ;; ТУ ЖЕ, но она у него чуть в стороне». На втором чертеже пара
+  ;; 1449089.958 / 1449089.599 отстоит на 0,359 м - это второе, и мерить
+  ;; по ней правило отбора нельзя (status/ISSUES.md -> #010).
+  (foreach q his
+    (if (not (gc-kg-near-tol q ours tol))
+      (setq miss (cons (list q (gc-kg-dist-min q ours)) miss))))
+  (foreach q ours
+    (if (not (gc-kg-near-tol q his tol))
+      (setq extra (cons (list q (gc-kg-dist-min q his)) extra))))
   (list his ours (reverse miss) (reverse extra) tol))
+
+;; Строка про несовпавший узел: координаты, признаки вершины и расстояние
+;; до ближайшего узла другого набора. Последнее и отделяет «подписана
+;; ДРУГАЯ вершина» от «подписана ТА ЖЕ, только она у него чуть в стороне».
+(defun gc-kg-node-str (q / p dd)
+  (setq p (car q) dd (cadr q))
+  (strcat (rtos (car p) 2 3) "  " (rtos (cadr p) 2 3)
+          (gc-kg-why-str p)
+          (if dd (strcat "   до ближайшей чужой " (rtos dd 2 3)) "")))
 
 ;; Признаки вершины строкой - для отчёта сверки.
 (defun gc-kg-why-str (p / w)
@@ -7872,8 +7908,7 @@
              (setq i 0)
              (foreach q (nth 2 r)
                (if (< i 20)
-                 (progn (princ (strcat "\n      " (rtos (car q) 2 3) "  "
-                                       (rtos (cadr q) 2 3) (gc-kg-why-str q)))
+                 (progn (princ (strcat "\n      " (gc-kg-node-str q)))
                         (setq i (1+ i)))))
              (if (> (length (nth 2 r)) 20)
                (princ (strcat "\n      ... и ещё " (itoa (- (length (nth 2 r)) 20)))))
@@ -7881,8 +7916,7 @@
              (setq i 0)
              (foreach q (nth 3 r)
                (if (< i 20)
-                 (progn (princ (strcat "\n      " (rtos (car q) 2 3) "  "
-                                       (rtos (cadr q) 2 3) (gc-kg-why-str q)))
+                 (progn (princ (strcat "\n      " (gc-kg-node-str q)))
                         (setq i (1+ i)))))
              (if (> (length (nth 3 r)) 20)
                (princ (strcat "\n      ... и ещё " (itoa (- (length (nth 3 r)) 20)))))
@@ -8094,13 +8128,11 @@
              (write-line (strcat "  есть у НЕГО, нет у нас : "
                                  (itoa (length (nth 2 nds)))) f)
              (foreach q (nth 2 nds)
-               (write-line (strcat "    " (rtos (car q) 2 3) "  " (rtos (cadr q) 2 3)
-                                   (gc-kg-why-str q)) f))
+               (write-line (strcat "    " (gc-kg-node-str q)) f))
              (write-line (strcat "  есть у НАС, нет у него : "
                                  (itoa (length (nth 3 nds)))) f)
              (foreach q (nth 3 nds)
-               (write-line (strcat "    " (rtos (car q) 2 3) "  " (rtos (cadr q) 2 3)
-                                   (gc-kg-why-str q)) f))
+               (write-line (strcat "    " (gc-kg-node-str q)) f))
              (if (and (null (nth 2 nds)) (null (nth 3 nds)))
                (write-line "  наборы узлов совпали полностью" f))))
          (write-line "" f)
