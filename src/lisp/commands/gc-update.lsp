@@ -165,22 +165,38 @@
     (setq i (1- i)))
   (if (and a b (> b (1+ a))) (substr s (1+ a) (- b a 1)) nil))
 
-;; Отпечатки нужных файлов из ответа: список (имя . sha).
+;; Целое значение поля JSON из строки вида   "size": 365936,
+(defun gc-upd-json-int (s / i n c out)
+  (setq n (strlen s) i 1 out "")
+  (while (<= i n)
+    (setq c (substr s i 1))
+    (if (and (>= (ascii c) 48) (<= (ascii c) 57)) (setq out (strcat out c)))
+    (setq i (1+ i)))
+  (if (= out "") nil (atoi out)))
+
+;; Размер файла на диске, байт. -1, если не удалось узнать.
+(defun gc-upd-fsize (p / n)
+  (setq n (vl-file-size p))
+  (if (numberp n) n -1))
+
+;; Отпечатки нужных файлов из ответа: список (имя sha размер).
 ;;
 ;; Ответ приходит разбитым на строки, и «name» с «sha» лежат в разных.
 ;; Поэтому маленький автомат: запомнили имя - взяли следующий sha.
-(defun gc-upd-shas (path names / f s out cur v nm)
-  (setq out nil cur nil)
+(defun gc-upd-shas (path names / f s out cur sha v nm)
+  (setq out nil cur nil sha nil)
   (if (setq f (open path "r"))
     (progn
       (while (setq s (read-line f))
         (cond
           ((vl-string-search "\"name\"" s)
-           (setq v (gc-upd-json-str s) cur nil)
+           (setq v (gc-upd-json-str s) cur nil sha nil)
            (foreach nm names (if (= nm v) (setq cur nm))))
-          ((and cur (vl-string-search "\"sha\"" s))
-           (setq out (cons (cons cur (gc-upd-json-str s)) out))
-           (setq cur nil))))
+          ((and cur (null sha) (vl-string-search "\"sha\"" s))
+           (setq sha (gc-upd-json-str s)))
+          ((and cur sha (vl-string-search "\"size\"" s))
+           (setq out (cons (list cur sha (gc-upd-json-int s)) out))
+           (setq cur nil sha nil))))
       (close f)))
   out)
 
@@ -527,7 +543,7 @@
             (princ (strcat "\n    Причина: " *gc-upd-net-why*)))))))
   (princ))
 
-(defun c:gcu ( / dir nd n ok bad skip r path tmp shas old new sha q)
+(defun c:gcu ( / dir nd n ok bad skip r path tmp shas old new sha q sz)
   (if (= 0 (getvar "FILEDIA")) (setvar "FILEDIA" 1))
   (setq dir (gc-upd-dir))
   (if (null dir)
@@ -547,19 +563,32 @@
         (princ "\n[i] Отпечатки не получены - качаю всё."))
       (foreach n *gc-upd-files*
         (setq path (strcat dir n))
-        (setq sha (cdr (assoc n shas)))
+        (setq q (assoc n shas))
+        (setq sha (if q (cadr q) nil) sz (if q (caddr q) nil))
         (if (and sha (findfile path) (equal sha (cdr (assoc n old))))
           (progn (setq skip (1+ skip))
                  (setq new (cons (cons n sha) new))
                  (princ (strcat "\n  [=]  " n)))
           (progn
             (setq r (gc-upd-get (gc-upd-url n) path))
-            (if (car r)
-              (progn (setq ok (1+ ok))
-                     (if sha (setq new (cons (cons n sha) new)))
-                     (princ (strcat "\n  [ok] " n)))
-              (progn (setq bad (1+ bad))
-                     (princ (strcat "\n  [!!] " n " - " (cdr r))))))))
+            (cond
+              ((null (car r))
+               (setq bad (1+ bad))
+               (princ (strcat "\n  [!!] " n " - " (cdr r))))
+              ;; ПРОВЕРЯЕМ, ЧТО ПРИЕХАЛО. Адрес raw отдаётся через кэш,
+              ;; и оттуда может прийти вчерашний файл. Запомнив при этом
+              ;; свежий отпечаток, GCU навсегда решил бы, что всё свежее,
+              ;; и обновления перестали бы доезжать молча - ровно так
+              ;; Шамиль просидел версию на старом kg.lsp.
+              ((and sz (> sz 0) (/= sz (gc-upd-fsize path)))
+               (setq bad (1+ bad))
+               (princ (strcat "\n  [!!] " n " - приехало "
+                              (itoa (gc-upd-fsize path)) " байт вместо "
+                              (itoa sz) ", отпечаток НЕ запоминаю")))
+              (T
+               (setq ok (1+ ok))
+               (if sha (setq new (cons (cons n sha) new)))
+               (princ (strcat "\n  [ok] " n)))))))
       ;; Заодно тянем исходник модуля .NET. Сам модуль пересобирать
       ;; приходится редко, но когда приходится - файл должен быть свежим,
       ;; иначе сборка чинит вчерашнюю ошибку.
@@ -571,7 +600,8 @@
             (setq shas (gc-upd-shas tmp *gc-upd-net-files*)))
           (foreach n *gc-upd-net-files*
             (setq path (strcat nd n))
-            (setq sha (cdr (assoc n shas)))
+            (setq q (assoc n shas))
+            (setq sha (if q (cadr q) nil) sz (if q (caddr q) nil))
             (if (and sha (findfile path)
                      (equal sha (cdr (assoc (strcat "net/" n) old))))
               (progn (setq skip (1+ skip))
@@ -579,12 +609,19 @@
                      (princ (strcat "\n  [=]  net/" n)))
               (progn
                 (setq r (gc-upd-get (gc-upd-net-url n) path))
-                (if (car r)
-                  (progn (setq ok (1+ ok))
-                         (if sha (setq new (cons (cons (strcat "net/" n) sha) new)))
-                         (princ (strcat "\n  [ok] net/" n)))
-                  (progn (setq bad (1+ bad))
-                         (princ (strcat "\n  [!!] net/" n " - " (cdr r))))))))))
+                (cond
+                  ((null (car r))
+                   (setq bad (1+ bad))
+                   (princ (strcat "\n  [!!] net/" n " - " (cdr r))))
+                  ((and sz (> sz 0) (/= sz (gc-upd-fsize path)))
+                   (setq bad (1+ bad))
+                   (princ (strcat "\n  [!!] net/" n " - приехало "
+                                  (itoa (gc-upd-fsize path)) " вместо "
+                                  (itoa sz) ", отпечаток НЕ запоминаю")))
+                  (T
+                   (setq ok (1+ ok))
+                   (if sha (setq new (cons (cons (strcat "net/" n) sha) new)))
+                   (princ (strcat "\n  [ok] net/" n)))))))))
       ;; Отпечатки помним ТОЛЬКО про то, что действительно лежит на диске.
       (gc-upd-map-write dir new)
       (princ (strcat "\n\nскачано: " (itoa ok)
@@ -694,6 +731,6 @@
 ;; A -> Ф, T -> Е, O -> Щ
 (defun c:псфгещ ( / ) (c:gcauto))
 
-(princ "\n[gc] gc-update.lsp v11 загружен.")
+(princ "\n[gc] gc-update.lsp v12 загружен.")
 (princ "\n     GCU обновить | GCUF перекачать всё | GCV версии | GCLOAD загрузить\n     GCAUTO автозагрузка | GCDIR папка")
 (princ)
