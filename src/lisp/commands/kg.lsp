@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v59")
+(setq *gc-kg-ver* "v60")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -4693,8 +4693,10 @@
 (setq *gc-kg-marks-pts* nil)
 
 ;; Собрать точки подписанных узлов. Возвращает их число.
-(defun gc-kg-marks-collect ( / ss n i e p)
-  (setq *gc-kg-marks-pts* nil)
+(setq *gc-kg-marks-zero* 0)      ; сколько из них обнулено вручную
+
+(defun gc-kg-marks-collect ( / ss n i e p z)
+  (setq *gc-kg-marks-pts* nil *gc-kg-marks-zero* 0)
   (setq ss (gc-kg-blk-ss))
   (setq n (if ss (gc-kg-ss-len ss) nil))
   (if (null n) (setq n 0))
@@ -4702,23 +4704,35 @@
   (while (< i n)
     (setq e (ssname ss i))
     (setq p (gc-kg-mark-node e))
+    (setq z (gc-kg-zero-get e))
+    (if (= z 1) (setq *gc-kg-marks-zero* (1+ *gc-kg-marks-zero*)))
+    ;; Точку держим ДВУМЯ координатами: distance по трёхэлементному списку
+    ;; считал бы и третью, и совпадение узла перестало бы находиться.
     (if p (setq *gc-kg-marks-pts*
-                (cons (list (car p) (cadr p)) *gc-kg-marks-pts*)))
+                (cons (cons (list (car p) (cadr p)) z) *gc-kg-marks-pts*)))
     (setq i (1+ i)))
   (length *gc-kg-marks-pts*))
 
-;; Стоит ли в этой точке подпись. Допуск - тот же, что у чистки контура:
-;; узел подписи и вершина контура строятся одним и тем же отсечением.
+;; Что стоит в этой точке: nil - подписи нет, 0 - обычная, 1 - обнулённая.
+;; Допуск - тот же, что у чистки контура: узел подписи и вершина контура
+;; строятся одним и тем же отсечением.
 ;;
 ;; Список идём через cdr, а НЕ через nth: nth каждый раз проходит список
 ;; с начала, и вложенный в цикл он даёт квадрат от числа подписей. На 75
 ;; подписях это ещё незаметно, а на тысяче - уже минуты (П69).
-(defun gc-kg-marked-p (p / l out)
+;;
+;; Ноль в AutoLISP - истина, поэтому цикл на обычной подписи тоже
+;; останавливается: ложь здесь только nil.
+(defun gc-kg-mark-at (p / l out)
   (setq l *gc-kg-marks-pts* out nil)
   (while (and l (null out))
-    (if (< (distance p (car l)) 1.0e-4) (setq out T))
+    (if (< (distance p (caar l)) 1.0e-4) (setq out (cdar l)))
     (setq l (cdr l)))
   out)
+
+;; Стоит ли в этой точке подпись.
+(defun gc-kg-marked-p (p)
+  (if (gc-kg-mark-at p) T nil))
 
 ;; Объём фигуры ПО ПОДПИСАННЫМ УЗЛАМ, площадь - настоящая, по всему контуру.
 ;;
@@ -4738,14 +4752,19 @@
 ;; (docs/pitfalls.md -> П68).
 (setq *gc-kg-mark-fallback* 0)   ; сколько раз пришлось считать по всему контуру
 
-(defun gc-kg-vol-marked (pts hs / st mp mh lp lh s0 k r)
+(defun gc-kg-vol-marked (pts hs / st mp mh lp lh s0 k r z)
   (setq st (gc-kg-area pts))
   (setq mp nil mh nil lp pts lh hs)
   ;; Списки идём сдвигом, а не через nth: nth в цикле даёт квадрат от их
   ;; длины (docs/pitfalls.md -> П69).
   (while lp
-    (if (gc-kg-marked-p (gc-kg-to-wcs (car lp)))
-      (setq mp (cons (car lp) mp) mh (cons (car lh) mh)))
+    (setq z (gc-kg-mark-at (gc-kg-to-wcs (car lp))))
+    ;; Обнулённый вручную узел идёт в среднее НУЛЁМ, а не отметкой
+    ;; с поверхностей. Иначе подпись говорит «здесь не трогаем», а
+    ;; ведомость считает выемку - и разойтись им нечем (ISSUES #004).
+    (if z
+      (setq mp (cons (car lp) mp)
+            mh (cons (if (= z 1) 0.0 (car lh)) mh)))
     (setq lp (cdr lp) lh (cdr lh)))
   (setq mp (reverse mp) mh (reverse mh))
   ;; Подписей меньше трёх, ЛИБО они легли на одну прямую (площадь ноль) -
@@ -4925,6 +4944,9 @@
      ;; ДО первого квадрата.
      (princ (strcat "\n[i] Подписанных узлов: "
                     (itoa (gc-kg-marks-collect))))
+     (if (> *gc-kg-marks-zero* 0)
+       (princ (strcat "\n    из них обнулено вручную: " (itoa *gc-kg-marks-zero*)
+                      " - идут в среднее нулём")))
      (setq cnt 0 skip 0 tcut 0.0 tfill 0.0 tarea 0.0 sacut 0.0 safill 0.0
            nbad 0 dbad 0.0 dmax 0.0 ibad nil *gc-kg-tri-lost* 0
            *gc-kg-mark-fallback* 0)
@@ -5544,15 +5566,16 @@
 ;;; --------------------------------------------------------------------
 ;;; ОБНОВИТЬ ОТМЕТКИ - пересчитать по нынешним поверхностям
 ;;; --------------------------------------------------------------------
-(defun c:kgo ( / ss env n i e p v cnt skip atts)
+(defun c:kgo ( / ss env n i e p v cnt skip nz atts zero prec sep)
   (princ "\n\n=== KGO - обновить отметки ===")
   (if (gc-kg-surf-ready)
     (progn
-      (setq env (gc-kg-mark-env))
+      (setq env (gc-kg-mark-env) prec (nth 3 env) sep (nth 4 env))
+      (setq zero (gc-kg-fmt-p 0.0 prec sep))
       (setq ss (gc-kg-pick-marks "Обновление"))
       (if ss
         (progn
-          (setq n (sslength ss) i 0 cnt 0 skip 0)
+          (setq n (sslength ss) i 0 cnt 0 skip 0 nz 0)
           (setvar "CMDECHO" 0)
           (command "_.UNDO" "_BEGIN")
           (while (< i n)
@@ -5564,14 +5587,28 @@
             (if v
               (progn
                 (setq atts (gc-kg-blk-atts e))
-                (gc-kg-att-put atts *gc-kg-tag-w* (nth 0 v) (nth 3 v))
-                (gc-kg-att-put atts *gc-kg-tag-b* (nth 1 v) (gc-kg-get "c-black"))
-                (gc-kg-att-put atts *gc-kg-tag-r* (nth 2 v) (gc-kg-get "c-red"))
+                ;; ОБНУЛЁННУЮ подпись обновляем, но обнулённой и оставляем:
+                ;; «здесь не трогаем» - решение геодезиста, а не значение,
+                ;; которое пересчитывается по поверхностям. Иначе «Обновить»
+                ;; молча стирало бы его вместе с объёмом (ISSUES #004).
+                (if (= 1 (gc-kg-zero-get e))
+                  (progn
+                    (gc-kg-att-put atts *gc-kg-tag-w* zero (gc-kg-get "c-wzero"))
+                    (gc-kg-att-put atts *gc-kg-tag-b* (nth 1 v) (gc-kg-get "c-black"))
+                    (gc-kg-att-put atts *gc-kg-tag-r* (nth 1 v) (gc-kg-get "c-red"))
+                    (setq nz (1+ nz)))
+                  (progn
+                    (gc-kg-att-put atts *gc-kg-tag-w* (nth 0 v) (nth 3 v))
+                    (gc-kg-att-put atts *gc-kg-tag-b* (nth 1 v) (gc-kg-get "c-black"))
+                    (gc-kg-att-put atts *gc-kg-tag-r* (nth 2 v) (gc-kg-get "c-red"))))
                 (setq cnt (1+ cnt)))
               (setq skip (1+ skip)))
             (setq i (1+ i)))
           (command "_.UNDO" "_END")
           (princ (strcat "\n  обновлено        : " (itoa cnt)))
+          (if (> nz 0)
+            (princ (strcat "\n  из них обнулённых: " (itoa nz)
+                           "  (остались обнулёнными, «стало» = «было»)")))
           (if (> skip 0)
             (princ (strcat "\n  пропущено        : " (itoa skip)
                            "  (поверхность не дала отметку в этой точке)")))
@@ -5741,30 +5778,67 @@
 ;;; и «стало» приравнивается к «было» - иначе три числа подписи
 ;;; противоречили бы друг другу: 0 не равно «было» минус «стало».
 ;;; --------------------------------------------------------------------
-(defun c:kgz ( / ss n i e cnt env prec sep zero atts vb)
+(defun c:kgz ( / ss n i e cnt skip env prec sep zero atts vb mode p v)
   (princ "\n\n=== KGZ - обнулить рабочую отметку ===")
   (setq env (gc-kg-mark-env) prec (nth 3 env) sep (nth 4 env))
-  (setq ss (gc-kg-pick-marks "Обнуление"))
-  (if ss
+  (princ "\n[i] Обнуление - это РЕШЕНИЕ «здесь землю не трогаем».")
+  (princ "\n    Оно запоминается в самой подписи и идёт в объём: такой узел")
+  (princ "\n    входит в среднее нулём, а не отметкой с поверхностей.")
+  (initget "Обнулить Вернуть")
+  (setq mode (getkword "\nЧто делаем? [Обнулить/Вернуть расчётную] <Обнулить>: "))
+  (if (null mode) (setq mode "Обнулить"))
+  (if (and (= mode "Вернуть") (null (gc-kg-surf-ready)))
+    (princ "\n[!] Чтобы вернуть расчётную отметку, нужны поверхности.")
     (progn
-      (setq zero (gc-kg-fmt-p 0.0 prec sep))
-      (setq n (sslength ss) i 0 cnt 0)
-      (setvar "CMDECHO" 0)
-      (command "_.UNDO" "_BEGIN")
-      (while (< i n)
-        (setq e (ssname ss i))
-        (setq atts (gc-kg-blk-atts e))
-        (setq vb (gc-kg-att-get atts *gc-kg-tag-b*))
-        (gc-kg-att-put atts *gc-kg-tag-w* zero (gc-kg-get "c-wzero"))
-        ;; «Стало» = «было». Если «было» прочитать не удалось, ставим
-        ;; ноль в рабочую и не трогаем остальное - врать не будем.
-        (if vb (gc-kg-att-put atts *gc-kg-tag-r* vb (gc-kg-get "c-red")))
-        (setq cnt (1+ cnt))
-        (setq i (1+ i)))
-      (command "_.UNDO" "_END")
-      (princ (strcat "\n  обнулено отметок : " (itoa cnt)))
-      (princ "\n  «стало» приравнено к «было» - иначе подпись противоречила бы себе.")
-      (princ "\n[i] Один Ctrl+Z возвращает прежние значения.")))
+      (setq ss (gc-kg-pick-marks (if (= mode "Вернуть") "Возврат" "Обнуление")))
+      (if ss
+        (progn
+          (setq zero (gc-kg-fmt-p 0.0 prec sep))
+          (setq n (sslength ss) i 0 cnt 0 skip 0)
+          (setvar "CMDECHO" 0)
+          (command "_.UNDO" "_BEGIN")
+          (while (< i n)
+            (setq e (ssname ss i))
+            (setq atts (gc-kg-blk-atts e))
+            (if (= mode "Вернуть")
+              ;; Возврат: пересчитываем подпись по поверхностям в её УЗЛЕ
+              ;; и снимаем признак - узел снова идёт в объём своей отметкой.
+              (progn
+                (setq p (gc-kg-mark-node e))
+                (setq v (gc-kg-mark-vals p env))
+                (if v
+                  (progn
+                    (gc-kg-att-put atts *gc-kg-tag-w* (nth 0 v) (nth 3 v))
+                    (gc-kg-att-put atts *gc-kg-tag-b* (nth 1 v) (gc-kg-get "c-black"))
+                    (gc-kg-att-put atts *gc-kg-tag-r* (nth 2 v) (gc-kg-get "c-red"))
+                    (gc-kg-zero-put e 0)
+                    (setq cnt (1+ cnt)))
+                  (setq skip (1+ skip))))
+              (progn
+                (setq vb (gc-kg-att-get atts *gc-kg-tag-b*))
+                (gc-kg-att-put atts *gc-kg-tag-w* zero (gc-kg-get "c-wzero"))
+                ;; «Стало» = «было». Если «было» прочитать не удалось, ставим
+                ;; ноль в рабочую и не трогаем остальное - врать не будем.
+                (if vb (gc-kg-att-put atts *gc-kg-tag-r* vb (gc-kg-get "c-red")))
+                ;; Признак в расширенных данных - чтобы о решении узнал
+                ;; РАСЧЁТ. По тексту подписи настоящий ноль на нулевой линии
+                ;; от обнулённого вручную не отличить (ISSUES #004).
+                (gc-kg-zero-put e 1)
+                (setq cnt (1+ cnt))))
+            (setq i (1+ i)))
+          (command "_.UNDO" "_END")
+          (if (= mode "Вернуть")
+            (progn
+              (princ (strcat "\n  возвращено в расчёт: " (itoa cnt)))
+              (if (> skip 0)
+                (princ (strcat "\n  пропущено          : " (itoa skip)
+                               "  (поверхность не дала отметку в узле)"))))
+            (progn
+              (princ (strcat "\n  обнулено отметок : " (itoa cnt)))
+              (princ "\n  «стало» приравнено к «было» - иначе подпись противоречила бы себе.")))
+          (princ "\n  [!] Объём в этих узлах изменился - пересчитайте:")
+          (princ "\n      KG -> «оБъёмы».")
+          (princ "\n[i] Один Ctrl+Z возвращает прежние значения.")))))
   (princ))
 
 ;;; --------------------------------------------------------------------
@@ -5914,8 +5988,12 @@
 ;; новое определение - и, соответственно, новая вставка.
 ;;
 ;; Возвращает ename новой вставки либо nil.
-(defun gc-kg-mark-remake (e a prec base / info p h lay nm loc far new)
+(defun gc-kg-mark-remake (e a prec base / info p h lay nm loc far new zr)
   (setq info (gc-kg-mark-read e))
+  ;; Признак обнуления снимаем ДО entdel: подпись пересобирается заново,
+  ;; и вместе со старой вставкой он бы пропал - а с ним и решение
+  ;; геодезиста, которое влияет на объём (docs/pitfalls.md -> П71).
+  (setq zr (gc-kg-zero-get e))
   (if (or (null info) (null (nth 4 info)))
     nil
     (progn
@@ -5941,7 +6019,7 @@
                                    h lay (gc-kg-get "style"))
             (progn
               (setq new (entlast))
-              (if a (gc-kg-node-put new a))
+              (if a (gc-kg-xd-put new a zr) (gc-kg-xd-put new p zr))
               new)
             (progn
               ;; Вставка не удалась - возвращаем старую подпись, иначе
@@ -5982,28 +6060,57 @@
 (setq *gc-kg-xapp* "GC-KG")                       ; имя приложения в XData
 (setq *gc-kg-lay-lead* "GC-Картограмма-Выноски")
 
-;; Запомнить у блока его узел. Без этого выноску не от чего вести:
-;; после переноса точка вставки уже не узел, и вернуть её неоткуда.
-(defun gc-kg-node-put (e p / d)
+;; Записать расширенные данные подписи ЦЕЛИКОМ: узел и признак обнуления.
+;;
+;; Писатель ОДИН на оба поля. Старые данные того же приложения заменяются
+;; целиком - иначе у блока накопилось бы несколько узлов, и какой из них
+;; верный, определить было бы нечем. Значит и признак обнуления надо
+;; переписывать здесь же: раздельные писатели затирали бы друг друга.
+;;
+;;   1010 - узел, к которому подпись относится (выноска уводит её в сторону);
+;;   1070 - обнулена ли рабочая отметка: 1 - да, 0 - обычная.
+(defun gc-kg-xd-put (e p z / d)
   (regapp *gc-kg-xapp*)
   (setq d (entget e))
-  ;; Старые расширенные данные того же приложения заменяются целиком -
-  ;; иначе у блока накопилось бы несколько узлов, и какой из них верный,
-  ;; определить было бы нечем.
   (setq d (vl-remove (assoc -3 d) d))
+  (if (null p) (setq p (cdr (assoc 10 (entget e)))))
+  (if (not (numberp z)) (setq z 0))
   (entmod (append d (list (list -3 (list *gc-kg-xapp*
-                                         (cons 1010 (list (car p) (cadr p) 0.0))))))))
+                                         (cons 1010 (list (car p) (cadr p) 0.0))
+                                         (cons 1070 z)))))))
 
-;; Узел блока либо nil.
-(defun gc-kg-node-get (e / d x)
+;; Поле расширенных данных подписи по коду группы либо nil.
+(defun gc-kg-xd-get (e code / d x)
   (setq d (entget e (list *gc-kg-xapp*)))
   (setq x (cdr (assoc -3 d)))
   (if x
     (progn
       (setq x (cdr (car x)))
-      (setq x (assoc 1010 x))
+      (setq x (assoc code x))
       (if x (cdr x) nil))
     nil))
+
+;; Запомнить у блока его узел, не потеряв признак обнуления.
+(defun gc-kg-node-put (e p)
+  (gc-kg-xd-put e p (gc-kg-zero-get e)))
+
+;; Узел блока либо nil.
+(defun gc-kg-node-get (e)
+  (gc-kg-xd-get e 1010))
+
+;; Обнулена ли рабочая отметка этой подписи: 1 - да, 0 либо nil - нет.
+;;
+;; ЗАЧЕМ ХРАНИТЬ, А НЕ ЧИТАТЬ ТЕКСТ. Обнуление - это РЕШЕНИЕ геодезиста
+;; «здесь землю не трогаем», а не значение, которое можно пересчитать.
+;; По тексту подписи его не отличить от настоящего нуля на нулевой линии,
+;; и «Обновить» стёрло бы его, не зная, что стирает.
+(defun gc-kg-zero-get (e / z)
+  (setq z (gc-kg-xd-get e 1070))
+  (if (and (numberp z) (= z 1)) 1 0))
+
+;; Пометить подпись обнулённой (z = 1) либо вернуть в расчётные (z = 0).
+(defun gc-kg-zero-put (e z)
+  (gc-kg-xd-put e (gc-kg-node-get e) z))
 
 ;; Полуширины подписи: сколько она занимает влево (рабочая) и вправо
 ;; (два числа). Одно место на весь файл - ими пользуются и прореживание,
@@ -6380,6 +6487,9 @@
                  (princ (strcat "\n\n  ПОДПИСАНО УЗЛОВ : " (itoa nm)
                                 " из " (itoa (length pts))
                                 "  (среднее считается по ним, площадь - полная)"))
+                 (if (> *gc-kg-marks-zero* 0)
+                   (princ (strcat "\n  ОБНУЛЕНО ВРУЧНУЮ: " (itoa *gc-kg-marks-zero*)
+                                  " на всём чертеже - такие узлы идут нулём")))
                  (if (< nm 3)
                    (princ "\n  [!] Подписей меньше трёх - расчёт откатится на ВСЕ вершины\n      контура, а это другой метод. Подпишите узлы: KGA."))
                  ;; Выпуклость и смены знака - ПО ПОДПИСАННЫМ узлам: именно
