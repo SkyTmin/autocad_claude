@@ -4996,18 +4996,30 @@
      ;; ГДЕ ИМЕННО не сходится - по ячейкам. Итог может сойтись случайно,
      ;; если ошибки разных знаков погасят друг друга, поэтому считаем
      ;; расхождение по каждому квадрату отдельно.
+     ;; ПОРОГ ОТБРАСЫВАЕТ ПЛОЩАДЬ НАМЕРЕННО, и по этим ячейкам части с целым
+     ;; и не сойдутся. Печатать это как «[!] расхождение» значит пугать
+     ;; пользователя тем, что он сам и включил: в прошлом прогоне обе строки
+     ;; давали одно и то же число -2,745 м2, но одна читалась как настройка,
+     ;; а другая как ошибка (docs/pitfalls.md -> П70).
      (if (> nbad 0)
-       (progn
-         (princ (strcat "\n  [!] квадратов с расхождением: " (itoa nbad)
-                        " из " (itoa cnt)))
-         (princ (strcat "\n      суммарно " (gc-kg-fmt dbad)
-                        " м2, худший " (gc-kg-fmt dmax) " м2"))
-         (if ibad
-           (princ (strcat "\n      первый: i=" (itoa (car ibad))
-                          " j=" (itoa (cadr ibad))
-                          ", площадь " (rtos (caddr ibad) 2 4)
-                          ", части " (rtos (cadddr ibad) 2 4))))
-         (princ "\n      Разберите его командой KGQ.")))
+       (if (and use-mn
+                (< (abs (+ dbad (- tarea (+ safill sacut)))) 0.001))
+         (progn
+           (princ (strcat "\n  квадратов с порогом : " (itoa nbad) " из " (itoa cnt)))
+           (princ (strcat "\n                        (в них порог " (gc-kg-fmt mn)
+                          " м3 убрал мелочь, всего " (gc-kg-fmt dbad) " м2 -"))
+           (princ "\n                        это та же строка «отброшено мелочи», не ошибка)"))
+         (progn
+           (princ (strcat "\n  [!] квадратов с расхождением: " (itoa nbad)
+                          " из " (itoa cnt)))
+           (princ (strcat "\n      суммарно " (gc-kg-fmt dbad)
+                          " м2, худший " (gc-kg-fmt dmax) " м2"))
+           (if ibad
+             (princ (strcat "\n      первый: i=" (itoa (car ibad))
+                            " j=" (itoa (cadr ibad))
+                            ", площадь " (rtos (caddr ibad) 2 4)
+                            ", части " (rtos (cadddr ibad) 2 4))))
+           (princ "\n      Разберите его командой KGQ."))))
      (if (> *gc-kg-tri-lost* 0)
        (progn
          (princ (strcat "\n  [!] потеряно треугольников: " (itoa *gc-kg-tri-lost*)))
