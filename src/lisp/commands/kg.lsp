@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v58")
+(setq *gc-kg-ver* "v59")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -2069,7 +2069,12 @@
   (setq s (rtos x 2 prec) out "" i 1)
   (while (<= i (strlen s))
     (setq ch (substr s i 1))
-    (setq out (strcat out (if (= ch ".") (if (= sep "1") "." ",") ch)))
+    ;; Заменяем И точку, И запятую: rtos ставит разделителем то, что стоит
+    ;; в системной переменной DIMDSEP, и в русском чертеже это уже запятая.
+    ;; Искали только точку - и настройка «разделитель: точка» молча ничего
+    ;; не меняла (docs/pitfalls.md -> П69).
+    (setq out (strcat out (if (or (= ch ".") (= ch ","))
+                            (if (= sep "1") "." ",") ch)))
     (setq i (1+ i)))
   out)
 
@@ -4558,7 +4563,13 @@
   ;;   - при БОЛЕЕ ЧЕМ ДВУХ сменах знака частей больше двух - это
   ;;     «переходный квадрат по диагонали», и docs/formulas.md прямо
   ;;     требует резать его на треугольники.
+  ;; Ноль смен знака - нулевая линия контур не пересекает, часть всего одна,
+  ;; и резать нечего. Тогда выпуклость не важна вовсе: «площадь на среднее»
+  ;; по всему контуру и есть расчёт образца. Раньше невыпуклый контур уходил
+  ;; на треугольники и там, где делить было нечего, - и молча расходился
+  ;; с образцом на ровном месте (docs/pitfalls.md -> П70).
   (if (and (= m 0)
+           (> (gc-kg-sgn-changes hs) 0)
            (or (not (gc-kg-convex-p pts))
                (> (gc-kg-sgn-changes hs) 2)))
     (setq m 1))
@@ -4690,10 +4701,7 @@
   (setq i 0)
   (while (< i n)
     (setq e (ssname ss i))
-    ;; Узел лежит в расширенных данных: после переноса подписи выноской
-    ;; точка вставки узлом уже не является (П61).
-    (setq p (gc-kg-node-get e))
-    (if (null p) (setq p (cdr (assoc 10 (entget e)))))
+    (setq p (gc-kg-mark-node e))
     (if p (setq *gc-kg-marks-pts*
                 (cons (list (car p) (cadr p)) *gc-kg-marks-pts*)))
     (setq i (1+ i)))
@@ -4728,38 +4736,56 @@
 ;; Проверено на сверке: квадрат из 8 вершин, подписаны 4 -
 ;; (2,96+1,62+0+0)/4 x 21,334 = 24,43 при 24,43 у образца
 ;; (docs/pitfalls.md -> П68).
-(defun gc-kg-vol-marked (pts hs / st mp mh n i p s0 k r)
+(setq *gc-kg-mark-fallback* 0)   ; сколько раз пришлось считать по всему контуру
+
+(defun gc-kg-vol-marked (pts hs / st mp mh lp lh s0 k r)
   (setq st (gc-kg-area pts))
-  (setq mp nil mh nil n (length pts) i 0)
-  (while (< i n)
-    (setq p (nth i pts))
-    (if (gc-kg-marked-p (gc-kg-to-wcs p))
-      (setq mp (cons p mp) mh (cons (nth i hs) mh)))
-    (setq i (1+ i)))
+  (setq mp nil mh nil lp pts lh hs)
+  ;; Списки идём сдвигом, а не через nth: nth в цикле даёт квадрат от их
+  ;; длины (docs/pitfalls.md -> П69).
+  (while lp
+    (if (gc-kg-marked-p (gc-kg-to-wcs (car lp)))
+      (setq mp (cons (car lp) mp) mh (cons (car lh) mh)))
+    (setq lp (cdr lp) lh (cdr lh)))
   (setq mp (reverse mp) mh (reverse mh))
-  ;; Меньше трёх подписей - считать по ним нечего: берём весь контур,
-  ;; иначе площадь фигуры пропала бы молча.
-  (if (< (length mp) 3) (setq mp pts mh hs))
-  (setq s0 (gc-kg-area mp))
-  (setq r (gc-kg-vol-parts mp mh))
-  ;; Контур по узлам чуть меньше настоящего - край между узлами
-  ;; спрямляется. Возвращаем расчёт на настоящую площадь, иначе
-  ;; сумма площадей перестанет сходиться с площадью картограммы (П63).
-  (setq k (if (> s0 1.0e-9) (/ st s0) 1.0))
-  (list (* k (nth 0 r)) (* k (nth 1 r)) (* k (nth 2 r)) (* k (nth 3 r))))
+  ;; Подписей меньше трёх, ЛИБО они легли на одну прямую (площадь ноль) -
+  ;; считать по ним нечего, берём весь контур. Такой откат ведёт расчёт по
+  ;; методу, от которого мы как раз ушли, поэтому он СЧИТАЕТСЯ и попадает
+  ;; в отчёт: молчаливый откат хуже отказа (docs/pitfalls.md -> П70).
+  ;; Без охраны нулевой площади множитель k оставался единицей, и площадь
+  ;; с объёмом всей ячейки обнулялись без единого слова.
+  (if (or (< (length mp) 3) (< (gc-kg-area mp) 1.0e-9))
+    (progn
+      (setq *gc-kg-mark-fallback* (1+ *gc-kg-mark-fallback*))
+      (setq mp pts mh hs)))
+  ;; Отметка нужна там, где она идёт в среднее. В НЕподписанной вершине её
+  ;; отсутствие ни на что не влияет, а раньше роняло всю ячейку - вместе
+  ;; с площадью, молча (П70).
+  (if (member nil mh)
+    nil
+    (progn
+      (setq s0 (gc-kg-area mp))
+      (setq r (gc-kg-vol-parts mp mh))
+      ;; Контур по узлам чуть меньше настоящего - край между узлами
+      ;; спрямляется. Возвращаем расчёт на настоящую площадь, иначе
+      ;; сумма площадей перестанет сходиться с площадью картограммы (П63).
+      (setq k (if (> s0 1.0e-9) (/ st s0) 1.0))
+      (list (* k (nth 0 r)) (* k (nth 1 r)) (* k (nth 2 r)) (* k (nth 3 r))))))
 
 ;; Вклад одного контура: (насыпь Sнасыпи выемка Sвыемки) либо nil,
 ;; если отметку дала не каждая поверхность.
-(defun gc-kg-loop-vol (pts / hs ok w p r)
+(defun gc-kg-loop-vol (pts / hs w p)
   (if (or (null pts) (not (listp (car pts))) (< (length pts) 3))
     nil
     (progn
-      (setq hs nil ok T)
+      ;; Отметки собираем ВСЕ, включая ненайденные (nil): решает, каких
+      ;; из них не хватает, gc-kg-vol-marked - ей видно, какие вершины
+      ;; идут в среднее, а какие только описывают форму края.
+      (setq hs nil)
       (foreach w pts
         (setq p (gc-kg-to-wcs w))
-        (setq r (gc-kg-hw-at p))
-        (if (null r) (setq ok nil) (setq hs (cons r hs))))
-      (if ok (gc-kg-vol-marked pts (reverse hs)) nil))))
+        (setq hs (cons (gc-kg-hw-at p) hs)))
+      (gc-kg-vol-marked pts (reverse hs)))))
 
 ;; Объёмы одной ячейки: список (выемка насыпь площадь центр Sвыем Sнас).
 ;;
@@ -4900,7 +4926,8 @@
      (princ (strcat "\n[i] Подписанных узлов: "
                     (itoa (gc-kg-marks-collect))))
      (setq cnt 0 skip 0 tcut 0.0 tfill 0.0 tarea 0.0 sacut 0.0 safill 0.0
-           nbad 0 dbad 0.0 dmax 0.0 ibad nil *gc-kg-tri-lost* 0)
+           nbad 0 dbad 0.0 dmax 0.0 ibad nil *gc-kg-tri-lost* 0
+           *gc-kg-mark-fallback* 0)
      (princ (strcat "\n[i] Квадратов: " (itoa (length cells)) ". Считаю..."))
      (setvar "CMDECHO" 0)
      (command "_.UNDO" "_BEGIN")
@@ -5000,6 +5027,18 @@
      (princ (strcat "\n  метод               : " (gc-kg-method-name)))
      (princ "\n                        (docs/formulas.md, переходные квадраты")
      (princ "\n                        режутся линией нулевых работ)")
+     (if (> *gc-kg-mark-fallback* 0)
+       (progn
+         (princ (strcat "\n  [!] фигур без подписей: " (itoa *gc-kg-mark-fallback*)))
+         (princ "\n      В них подписанных узлов меньше трёх, и объём посчитан")
+         (princ "\n      по ВСЕМ вершинам контура - это другой метод, и он")
+         (princ "\n      занижает объём на краевых фигурах. Подпишите там")
+         (princ "\n      отметки: KG -> «Отметки» либо KGA.")))
+     (if (equal 0 (gc-kg-get "p-mark"))
+       (progn
+         (princ "\n  [!] Точность отметок 0 знаков. Рабочая отметка считается")
+         (princ "\n      ПО ОКРУГЛЁННЫМ отметкам, значит округление до целых")
+         (princ "\n      метров идёт прямо в объём. Для расчёта нужны 2 знака.")))
      (princ "\n  среднее берётся по   : ПОДПИСАННЫМ узлам, площадь - полная")
      (princ "\n                        (сколько подписей на квадрате, столько")
      (princ "\n                        отметок в среднем - можно проверить)")
@@ -5412,15 +5451,23 @@
 
 ;; Три текста и цвет рабочей для точки p. nil, если отметку дала не каждая
 ;; поверхность: подписать половину подписи хуже, чем не подписать вовсе.
-(defun gc-kg-mark-vals (p env / zb zr hw cls prec sep wsg)
+(defun gc-kg-mark-vals (p env / zb zr hw hp cls prec sep wsg)
   (setq prec (nth 3 env) sep (nth 4 env) wsg (nth 5 env))
   (setq zb (gc-kg-elev *gc-kg-sb* (car p) (cadr p))
         zr (gc-kg-elev *gc-kg-sr* (car p) (cadr p)))
   (if (and zb zr)
     (progn
-      (setq hw (if (= wsg "1") (- zb zr) (- zr zb)))
+      ;; ФИЗИЧЕСКАЯ рабочая отметка, по ОКРУГЛЁННЫМ отметкам поверхностей -
+      ;; ровно как в gc-kg-label. Здесь оставалась точная разность, и
+      ;; подпись после «Обновить» переставала сходиться и с той, что
+      ;; поставила KG, и с ведомостью (docs/pitfalls.md -> П70).
+      (setq hw (gc-kg-hw-round zb zr prec))
+      ;; Класс - от ФИЗИЧЕСКОЙ отметки, и только от неё. Раньше он брался
+      ;; от уже перевёрнутой по знаку, и при конвенции «плюс = выемка»
+      ;; цвета насыпи и выемки менялись местами.
       (setq cls (gc-kg-work-class hw))
-      (list (strcat (if (= cls "FILL") "+" "") (gc-kg-fmt-p hw prec sep))
+      (setq hp (if (= wsg "1") (- hw) hw))
+      (list (strcat (if (> hp *gc-kg-zero-eps*) "+" "") (gc-kg-fmt-p hp prec sep))
             (gc-kg-fmt-p zb prec sep)
             (gc-kg-fmt-p zr prec sep)
             (cond ((= cls "ZERO") (gc-kg-get "c-wzero"))
@@ -5428,10 +5475,21 @@
                   (T              (gc-kg-get "c-wplus")))))
     nil))
 
-;; Точка вставки блока.
+;; Точка вставки блока - там, где ЛЕЖИТ подпись.
 (defun gc-kg-blk-pt (e / d)
   (setq d (entget e))
   (cdr (assoc 10 d)))
+
+;; УЗЕЛ подписи - та точка на сетке, к которой она относится.
+;;
+;; После переноса выноской (KGV) точка вставки уезжает в сторону, и узлом
+;; она быть перестаёт. Кто берёт отметку по точке вставки, берёт её не в том
+;; месте: «Обновить» пересчитывало подпись по чужой точке, а «Прорядить»
+;; переставало узнавать в ней узел сетки и снимало с неё защиту
+;; (docs/pitfalls.md -> П70).
+(defun gc-kg-mark-node (e / p)
+  (setq p (gc-kg-node-get e))
+  (if p (list (car p) (cadr p)) (gc-kg-blk-pt e)))
 
 ;; Выбрать блоки отметок: указанные пользователем либо все.
 ;; Возвращает набор либо nil.
@@ -5487,7 +5545,9 @@
           (command "_.UNDO" "_BEGIN")
           (while (< i n)
             (setq e (ssname ss i))
-            (setq p (gc-kg-blk-pt e))
+            ;; По УЗЛУ, а не по точке вставки: у отодвинутой выноской
+            ;; подписи это разные места (П70).
+            (setq p (gc-kg-mark-node e))
             (setq v (gc-kg-mark-vals p env))
             (if v
               (progn
@@ -5609,18 +5669,30 @@
           ;; считается объём целых квадратов.
           (setq n (sslength ss) i 0 nodes nil rest nil)
           (while (< i n)
-            (setq e (ssname ss i) p (gc-kg-blk-pt e))
-            (if (gc-kg-node-p p)
-              (setq nodes (cons (cons e p) nodes))
-              (setq rest  (cons (cons e p) rest)))
+            (setq e (ssname ss i))
+            ;; Габарит считаем там, где подпись ЛЕЖИТ, а узлом её признаём
+            ;; по УЗЛУ из расширенных данных: после переноса выноской это
+            ;; разные точки, и по точке вставки узел не узнавался (П70).
+            (setq p (gc-kg-blk-pt e))
+            (setq q (gc-kg-mark-node e))
+            (if (gc-kg-node-p q)
+              (setq nodes (cons (list e p T)   nodes))
+              (setq rest  (cons (list e p nil) rest)))
             (setq i (1+ i)))
           (setq lst (append (reverse nodes) (reverse rest)))
           (setq keep nil kill nil)
           (foreach q lst
-            (setq bx (gc-kg-mark-box (cdr q) h prec))
+            (setq bx (gc-kg-mark-box (cadr q) h prec))
             (setq ok T)
-            (foreach k keep
-              (if (and ok (gc-kg-box-hit bx k g)) (setq ok nil)))
+            ;; УЗЕЛ СЕТКИ НЕ УДАЛЯЕТСЯ НИКОГДА. Раньше он лишь шёл первым
+            ;; в очереди, а проверялся общим правилом - и второй узел строки
+            ;; погибал от первого, хотя отчёт писал «не удаляются никогда».
+            ;; Обещание, которого код не держит, хуже отсутствия обещания:
+            ;; по узлам считается объём, и удалить их значит молча изменить
+            ;; ведомость (docs/pitfalls.md -> П70).
+            (if (null (caddr q))
+              (foreach k keep
+                (if (and ok (gc-kg-box-hit bx k g)) (setq ok nil))))
             (if ok
               (setq keep (cons bx keep))
               (setq kill (cons (car q) kill))))
@@ -5639,7 +5711,8 @@
                          "  (при высоте " (gc-kg-fmt h) " м)"))
           (princ (strcat "\n  зазор            : " (gc-kg-fmt g) " м"))
           (if (= 0 (length kill))
-            (princ "\n  [i] Ни одна подпись не налезает на другую - убирать нечего."))
+            (princ "\n  [i] Ни одна подпись не налезает на другую - убирать нечего.")
+            (princ "\n  [!] Объём считается ПО ПОДПИСАННЫМ узлам - посчитанные\n      раньше объёмы устарели. Пересчитайте: KG -> «оБъёмы»."))
           (if nodes
             (princ (strcat "\n  узлов сетки      : " (itoa (length nodes))
                            "  (не удаляются никогда)"))
@@ -6215,7 +6288,7 @@
 ;;; методами сразу - чтобы не гадать, каким считал чужой инструмент.
 ;;; --------------------------------------------------------------------
 (defun c:kgq ( / p w cells par base ang sx sy c found pts hs i n
-               m old r prec sep env nm)
+               m old r prec sep env nm q mp nl)
   (princ "\n\n=== KGQ - разобрать один квадрат ===")
   (setq cells *gc-kg-cells* par *gc-kg-grid-par*)
   (cond
@@ -6257,6 +6330,11 @@
                             "  (целый был бы " (rtos (* sx sy) 2 4) ")"))
              (princ (strcat "\n  вершин в контуре : " (itoa (length pts))))
              (princ "\n\n  ВЕРШИНЫ (X, Y в МСК; земля, проект, рабочая):")
+             ;; Кэш рабочих отметок сбрасываем: он мог остаться от прежних
+             ;; поверхностей или от другой точности, и тогда KGQ показал бы
+             ;; чужие числа - в инструменте сверки это худшее из возможного
+             ;; (docs/pitfalls.md -> П70).
+             (setq *gc-kg-hw-cache* nil)
              (setq hs nil i 0 n (length pts))
              (while (< i n)
                (setq w (gc-kg-to-wcs (nth i pts)))
@@ -6280,18 +6358,37 @@
                (princ "\n\n  [!] В части вершин отметки нет - объём не считается.")
                (progn
                  (gc-kg-marks-collect)
-                 (setq nm 0)
-                 (foreach q pts
-                   (if (gc-kg-marked-p (gc-kg-to-wcs q)) (setq nm (1+ nm))))
+                 (setq nm 0 mp nil)
+                 (setq i 0)
+                 (while (< i (length pts))
+                   (if (gc-kg-marked-p (gc-kg-to-wcs (nth i pts)))
+                     (setq nm (1+ nm) mp (cons (nth i hs) mp)))
+                   (setq i (1+ i)))
+                 (setq mp (reverse mp))
                  (princ (strcat "\n\n  ПОДПИСАНО УЗЛОВ : " (itoa nm)
                                 " из " (itoa (length pts))
                                 "  (среднее считается по ним, площадь - полная)"))
+                 (if (< nm 3)
+                   (princ "\n  [!] Подписей меньше трёх - расчёт откатится на ВСЕ вершины\n      контура, а это другой метод. Подпишите узлы: KGA."))
+                 ;; Выпуклость и смены знака - ПО ПОДПИСАННЫМ узлам: именно
+                 ;; ими выбирается маршрут расчёта. Раньше печаталось по
+                 ;; всему контуру, и распечатка объясняла не то, что считалось.
                  (princ (strcat "\n  ВЫПУКЛЫЙ КОНТУР : "
-                                (if (gc-kg-convex-p pts) "да" "НЕТ")))
+                                (if (gc-kg-convex-p pts) "да" "НЕТ")
+                                "  (по всем вершинам)"))
                  (princ (strcat "\n  СМЕН ЗНАКА      : "
-                                (itoa (gc-kg-sgn-changes hs))
-                                (if (> (gc-kg-sgn-changes hs) 2)
-                                  "  (больше двух - частей больше двух)" "")))
+                                (itoa (gc-kg-sgn-changes mp))
+                                "  (по подписанным - ими выбирается расчёт)"
+                                (if (> (gc-kg-sgn-changes mp) 2)
+                                  "\n                    больше двух - частей больше двух, режем на треугольники" "")))
+                 ;; Ячейка может состоять из нескольких кусков и нести вырезы.
+                 ;; Разбор ниже - только по НАРУЖНОМУ контуру, и если кусков
+                 ;; больше, его числа с ведомостью и не должны сходиться.
+                 (setq nl (+ (length (nth 5 found)) (length (nth 6 found))))
+                 (if (> nl 0)
+                   (princ (strcat "\n  [!] В ячейке ещё кусков и вырезов: " (itoa nl)
+                                  "\n      Ниже разобран только наружный контур - с ведомостью"
+                                  "\n      его числа сойтись и не должны.")))
                  (princ "\n\n  ОБЪЁМ ТРЕМЯ МЕТОДАМИ (насыпь / выемка, м3):")
                  (setq old (gc-kg-get "vmethod"))
                  (foreach m '(0 1 2)
@@ -6309,11 +6406,11 @@
                    (princ (strcat "\n      части в сумме "
                                   (rtos (+ (nth 1 r) (nth 3 r)) 2 3)
                                   " м2 против площади "
-                                  (rtos (nth 2 found) 2 3) " м2"))
-                   (if (> (abs (- (+ (nth 1 r) (nth 3 r)) (nth 2 found))) 0.001)
+                                  (rtos (gc-kg-area pts) 2 3) " м2"))
+                   (if (> (abs (- (+ (nth 1 r) (nth 3 r)) (gc-kg-area pts))) 0.001)
                      (princ (strcat "  [!] расходится на "
                                     (rtos (- (+ (nth 1 r) (nth 3 r))
-                                             (nth 2 found)) 2 3) " м2"))
+                                             (gc-kg-area pts)) 2 3) " м2"))
                      (princ "  (сходится)"))
                    (if (> *gc-kg-tri-lost* 0)
                      (princ (strcat "\n      [!] потеряно треугольников: "
