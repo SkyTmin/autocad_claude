@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v91")
+(setq *gc-kg-ver* "v92")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -4489,10 +4489,10 @@
 (defun gc-kg-menu ( / k dflt done)
   (setq done nil dflt "Выход")
   (while (not done)
-    (initget "Сетка Отметки оБъёмы Таблица пРавка Проверка Выход")
+    (initget "Сетка Отметки оБъёмы Таблица пРавка Проверка стЕреть Выход")
     (setq k (getkword
               (strcat "\nЧто делаем? [Сетка/Отметки/оБъёмы/Таблица/пРавка/"
-                      "Проверка/Выход] <" dflt ">: ")))
+                      "Проверка/стЕреть/Выход] <" dflt ">: ")))
     (if (null k) (setq k dflt))
     (cond
       ((= k "Сетка")    (gc-kg-build) (setq dflt "Отметки"))
@@ -4505,6 +4505,7 @@
       ((= k "Таблица")  (c:kgt) (setq dflt "Выход"))
       ((= k "Проверка") (gc-kg-probe) (setq dflt "Выход"))
       ((= k "пРавка") (gc-kg-menu-edit) (setq dflt "Выход"))
+      ((= k "стЕреть") (c:kgda) (setq dflt "Выход"))
       (T (setq done T))))
   (princ))
 
@@ -5289,7 +5290,10 @@
 ;;; --------------------------------------------------------------------
 ;;; KGM - рассчитать объёмы
 ;;; --------------------------------------------------------------------
-(defun c:kgm ( / cells par base ang sx sy lay stl h prec sep env nstray q
+;; ask = T - спросить окно объёмов, nil - считать по уже заданным
+;; настройкам. Параметром, а не глобальным флагом: флаг, забытый
+;; поднятым после Esc, тихо отключил бы окно и в обычном KGM.
+(defun gc-kg-vols-run (ask / cells par base ang sx sy lay stl h prec sep env nstray q
                sflat nflat
                v cut fill cnt skip lo mn use-mn tcut tfill tarea p
                sacut safill dc nbad dbad dmax ibad)
@@ -5301,8 +5305,10 @@
     ((null (gc-kg-surf-ready)))
     ((null (gc-kg-marks-ready)))
     ;; Окно перед расчётом: метод и оформление спрашиваются там, где
-    ;; ими собираются пользоваться.
-    ((null (gc-kg-dialog-vols))
+    ;; ими собираются пользоваться. В полном проходе KGX всё уже
+    ;; спрошено главным окном, и второе окно между «ОК» и результатом
+    ;; ничего не добавляет.
+    ((and ask (null (gc-kg-dialog-vols)))
      (princ "\n[i] Отмена, объёмы не считались."))
     (T
      (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
@@ -5569,6 +5575,8 @@
 (defun gc-kg-vol-str (v cut prec sep / plus)
   (setq plus (if (= "1" (gc-kg-get "wsign")) cut (not cut)))
   (strcat (if plus "+" "-") (gc-kg-fmt-p (abs v) prec sep)))
+
+(defun c:kgm ( / ) (gc-kg-vols-run T))
 
 ;; K -> Л, M -> Ь
 (defun c:лпь ( / ) (c:kgm))
@@ -6381,6 +6389,79 @@
   ;; в никуда, и убрать их надо тем же движением.
   (setq nl (gc-kg-leaders-clear))
   (list nb nt nl))
+
+;; Сколько объектов лежит на слое (с фильтром типа, если он задан).
+(defun gc-kg-lay-count (lay flt / n)
+  (setq n (gc-kg-ss-len
+            (ssget "_X" (if flt (list flt (cons 8 lay)) (list (cons 8 lay))))))
+  (if n n 0))
+
+;; Стереть всё, что лежит на слое. Возвращает сколько стёрто.
+(defun gc-kg-lay-clear (lay / ss n i)
+  (setq n 0)
+  (if (setq ss (ssget "_X" (list (cons 8 lay))))
+    (progn
+      (setq n (sslength ss) i 0)
+      (while (< i n) (entdel (ssname ss i)) (setq i (1+ i)))))
+  n)
+
+;;; --------------------------------------------------------------------
+;;; KGDA - СТЕРЕТЬ ВСЮ КАРТОГРАММУ РАЗОМ
+;;;
+;;; ЗАЧЕМ. Прогон за прогоном приходилось стирать по частям: подписи
+;;; командой KGD, сетку и объёмы - руками по слоям. Три действия вместо
+;;; одного, и после каждого легко забыть четвёртое.
+;;;
+;;; СНАЧАЛА ПОКАЗЫВАЕМ, ПОТОМ СТИРАЕМ. Команда стирает много и сразу,
+;;; поэтому сперва печатает, сколько чего нашла, и спрашивает. Умолчание
+;;; «Да» - один Enter, но что именно исчезнет, видно ДО нажатия.
+;;; --------------------------------------------------------------------
+
+(defun c:kgda ( / ans ng nv nw nb nt nl vsego)
+  (princ "\n\n=== KGDA - стереть всю картограмму ===")
+  (setq ng (gc-kg-lay-count "GC-Картограмма-Сетка" nil)
+        nv (gc-kg-lay-count "GC-Картограмма-Объёмы" nil)
+        nw (gc-kg-lay-count "GC-Картограмма-Ведомость" nil)
+        nt (gc-kg-lay-count "GC-Картограмма-Отметки" '(0 . "TEXT,MTEXT"))
+        nl (gc-kg-lay-count *gc-kg-lay-lead* nil))
+  (setq nb (gc-kg-ss-len (gc-kg-blk-ss)))
+  (if (null nb) (setq nb 0))
+  (setq vsego (+ ng nv nw nt nl nb))
+  (princ (strcat "\n  сетка              : " (itoa ng)))
+  (princ (strcat "\n  подписи отметок    : " (itoa nb) " блоков, "
+                 (itoa nt) " текстов"))
+  (princ (strcat "\n  выноски            : " (itoa nl)))
+  (princ (strcat "\n  подписи объёмов    : " (itoa nv)))
+  (princ (strcat "\n  ведомость          : " (itoa nw)))
+  (if (= vsego 0)
+    (princ "\n[i] Стирать нечего.")
+    (progn
+      (initget "Да Нет")
+      (setq ans (getkword "\nСтереть всё перечисленное? [Да/Нет] <Да>: "))
+      (if (null ans) (setq ans "Да"))
+      (if (= ans "Нет")
+        (princ "\n[i] Отмена, ничего не стёрто.")
+        (progn
+          (setvar "CMDECHO" 0)
+          (command "_.UNDO" "_BEGIN")
+          (gc-kg-marks-clear)
+          (gc-kg-purge-leads)
+          (gc-kg-lay-clear "GC-Картограмма-Сетка")
+          (gc-kg-lay-clear "GC-Картограмма-Объёмы")
+          (gc-kg-lay-clear "GC-Картограмма-Ведомость")
+          (gc-kg-lay-clear *gc-kg-lay-lead*)
+          ;; Определение блока тоже вычищаем - по той же причине, что
+          ;; и в KGD: entmake не переписывает существующее определение,
+          ;; и правка формы подписи не доехала бы до этого чертежа.
+          (if (gc-kg-blk-p) (command "_.-PURGE" "_B" *gc-kg-blk* "_N"))
+          (command "_.UNDO" "_END")
+          ;; Сетки на чертеже больше нет - значит и в памяти её быть
+          ;; не должно. Иначе KGM и KGX считали бы по стёртому, и это
+          ;; был бы тот самый молчаливо неверный результат.
+          (setq *gc-kg-cells* nil *gc-kg-vols* nil *gc-kg-grid-par* nil)
+          (princ (strcat "\n  стёрто объектов    : " (itoa vsego)))
+          (princ "\n[i] Один Ctrl+Z возвращает всё.")))))
+  (princ))
 
 (defun c:kgd ( / r nb nt nl)
   (princ "\n\n=== KGD - удалить все отметки ===")
@@ -7678,16 +7759,65 @@
   (while (< (strlen s) n) (setq s (strcat " " s)))
   s)
 
-(defun c:kgx ( / path f par base ang sx sy ss acc ans c v q key our his d
-               tot mine cnt nbad lp k nn w r og bn dv pts hs nm sorted i j
-               worst dmax r0 r1 r2 nd)
-  (princ "\n\n=== KGX - разбор всей площадки в файл ===")
+;; Полный проход: окно настроек -> сетка -> подписи -> объёмы.
+;; Возвращает T, если дошли до объёмов.
+;;
+;; ЗАЧЕМ. Сверка с эталоном делается десятками прогонов подряд, и каждый
+;; раз это было четыре действия: KG, выбор поверхностей, «Отметки»,
+;; «оБъёмы», потом ещё KGX. Одно из них легко пропустить, и разбор
+;; посчитается по старым отметкам - молча.
+;;
+;; ВТОРОЕ ОКНО НЕ СПРАШИВАЕМ. Настройки подписи доступны из главного окна
+;; (кнопка «Настроить...») и живут до закрытия чертежа; отдельное окно
+;; между «ОК» и результатом здесь ничего не добавляет. Поменять их
+;; по-прежнему можно через KG -> «Отметки».
+(defun gc-kg-full-run ( / )
+  (gc-kg-defaults)
+  (cond
+    ((null (gc-kg-dialog-loop))
+     (princ "\n[i] Отмена - ничего не построено.")
+     nil)
+    (T
+     (gc-kg-report)
+     (gc-kg-build)
+     (cond
+       ((null *gc-kg-cells*)
+        (princ "\n[!] Сетка не построена - дальше идти не с чем.")
+        nil)
+       (T
+        (gc-kg-label)
+        (gc-kg-vols-run nil)
+        T)))))
+
+(defun c:kgx ( / *error* path f par base ang sx sy ss acc ans c v q key our
+               his d tot mine cnt nbad lp k nn w r og bn dv pts hs nm sorted
+               i j worst dmax r0 r1 r2 nd how)
+  ;; KGX теперь сам ведёт окно и строит сетку, значит Esc посреди ввода
+  ;; должен гаситься так же, как в KG: отмена - это не ошибка.
+  (defun *error* (msg)
+    (if (gc-kg-cancel-p msg)
+      (princ "\n[ОТМЕНА] KGX прерван.")
+      (princ (strcat "\n[ОШИБКА] KGX: " msg)))
+    (princ))
+  (princ "\n\n=== KGX - построить и разобрать всю площадку ===")
+  ;; Полный проход - основной сценарий, ради него команда и собрана.
+  ;; Готовое предлагаем только когда оно ЕСТЬ: на большой площадке сетка
+  ;; строится минутами, и гонять её заново ради одного отчёта незачем.
+  (setq how "Заново")
+  (if (and *gc-kg-cells* *gc-kg-vols*)
+    (progn
+      (initget "Заново Готовое")
+      (setq how (getkword
+                  (strcat "\nСчитать заново или взять уже посчитанное? "
+                          "[Заново/Готовое] <Заново>: ")))
+      (if (null how) (setq how "Заново"))))
+  (if (= how "Заново") (gc-kg-full-run))
   (setq par *gc-kg-grid-par*)
   (cond
     ((or (null *gc-kg-cells*) (null par))
-     (princ "\n[!] Сетки нет - сначала KG -> «Сетка»."))
+     (princ "\n[!] Сетки нет - разбирать нечего."))
     ((null *gc-kg-vols*)
-     (princ "\n[!] Объёмы не посчитаны - сначала KG -> «оБъёмы»."))
+     (princ "\n[!] Объёмы не посчитаны - разбирать нечего."))
     (T
      (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
      (gc-kg-set-frame base ang)
@@ -8032,6 +8162,7 @@
 (defun c:лпз ( / ) (c:kgp))
 (defun c:лпя ( / ) (c:kgz))
 (defun c:лпв ( / ) (c:kgd))
+(defun c:лпвф ( / ) (c:kgda))
 (defun c:лпш ( / ) (c:kgi))
 (defun c:лпм ( / ) (c:kgv))
 (defun c:лпц ( / ) (c:kgw))
@@ -8175,9 +8306,11 @@
 (princ (strcat "\n[gc] kg.lsp " *gc-kg-ver*
                " загружен. Команды: KG | KGB границы | KGI что на чертеже"))
 (princ "\n     Правка подписей: KGO обновить | KGA добавить | KGP прорядить")
-(princ "\n                      KGZ обнулить | KGD удалить все")
+(princ "\n                      KGZ обнулить | KGD удалить все подписи")
+(princ "\n     KGDA стереть всю картограмму: сетку, отметки, объёмы, ведомость")
 (princ "\n     Сверка: KGQ разобрать квадрат | KGC сверить с чужим расчётом")
-(princ "\n     KGX разбор всей площадки в файл | KGE опыт со способами деления")
+(princ "\n     KGX построить и разобрать всю площадку в файл (одной командой)")
+(princ "\n     KGE опыт со способами деления")
 (princ "\n     KGR сбросить настройки к умолчаниям")
 (princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
 (princ)
