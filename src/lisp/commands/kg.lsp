@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v87")
+(setq *gc-kg-ver* "v88")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -2304,7 +2304,15 @@
 ;; ОСТОРОЖНО: возможно, порог у образца не абсолютный, а доля шага сетки -
 ;; при шаге 5 м это ровно 5 %. Различить можно только на другом шаге
 ;; (docs/pitfalls.md -> П79).
-(setq *gc-kg-dev-min* 0.23)
+
+;; ВИЛКА СУЖЕНА ВТОРЫМ ЧЕРТЕЖОМ. На нём вершина (1449095.237 656521.369)
+;; с отклонением 0,2224 м у образца подписана: её отметка -0,09 стоит
+;; в делителе выемки квадрата i=6 j=5 - (-0,37 / 6) x 18,572 = -1,145
+;; при -1,150 у образца. Значит порог НЕ БОЛЬШЕ 0,2224. Нижняя граница
+;; 0,219 снята с первого чертежа и остаётся в силе, поэтому вилка теперь
+;; (0,219 ; 0,222], и 0,22 стоит внутри неё. Первый чертёж этим не задет:
+;; его вилка была получена ровно с этой нижней границей.
+(setq *gc-kg-dev-min* 0.22)
 
 ;; Сколько краевых фигур не коснулось линий сетки и подписано целиком.
 (setq *gc-kg-label-island* 0)
@@ -2386,16 +2394,26 @@
                   ;; сразу большой - контур в нём поворачивает вдоль стороны
                   ;; квадрата, - а касание не даёт (П74).
                   (setq og (gc-kg-grid-node-p q sx sy *gc-kg-col-tol*))
-                  ;; ОТКЛОНЕНИЕ от хорды между соседями, порог 0,25 м.
+                  ;; ОТКЛОНЕНИЕ от хорды между соседями, порог *gc-kg-dev-min*.
                   ;; Излом опровергнут прямо: вершину с изломом 22,3 град
                   ;; образец не подписал, а с 18,0 подписал - разделить их
                   ;; углом нельзя (docs/pitfalls.md -> П79).
+                  ;; Соседей берём НЕ СОВПАДАЮЩИХ с самой вершиной:
+                  ;; двойник рядом обнуляет отклонение (П84).
                   (setq bn (if og
                              nil
-                             (>= (gc-kg-dev (nth (rem (+ k (1- nn)) nn) lp)
+                             (>= (gc-kg-dev (gc-kg-nb-of lp k nn -1)
                                             q
-                                            (nth (rem (1+ k) nn) lp))
+                                            (gc-kg-nb-of lp k nn 1))
                                  *gc-kg-dev-min*)))
+                  ;; Сам двойник подписывать второй раз незачем: подпись
+                  ;; встала бы поверх уже поставленной, а в делитель одна
+                  ;; и та же отметка вошла бы дважды.
+                  (if (and (> k 0)
+                           (listp (nth (1- k) lp))
+                           (numberp (car (nth (1- k) lp)))
+                           (< (distance q (nth (1- k) lp)) *gc-kg-col-tol*))
+                    (setq og nil bn nil))
                   (if bn (setq *gc-kg-label-bend* (1+ *gc-kg-label-bend*)))
                   (if (or og bn) (setq p (cons q p)))))
               (setq k (1+ k)))
@@ -3178,6 +3196,26 @@
     (/ (abs (- (* (- (car c) (car a)) (- (cadr b) (cadr a)))
                (* (- (cadr c) (cadr a)) (- (car b) (car a)))))
        l)))
+
+;; Ближайший сосед вершины k, НЕ СОВПАДАЮЩИЙ с ней самой.
+;; d = 1 вперёд по контуру, -1 назад. Если непохожего соседа нет вовсе
+;; (весь контур в одной точке) - возвращаем саму вершину.
+;;
+;; ЗАЧЕМ. В контуре встречаются вершины-двойники: одна и та же точка
+;; записана дважды подряд. Хорда «между соседями» тогда проходит ровно
+;; через саму вершину, и отклонение выходит 0,000 при настоящем 0,222 -
+;; излом на краю остаётся без подписи, а отметка в нём не попадает
+;; в делитель. На втором чертеже это стоило -1,226 м3 на квадрате
+;; i=6 j=5 (docs/pitfalls.md -> П84).
+(defun gc-kg-nb-of (lp k n d / i m q b)
+  (setq b (nth k lp) i 1 q nil)
+  (while (and (null q) (< i n))
+    (setq m (nth (rem (+ (* n n) k (* d i)) n) lp))
+    (if (and (listp m) (numberp (car m))
+             (> (distance m b) *gc-kg-col-tol*))
+      (setq q m))
+    (setq i (1+ i)))
+  (if q q b))
 
 ;; Допуск «вершина лежит на прямой», м. Микрон: на три порядка мельче
 ;; миллиметра, то есть на чертеже неразличим, и на семь порядков крупнее
@@ -4568,16 +4606,35 @@
 ;; и есть линия нулевых работ внутри квадрата.
 ;;
 ;; Возвращает (точки . отметки).
-(defun gc-kg-clip-sign (pts hs sgn / n i j a b ha hb tt p out outh any)
-  (setq n (length pts) i 0 out nil outh nil any nil)
-  (while (< i n)
-    (setq j (rem (1+ i) n))
-    (setq a (nth i pts) ha (* sgn (nth i hs))
-          b (nth j pts) hb (* sgn (nth j hs)))
-    (if (> ha 0.0) (setq any T))
-    (if (>= ha 0.0)
-      (progn (setq out (cons a out))
-             (setq outh (cons (nth i hs) outh))))
+(defun gc-kg-clip-sign (pts hs sgn / lp lh a h0 b h1 tt p out outh any)
+  ;; ВЕРШИНА С НУЛЁМ ПРИНАДЛЕЖИТ ТОЛЬКО НАСЫПИ, а точка пересечения,
+  ;; севшая на неё, - обеим частям. Раньше нулевая вершина входила в обе
+  ;; части, и делитель выемки рос на лишнюю единицу.
+  ;;
+  ;; Проверено на сверке, квадрат i=0 j=3 первого чертежа, отметки
+  ;; 1,55 / -0,63 / 0,00 / 3,95, площади частей 15,952 и 1,955:
+  ;;   насыпь 5,50/5 = 1,10, выемка -0,63/4 = -0,158  ->  17,335
+  ;;   насыпь 5,50/5 = 1,10, выемка -0,63/3 = -0,210  ->  17,232
+  ;; у образца 17,230. Пример из П73 правило не задевает: там лишняя
+  ;; единица была в НАСЫПИ, и она остаётся - 4,62/5 = 0,924 -> 16,44
+  ;; (docs/pitfalls.md -> П85).
+  ;;
+  ;; ПОБОЧНОЕ СЛЕДСТВИЕ. Ряд подряд идущих нулей теперь целиком уходит
+  ;; в насыпь, а не в обе части сразу, - и наложение площадей, ради
+  ;; которого заведена gc-kg-fix-overlap, у ряда нулей больше не
+  ;; возникает. Сама охрана оставлена: она ловит и другие случаи.
+  (setq out nil outh nil any nil lp pts lh hs)
+  ;; Идём сдвигом, а не через nth: nth в цикле даёт квадрат от длины
+  ;; списка (docs/pitfalls.md -> П69).
+  (while lp
+    (setq a (car lp) h0 (car lh))
+    (if (cdr lp)
+      (setq b (cadr lp) h1 (cadr lh))
+      (setq b (car pts) h1 (car hs)))
+    (if (if (> sgn 0) (>= h0 0.0) (< h0 0.0))
+      (progn (setq any T)
+             (setq out (cons a out))
+             (setq outh (cons h0 outh))))
     ;; НЕСТРОГОЕ сравнение слева - и это не мелочь. Если узел ровно
     ;; нулевой, а соседний другого знака, нулевая линия проходит ПО этому
     ;; узлу, и точка пересечения ложится на него же. Образец её всё равно
@@ -4591,19 +4648,18 @@
     ;; Совпавшие ранее квадраты и контрольные примеры docs/formulas.md
     ;; правило не задевает: у них нулевых узлов рядом с иным знаком нет
     ;; (docs/pitfalls.md -> П73).
-    (if (or (and (>= ha 0.0) (< hb 0.0)) (and (< ha 0.0) (>= hb 0.0)))
+    (if (or (and (>= h0 0.0) (< h1 0.0)) (and (< h0 0.0) (>= h1 0.0)))
       (progn
-        (setq tt (/ ha (- ha hb)))
+        (setq tt (/ h0 (- h0 h1)))
         (setq p (list (+ (car a) (* tt (- (car b) (car a))))
                       (+ (cadr a) (* tt (- (cadr b) (cadr a))))))
         (setq out (cons p out))
         (setq outh (cons 0.0 outh))))
-    (setq i (1+ i)))
-  ;; Часть, в которой НЕТ НИ ОДНОЙ вершины своего знака, целиком лежит
-  ;; на нулевой линии: объём её нулевой, а площадь уже вошла в другую
-  ;; часть - там вершины с нулём тоже оставлены (условие >=). Вернуть её
-  ;; значило бы посчитать одну и ту же площадь дважды, и сумма частей
-  ;; перестала бы сходиться с целым (docs/pitfalls.md -> П67).
+    (setq lp (cdr lp) lh (cdr lh)))
+  ;; Часть, в которой НЕТ НИ ОДНОЙ своей вершины, состоит из одних точек
+  ;; пересечения: она целиком лежит на нулевой линии, объём её нулевой,
+  ;; а площадь уже вошла в другую часть. Вернуть её значило бы посчитать
+  ;; одну и ту же площадь дважды (docs/pitfalls.md -> П67).
   (if any (cons (reverse out) (reverse outh)) (cons nil nil)))
 
 ;; Объём части: площадь на среднее отметок её вершин.
@@ -6897,12 +6953,12 @@
                (setq r (gc-kg-hw-at w))
                (setq hs (cons r hs))
                (setq og (gc-kg-on-grid (nth i pts) sx sy *gc-kg-col-tol*))
-               (setq bn (gc-kg-bend (nth (rem (+ i (1- n)) n) pts)
+               (setq bn (gc-kg-bend (gc-kg-nb-of pts i n -1)
                                     (nth i pts)
-                                    (nth (rem (1+ i) n) pts)))
-               (setq dv (gc-kg-dev (nth (rem (+ i (1- n)) n) pts)
+                                    (gc-kg-nb-of pts i n 1)))
+               (setq dv (gc-kg-dev (gc-kg-nb-of pts i n -1)
                                    (nth i pts)
-                                   (nth (rem (1+ i) n) pts)))
+                                   (gc-kg-nb-of pts i n 1)))
                (princ (strcat "\n   " (itoa (1+ i)) ") "
                               (rtos (car w) 2 3) "  " (rtos (cadr w) 2 3)
                               "   земля "
@@ -7049,6 +7105,35 @@
           (setq bd d best (list (car c) (cadr c) (nth 2 c) q k))))))
   best)
 
+;; Наш квадрат, В КОТОРОМ ЛЕЖИТ точка: (i j площадь центр ключ) либо nil.
+;;
+;; ПОЧЕМУ НЕ БЛИЖАЙШИЙ ЦЕНТР. Чужая ведомость ставит подпись на КАЖДУЮ
+;; часть квадрата: в переходном квадрате их две - выемка и насыпь, и
+;; каждая стоит в центре тяжести СВОЕЙ части. У узкой части этот центр
+;; лежит у самой границы квадрата, и ближайшим к нему оказывался центр
+;; СОСЕДНЕГО квадрата - объём уезжал через границу целиком.
+;;
+;; На втором чертеже 72 чужих подписи легли всего на 47 наших квадратов
+;; из 48, и пара i=5 j=4 / i=6 j=4 разошлась ровно на одно и то же число
+;; в разные стороны: -0,175 и +0,173 (docs/pitfalls.md -> П86).
+;;
+;; Для ТОЧКИ номер клетки честен: подпись нарисована внутри своей фигуры.
+;; Оговорка из gc-kg-cell-near («деление на шаг уводит на соседний номер»)
+;; про ЦЕНТР ТЯЖЕСТИ ЧУЖОГО КОНТУРА, который лежит у самого края, - там
+;; ближайший центр по-прежнему верен.
+(defun gc-kg-cell-idx (p sx sy / g i j out c)
+  (setq g (gc-kg-to-grid p))
+  (setq i (gc-kg-ifloor (/ (car  g) sx))
+        j (gc-kg-ifloor (/ (cadr g) sy)))
+  (setq out nil)
+  (foreach c *gc-kg-cells*
+    (if (and (null out) (= (car c) i) (= (cadr c) j))
+      (setq out (list i j (nth 2 c)
+                      (gc-kg-to-wcs
+                        (gc-kg-centroid (if (nth 4 c) (nth 4 c) (nth 3 c))))
+                      (strcat (itoa i) "|" (itoa j))))))
+  out)
+
 ;; Наш ли это объект: слой картограммы либо блок подписи.
 (defun gc-kg-ours-p (e / d lay nm)
   (setq d (entget e))
@@ -7078,10 +7163,10 @@
             (setq q (nth k lp))
             (if (< (distance p (gc-kg-to-wcs q)) 1.0e-3)
               (setq best
-                (list (gc-kg-bend (nth (rem (+ k (1- n)) n) lp) q
-                                  (nth (rem (1+ k) n) lp))
-                      (gc-kg-dev  (nth (rem (+ k (1- n)) n) lp) q
-                                  (nth (rem (1+ k) n) lp))
+                (list (gc-kg-bend (gc-kg-nb-of lp k n -1) q
+                                  (gc-kg-nb-of lp k n 1))
+                      (gc-kg-dev  (gc-kg-nb-of lp k n -1) q
+                                  (gc-kg-nb-of lp k n 1))
                       (gc-kg-grid-node-p q (caddr par) (cadddr par)
                                          *gc-kg-col-tol*))))
             (setq k (1+ k)))))))
@@ -7255,11 +7340,12 @@
 (setq *gc-kg-his-skip* 0)   ; из них наших
 (setq *gc-kg-his-num* 0)    ; не удалось прочитать число
 (setq *gc-kg-his-far* 0)    ; не легло ни на один квадрат
+(setq *gc-kg-his-back* 0)   ; номер клетки не дал квадрата, взят ближайший
 
 (defun gc-kg-his-acc (ss sx sy / n i e p v c key q acc skip)
   (setq n (sslength ss) i 0 acc nil skip 0)
-  (setq *gc-kg-his-num* 0 *gc-kg-his-far* 0 *gc-kg-his-raw* nil
-        *gc-kg-his-full* nil)
+  (setq *gc-kg-his-num* 0 *gc-kg-his-far* 0 *gc-kg-his-back* 0
+        *gc-kg-his-raw* nil *gc-kg-his-full* nil)
   (while (< i n)
     (setq e (ssname ss i))
     (if (gc-kg-ours-p e)
@@ -7289,7 +7375,13 @@
         (if (= "INSERT" (cdr (assoc 0 (entget e))))
           (setq p (cdr (assoc 10 (entget e))) v (gc-kg-blk-num e))
           (setq p (gc-kg-txt-pt e) v (gc-kg-txt-num (cdr (assoc 1 (entget e))))))
-        (setq c (if p (gc-kg-cell-near p nil) nil))
+        ;; Сперва по НОМЕРУ КЛЕТКИ - подпись лежит внутри своей фигуры.
+        ;; Откат на ближайший центр нужен там, где подпись вынесена
+        ;; за пределы своего куска выноской, и о нём говорим вслух.
+        (setq c (if p (gc-kg-cell-idx p sx sy) nil))
+        (if (and p (null c))
+          (progn (setq c (gc-kg-cell-near p nil))
+                 (if c (setq *gc-kg-his-back* (1+ *gc-kg-his-back*)))))
         (cond
           ((null v) (setq *gc-kg-his-num* (1+ *gc-kg-his-num*)))
           ((or (null c) (null p)
@@ -7307,6 +7399,7 @@
                  ", наших отброшено " (itoa skip)))
   (princ (strcat "\n  число не прочлось : " (itoa *gc-kg-his-num*)
                  ", мимо квадратов " (itoa *gc-kg-his-far*)
+                 ", по ближайшему " (itoa *gc-kg-his-back*)
                  ", легло " (itoa (length acc))))
   acc)
 
@@ -7603,6 +7696,7 @@
                                ", наших отброшено " (itoa *gc-kg-his-skip*)
                                ", число не прочлось " (itoa *gc-kg-his-num*)
                                ", мимо квадратов " (itoa *gc-kg-his-far*)
+                               ", по ближайшему " (itoa *gc-kg-his-back*)
                                ", легло " (itoa (length acc))) f)
            (write-line "сверка с чужими: НЕ ПРОВОДИЛАСЬ - столбец «его» пуст" f))
          (write-line "" f)
@@ -7680,10 +7774,10 @@
                      (setq w (gc-kg-to-wcs (nth k pts)))
                      (setq r (gc-kg-hw-at w))
                      (setq og (gc-kg-grid-node-p (nth k pts) sx sy *gc-kg-col-tol*))
-                     (setq bn (gc-kg-bend (nth (rem (+ k (1- nn)) nn) pts)
-                                          (nth k pts) (nth (rem (1+ k) nn) pts)))
-                     (setq dv (gc-kg-dev (nth (rem (+ k (1- nn)) nn) pts)
-                                         (nth k pts) (nth (rem (1+ k) nn) pts)))
+                     (setq bn (gc-kg-bend (gc-kg-nb-of pts k nn -1)
+                                          (nth k pts) (gc-kg-nb-of pts k nn 1)))
+                     (setq dv (gc-kg-dev (gc-kg-nb-of pts k nn -1)
+                                         (nth k pts) (gc-kg-nb-of pts k nn 1)))
                      (write-line
                        (strcat "    " (gc-kg-padl (itoa (1+ k)) 3) ") "
                                (rtos (car w) 2 3) "  " (rtos (cadr w) 2 3)
