@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v66")
+(setq *gc-kg-ver* "v67")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -4848,6 +4848,8 @@
 ;; (docs/pitfalls.md -> П68).
 (setq *gc-kg-mark-fallback* 0)   ; сколько раз пришлось считать по всему контуру
 (setq *gc-kg-min-drop*  0.0)     ; площадь, убранная порогом объёма, м2
+(setq *gc-kg-flat*      nil)     ; плоские куски: (i j вид площадь объём отброшен)
+(setq *gc-kg-flat-h*   0.05)     ; «плоский» - средняя рабочая меньше этого, м
 (setq *gc-kg-split-bad* 0)       ; фигур, где части не дали целого ДО масштаба
 (setq *gc-kg-split-max* 0.0)     ; худшая такая невязка, м2
 
@@ -4968,6 +4970,21 @@
       ;; невязки нельзя: невязка тождественно равна разнице частей и целого,
       ;; и проверка «это порог, а не ошибка» получилась бы всегда истинной -
       ;; то есть не проверкой (docs/pitfalls.md -> П72).
+      ;; ПЛОСКИЕ КУСКИ - те, где средняя рабочая отметка почти ноль.
+      ;; Именно они и решают спор о пороге: наш порог смотрит на ОБЪЁМ
+      ;; (площадь на среднее), и кусок в 200 м2 при средней 0,005 м даёт
+      ;; целый кубометр - мы его оставим. Если у образца порог смотрит на
+      ;; саму СРЕДНЮЮ ОТМЕТКУ, он такой кусок выбросит вместе с площадью.
+      ;; Отсюда и разница в площади картограммы при совпавшей геометрии
+      ;; (status/ISSUES.md -> #007).
+      (if (and (> sc 1.0e-9) (< (abs (/ cut sc)) *gc-kg-flat-h*))
+        (setq *gc-kg-flat* (cons (list (car c) (cadr c) "выемка" sc cut
+                                       (< (abs cut) mn))
+                                 *gc-kg-flat*)))
+      (if (and (> sf 1.0e-9) (< (abs (/ fill sf)) *gc-kg-flat-h*))
+        (setq *gc-kg-flat* (cons (list (car c) (cadr c) "насыпь" sf fill
+                                       (< (abs fill) mn))
+                                 *gc-kg-flat*)))
       (if (< (abs cut) mn)
         (progn (setq *gc-kg-min-drop* (+ *gc-kg-min-drop* sc)) (setq cut 0.0 sc 0.0)))
       (if (< (abs fill) mn)
@@ -5030,6 +5047,7 @@
 ;;; KGM - рассчитать объёмы
 ;;; --------------------------------------------------------------------
 (defun c:kgm ( / cells par base ang sx sy lay stl h prec sep env nstray q
+               sflat nflat
                v cut fill cnt skip lo mn use-mn tcut tfill tarea p
                sacut safill dc nbad dbad dmax ibad)
   (princ "\n\n=== KGM - объёмы земляных масс ===")
@@ -5073,7 +5091,7 @@
      (setq cnt 0 skip 0 tcut 0.0 tfill 0.0 tarea 0.0 sacut 0.0 safill 0.0
            nbad 0 dbad 0.0 dmax 0.0 ibad nil *gc-kg-tri-lost* 0
            *gc-kg-mark-fallback* 0 *gc-kg-min-drop* 0.0
-           *gc-kg-split-bad* 0 *gc-kg-split-max* 0.0)
+           *gc-kg-split-bad* 0 *gc-kg-split-max* 0.0 *gc-kg-flat* nil)
      (princ (strcat "\n[i] Квадратов: " (itoa (length cells)) ". Считаю..."))
      (setvar "CMDECHO" 0)
      (command "_.UNDO" "_BEGIN")
@@ -5177,6 +5195,28 @@
                             ", части " (rtos (cadddr q) 2 4)
                             ", разница " (rtos (- (cadddr q) (caddr q)) 2 4))))
            (princ "\n      Разберите любую из них командой KGQ."))))
+     ;; ПЛОСКИЕ КУСКИ - список для сверки. Площадь картограммы у нас и
+     ;; у образца расходится на 2 м2 при совпавшей геометрии, и вся эта
+     ;; разница - в том, какие куски выброшены порогом. Здесь видно, из
+     ;; чего она могла бы набраться (status/ISSUES.md -> #007).
+     (if *gc-kg-flat*
+       (progn
+         (setq sflat 0.0 nflat 0)
+         (foreach q *gc-kg-flat*
+           (setq sflat (+ sflat (nth 3 q)) nflat (1+ nflat)))
+         (princ (strcat "\n  плоских кусков      : " (itoa nflat)
+                        " на " (gc-kg-fmt sflat) " м2"))
+         (princ (strcat "\n                        (средняя рабочая меньше "
+                        (gc-kg-fmt *gc-kg-flat-h*) " м)"))
+         (foreach q *gc-kg-flat*
+           (princ (strcat "\n      i=" (itoa (car q)) " j=" (itoa (cadr q))
+                          "  " (nth 2 q)
+                          "  S=" (rtos (nth 3 q) 2 3)
+                          "  V=" (rtos (nth 4 q) 2 4)
+                          "  Hср=" (rtos (/ (nth 4 q) (nth 3 q)) 2 5)
+                          (if (nth 5 q) "  ОТБРОШЕН порогом" ""))))
+         (princ "\n      Сверьте эти квадраты с чужим чертежом: где у него")
+         (princ "\n      прочерк вместо числа - тот кусок он выбросил.")))
      (if (> *gc-kg-split-bad* 0)
        (progn
          (princ (strcat "\n  [!] фигур с неверным делением: " (itoa *gc-kg-split-bad*)))
