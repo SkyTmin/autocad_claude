@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v88")
+(setq *gc-kg-ver* "v89")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -2412,7 +2412,7 @@
                   (if (and (> k 0)
                            (listp (nth (1- k) lp))
                            (numberp (car (nth (1- k) lp)))
-                           (< (distance q (nth (1- k) lp)) *gc-kg-col-tol*))
+                           (< (distance q (nth (1- k) lp)) *gc-kg-dup-tol*))
                     (setq og nil bn nil))
                   (if bn (setq *gc-kg-label-bend* (1+ *gc-kg-label-bend*)))
                   (if (or og bn) (setq p (cons q p)))))
@@ -3197,6 +3197,18 @@
                (* (- (cadr c) (cadr a)) (- (car b) (car a)))))
        l)))
 
+;; Допуск «это одна и та же точка», м. НЕ *gc-kg-col-tol*: тот меряет
+;; «лежит на прямой» и равен микрону, а двойники в контуре совпадают
+;; не побитово - обрезка по границе площадки округляет, и одна точка
+;; выходит записанной как 656527.072 / 656527.071 / 656527.072, то есть
+;; с разбросом в миллиметр. Микронный допуск их не схлопывал, и хорда
+;; по-прежнему проходила через саму вершину (docs/pitfalls.md -> П87).
+;;
+;; Сантиметр: на картограмме 1:500 это 0,02 мм на бумаге - в десять раз
+;; тоньше линии, различить нельзя. Ближайшие настоящие соседи в наших
+;; контурах отстоят на 0,2 м и больше, так что запас двадцатикратный.
+(setq *gc-kg-dup-tol* 0.01)
+
 ;; Ближайший сосед вершины k, НЕ СОВПАДАЮЩИЙ с ней самой.
 ;; d = 1 вперёд по контуру, -1 назад. Если непохожего соседа нет вовсе
 ;; (весь контур в одной точке) - возвращаем саму вершину.
@@ -3212,7 +3224,7 @@
   (while (and (null q) (< i n))
     (setq m (nth (rem (+ (* n n) k (* d i)) n) lp))
     (if (and (listp m) (numberp (car m))
-             (> (distance m b) *gc-kg-col-tol*))
+             (> (distance m b) *gc-kg-dup-tol*))
       (setq q m))
     (setq i (1+ i)))
   (if q q b))
@@ -7645,7 +7657,7 @@
 
 (defun c:kgx ( / path f par base ang sx sy ss acc ans c v q key our his d
                tot mine cnt nbad lp k nn w r og bn dv pts hs nm sorted i j
-               worst dmax)
+               worst dmax r0 r1 r2 nd)
   (princ "\n\n=== KGX - разбор всей площадки в файл ===")
   (setq par *gc-kg-grid-par*)
   (cond
@@ -7769,6 +7781,37 @@
                                        " м2, целый был бы " (rtos (* sx sy) 2 4)) f)
                    (setq pts (if (> (nth 2 c) (- (* sx sy) (* 1.0e-6 sx sy)))
                                (nth 3 c) (nth 4 c)))
+                   ;; ЧЕТЫРЕ СМЕНЫ ЗНАКА - это «переходный квадрат по диагонали»,
+                   ;; и docs/formulas.md прямо требует резать его на треугольники:
+                   ;; отсечение по знаку даёт на нём четыре части, склеенные
+                   ;; в самопересекающийся многоугольник, и площадь приходится
+                   ;; чинить наложением.
+                   ;;
+                   ;; Печатаем все три способа рядом, а не переключаем расчёт:
+                   ;; диагонали дают РАЗНЫЕ числа (на i=1 j=1 второго чертежа
+                   ;; -0,791 и +1,319 при 1,360 у образца), и правило выбора
+                   ;; должно быть видно на данных, а не выведено из одного
+                   ;; квадрата (docs/pitfalls.md -> П83).
+                   (setq hs nil lp pts)
+                   (while lp
+                     (setq hs (cons (gc-kg-hw-at (gc-kg-to-wcs (car lp))) hs))
+                     (setq lp (cdr lp)))
+                   ;; cut приходит ОТРИЦАТЕЛЬНЫМ - модуль от него берёт
+                   ;; уже gc-kg-cell-vol, - поэтому итог тут складывается.
+                   (setq hs (reverse hs))
+                   (setq nd (if (member nil hs) 0 (gc-kg-sgn-changes hs)))
+                   (if (> nd 2)
+                     (progn
+                       (setq r0 (gc-kg-vol-parts-m pts hs 0)
+                             r1 (gc-kg-vol-parts-m pts hs 1)
+                             r2 (gc-kg-vol-parts-m pts hs 2))
+                       (write-line
+                         (strcat "    смен знака " (itoa nd)
+                                 " - ПЕРЕХОДНЫЙ ПО ДИАГОНАЛИ; итог квадратами "
+                                 (rtos (+ (nth 0 r0) (nth 2 r0)) 2 3)
+                                 ", диаг.1-3 " (rtos (+ (nth 0 r1) (nth 2 r1)) 2 3)
+                                 ", диаг.2-4 " (rtos (+ (nth 0 r2) (nth 2 r2)) 2 3))
+                         f)))
                    (setq nn (length pts) k 0)
                    (while (< k nn)
                      (setq w (gc-kg-to-wcs (nth k pts)))
