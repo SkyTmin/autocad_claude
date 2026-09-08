@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v79")
+(setq *gc-kg-ver* "v80")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -7041,17 +7041,47 @@
   (setq p (cdr (assoc 10 d)) q (cdr (assoc 11 d)))
   (if (and q (or (> (abs (car q)) 1.0e-6) (> (abs (cadr q)) 1.0e-6))) q p))
 
-;; Число из чужой подписи объёма. Знак плюс/минус, запятая или точка.
-(defun gc-kg-txt-num (s / v)
-  (setq v (gc-kg-num s))
-  (if (and v (vl-string-search "-" s) (> v 0.0)) (- v) v))
+;; Число из чужой подписи: берём САМОЕ ДЛИННОЕ число в строке.
+;;
+;; ЗАЧЕМ ТАК, А НЕ ПЕРВОЕ. У многострочного текста значение приходит
+;; вместе с кодами оформления: «\A1;+37.15», «\H1.5x;-0.31». Первое
+;; число в такой строке принадлежит КОДУ, а не подписи, и разбор с начала
+;; строки давал либо единицу, либо ничего. Коды короткие, значение
+;; длиннее - по длине они и различаются.
+;;
+;; Знак берём по символу ПЕРЕД числом: в «\H1.5x;-0.31» минус стоит там.
+(defun gc-kg-str-num (s / i n c cur cs best bs bl)
+  (setq n (strlen s) i 1 cur "" cs 0 best nil bl 0 bs 0)
+  (while (<= i (1+ n))
+    (setq c (if (<= i n) (substr s i 1) " "))
+    (if (or (and (>= (ascii c) 48) (<= (ascii c) 57))
+            (and (or (= c ".") (= c ",")) (/= cur "")))
+      (progn
+        (if (= cur "") (setq cs i))
+        (setq cur (strcat cur (if (= c ",") "." c))))
+      (progn
+        (if (> (strlen cur) bl) (setq bl (strlen cur) best cur bs cs))
+        (setq cur "")))
+    (setq i (1+ i)))
+  (if (null best)
+    nil
+    (* (if (and (> bs 1) (= "-" (substr s (1- bs) 1))) -1.0 1.0) (atof best))))
+
+;; Число из чужой подписи объёма.
+(defun gc-kg-txt-num (s) (gc-kg-str-num s))
 
 ;; Чужие подписи объёмов -> список (ключ-квадрата . сумма чисел).
 ;;
 ;; Складываем СО ЗНАКОМ: переходный квадрат несёт две подписи, выемку
 ;; и насыпь, и сравнивать их надо с нашей суммой «насыпь минус выемка».
+(setq *gc-kg-his-n* 0)      ; выбрано подписей
+(setq *gc-kg-his-skip* 0)   ; из них наших
+(setq *gc-kg-his-num* 0)    ; не удалось прочитать число
+(setq *gc-kg-his-far* 0)    ; не легло ни на один квадрат
+
 (defun gc-kg-his-acc (ss sx sy / n i e p v c key q acc skip)
   (setq n (sslength ss) i 0 acc nil skip 0)
+  (setq *gc-kg-his-num* 0 *gc-kg-his-far* 0)
   (while (< i n)
     (setq e (ssname ss i))
     (if (gc-kg-ours-p e)
@@ -7060,17 +7090,24 @@
         (setq p (gc-kg-txt-pt e))
         (setq v (gc-kg-txt-num (cdr (assoc 1 (entget e)))))
         (setq c (if p (gc-kg-cell-near p nil) nil))
-        (if (and v c p (< (distance p (nth 3 c)) (* 0.5 (min sx sy))))
-          (progn
-            (setq key (strcat (itoa (car c)) "|" (itoa (cadr c))))
-            (setq q (assoc key acc))
-            (if q
-              (setq acc (subst (cons key (+ (cdr q) v)) q acc))
-              (setq acc (cons (cons key v) acc)))))))
+        (cond
+          ((null v) (setq *gc-kg-his-num* (1+ *gc-kg-his-num*)))
+          ((or (null c) (null p)
+               (>= (distance p (nth 3 c)) (* 0.5 (min sx sy))))
+           (setq *gc-kg-his-far* (1+ *gc-kg-his-far*)))
+          (T
+           (setq key (strcat (itoa (car c)) "|" (itoa (cadr c))))
+           (setq q (assoc key acc))
+           (if q
+             (setq acc (subst (cons key (+ (cdr q) v)) q acc))
+             (setq acc (cons (cons key v) acc)))))))
     (setq i (1+ i)))
+  (setq *gc-kg-his-n* n *gc-kg-his-skip* skip)
   (princ (strcat "\n  выбрано подписей  : " (itoa n)
-                 ", наших отброшено " (itoa skip)
-                 ", легло на квадраты " (itoa (length acc))))
+                 ", наших отброшено " (itoa skip)))
+  (princ (strcat "\n  число не прочлось : " (itoa *gc-kg-his-num*)
+                 ", мимо квадратов " (itoa *gc-kg-his-far*)
+                 ", легло " (itoa (length acc))))
   acc)
 
 ;; СВЕРКА ОБЪЁМОВ ПО КВАДРАТАМ.
@@ -7351,6 +7388,13 @@
          (write-line (strcat "метод: " (gc-kg-method-name)
                              ", порог объёма " (gc-kg-get "min-vol") " м3"
                              ", отклонение узла " (gc-kg-fmt *gc-kg-dev-min*) " м") f)
+         (if acc
+           (write-line (strcat "сверка с чужими: выбрано " (itoa *gc-kg-his-n*)
+                               ", наших отброшено " (itoa *gc-kg-his-skip*)
+                               ", число не прочлось " (itoa *gc-kg-his-num*)
+                               ", мимо квадратов " (itoa *gc-kg-his-far*)
+                               ", легло " (itoa (length acc))) f)
+           (write-line "сверка с чужими: НЕ ПРОВОДИЛАСЬ - столбец «его» пуст" f))
          (write-line "" f)
          (write-line "СВОДКА ПО КВАДРАТАМ" f)
          (write-line (strcat (gc-kg-pad "  i  j" 8) (gc-kg-padl "площадь" 10)
