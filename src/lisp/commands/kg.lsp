@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v60")
+(setq *gc-kg-ver* "v61")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -4734,6 +4734,32 @@
 (defun gc-kg-marked-p (p)
   (if (gc-kg-mark-at p) T nil))
 
+;; Есть ли в списке точка, совпадающая с p.
+(defun gc-kg-near-any (p lst / l out)
+  (setq l lst out nil)
+  (while (and l (null out))
+    (if (< (distance p (car l)) 1.0e-4) (setq out T))
+    (setq l (cdr l)))
+  out)
+
+;; Сколько подписей НЕ попало ни в одну вершину контуров ячеек.
+;;
+;; ЗАЧЕМ. Расчёт берёт отметки по подписям, значит лишняя подпись -
+;; это лишние данные. Остатки прежнего прогона, копии, сделанные для
+;; сверки, отметка, добавленная KGA мимо узла, - всё это лежит на слое
+;; отметок и в расчёт не идёт, но заметить их иначе нечем: в отчёте
+;; было «подписанных узлов 83» при 75 подписанных точках, и объяснить
+;; эту разницу было неоткуда (docs/pitfalls.md -> П72).
+(defun gc-kg-marks-stray (cells / used c lp p q n)
+  (setq used nil n 0)
+  (foreach c cells
+    (foreach lp (append (list (nth 3 c) (nth 4 c)) (nth 5 c) (nth 6 c))
+      (if (and (listp lp) (listp (car lp)))
+        (foreach p lp (setq used (cons (gc-kg-to-wcs p) used))))))
+  (foreach q *gc-kg-marks-pts*
+    (if (not (gc-kg-near-any (car q) used)) (setq n (1+ n))))
+  n)
+
 ;; Объём фигуры ПО ПОДПИСАННЫМ УЗЛАМ, площадь - настоящая, по всему контуру.
 ;;
 ;; ЗАЧЕМ. «Площадь x среднее отметок вершин» считает вершины равноправными,
@@ -4751,6 +4777,9 @@
 ;; (2,96+1,62+0+0)/4 x 21,334 = 24,43 при 24,43 у образца
 ;; (docs/pitfalls.md -> П68).
 (setq *gc-kg-mark-fallback* 0)   ; сколько раз пришлось считать по всему контуру
+(setq *gc-kg-min-drop*  0.0)     ; площадь, убранная порогом объёма, м2
+(setq *gc-kg-split-bad* 0)       ; фигур, где части не дали целого ДО масштаба
+(setq *gc-kg-split-max* 0.0)     ; худшая такая невязка, м2
 
 (defun gc-kg-vol-marked (pts hs / st mp mh lp lh s0 k r z)
   (setq st (gc-kg-area pts))
@@ -4785,6 +4814,17 @@
     (progn
       (setq s0 (gc-kg-area mp))
       (setq r (gc-kg-vol-parts mp mh))
+      ;; ИНВАРИАНТ: части фигуры обязаны дать саму фигуру - ДО всякого
+      ;; масштабирования. Если он нарушен, деление нулевой линией дало
+      ;; самопересечение, и множитель ниже эту ошибку не исправит, а
+      ;; разнесёт по всей площадке. Считаем такие случаи поимённо, иначе
+      ;; в итоге они выглядят как «части больше целого» без адреса.
+      (if (> (abs (- (+ (nth 1 r) (nth 3 r)) s0)) 1.0e-6)
+        (setq *gc-kg-split-bad* (1+ *gc-kg-split-bad*)
+              *gc-kg-split-max* (if (> (abs (- (+ (nth 1 r) (nth 3 r)) s0))
+                                       (abs *gc-kg-split-max*))
+                                  (- (+ (nth 1 r) (nth 3 r)) s0)
+                                  *gc-kg-split-max*)))
       ;; Контур по узлам чуть меньше настоящего - край между узлами
       ;; спрямляется. Возвращаем расчёт на настоящую площадь, иначе
       ;; сумма площадей перестанет сходиться с площадью картограммы (П63).
@@ -4854,8 +4894,14 @@
       ;; в тех же столбцах прочерк (docs/pitfalls.md -> П64).
       (setq mn (gc-kg-num (gc-kg-get "min-vol")))
       (if (or (null mn) (not (= "1" (gc-kg-get "use-min")))) (setq mn 0.0))
-      (if (< (abs cut) mn) (setq cut 0.0 sc 0.0))
-      (if (< (abs fill) mn) (setq fill 0.0 sf 0.0))
+      ;; Площадь, убранную порогом, СЧИТАЕМ здесь. Выводить её потом из
+      ;; невязки нельзя: невязка тождественно равна разнице частей и целого,
+      ;; и проверка «это порог, а не ошибка» получилась бы всегда истинной -
+      ;; то есть не проверкой (docs/pitfalls.md -> П72).
+      (if (< (abs cut) mn)
+        (progn (setq *gc-kg-min-drop* (+ *gc-kg-min-drop* sc)) (setq cut 0.0 sc 0.0)))
+      (if (< (abs fill) mn)
+        (progn (setq *gc-kg-min-drop* (+ *gc-kg-min-drop* sf)) (setq fill 0.0 sf 0.0)))
       ;; h = проект - земля, поэтому часть с h>0 это НАСЫПЬ, с h<0 - ВЫЕМКА.
       (list (abs cut) fill (nth 2 c) (gc-kg-centroid pts) sc sf))))
 
@@ -4913,7 +4959,7 @@
 ;;; --------------------------------------------------------------------
 ;;; KGM - рассчитать объёмы
 ;;; --------------------------------------------------------------------
-(defun c:kgm ( / cells par base ang sx sy lay stl h prec sep env
+(defun c:kgm ( / cells par base ang sx sy lay stl h prec sep env nstray q
                v cut fill cnt skip lo mn use-mn tcut tfill tarea p
                sacut safill dc nbad dbad dmax ibad)
   (princ "\n\n=== KGM - объёмы земляных масс ===")
@@ -4947,9 +4993,17 @@
      (if (> *gc-kg-marks-zero* 0)
        (princ (strcat "\n    из них обнулено вручную: " (itoa *gc-kg-marks-zero*)
                       " - идут в среднее нулём")))
+     (setq nstray (gc-kg-marks-stray cells))
+     (if (> nstray 0)
+       (progn
+         (princ (strcat "\n    [!] не в узлах сетки: " (itoa nstray)))
+         (princ "\n        Это остатки прежних прогонов, копии или отметки,")
+         (princ "\n        добавленные не в узел. В расчёт они не идут, но и")
+         (princ "\n        мешают: KGD удалит все, потом «Отметки» заново.")))
      (setq cnt 0 skip 0 tcut 0.0 tfill 0.0 tarea 0.0 sacut 0.0 safill 0.0
            nbad 0 dbad 0.0 dmax 0.0 ibad nil *gc-kg-tri-lost* 0
-           *gc-kg-mark-fallback* 0)
+           *gc-kg-mark-fallback* 0 *gc-kg-min-drop* 0.0
+           *gc-kg-split-bad* 0 *gc-kg-split-max* 0.0)
      (princ (strcat "\n[i] Квадратов: " (itoa (length cells)) ". Считаю..."))
      (setvar "CMDECHO" 0)
      (command "_.UNDO" "_BEGIN")
@@ -4969,8 +5023,11 @@
            (if (> (abs dc) 1.0e-6)
              (setq nbad (1+ nbad) dbad (+ dbad dc)
                    dmax (if (> (abs dc) (abs dmax)) dc dmax)
-                   ibad (if ibad ibad (list (car c) (cadr c) (nth 2 v)
-                                            (+ (nth 4 v) (nth 5 v))))))
+                   ibad (if (>= (length ibad) 5)
+                          ibad
+                          (append ibad
+                                  (list (list (car c) (cadr c) (nth 2 v)
+                                              (+ (nth 4 v) (nth 5 v))))))))
            (setq *gc-kg-vols* (cons (list (car c) (cadr c) cut fill (nth 2 v) p)
                                     *gc-kg-vols*))
            ;; Подписываем обе части, если квадрат переходный: одно число
@@ -5023,25 +5080,40 @@
      ;; пользователя тем, что он сам и включил: в прошлом прогоне обе строки
      ;; давали одно и то же число -2,745 м2, но одна читалась как настройка,
      ;; а другая как ошибка (docs/pitfalls.md -> П70).
+     ;; ПОРОГ может только УБРАТЬ площадь, поэтому его объяснение годится
+     ;; лишь при отрицательной невязке, и сверяется оно с ЯВНО посчитанной
+     ;; убранной площадью. Прежнее условие сверяло dbad с (tarea - части),
+     ;; а это одно и то же число с обратным знаком - проверка была всегда
+     ;; истинной и прятала адреса ячеек (docs/pitfalls.md -> П72).
      (if (> nbad 0)
-       (if (and use-mn
-                (< (abs (+ dbad (- tarea (+ safill sacut)))) 0.001))
+       (if (and use-mn (< dbad 0.0)
+                (< (abs (+ dbad *gc-kg-min-drop*)) 0.001))
          (progn
            (princ (strcat "\n  квадратов с порогом : " (itoa nbad) " из " (itoa cnt)))
            (princ (strcat "\n                        (в них порог " (gc-kg-fmt mn)
-                          " м3 убрал мелочь, всего " (gc-kg-fmt dbad) " м2 -"))
-           (princ "\n                        это та же строка «отброшено мелочи», не ошибка)"))
+                          " м3 убрал мелочь, всего " (gc-kg-fmt *gc-kg-min-drop*)
+                          " м2 - это не ошибка)")))
          (progn
            (princ (strcat "\n  [!] квадратов с расхождением: " (itoa nbad)
                           " из " (itoa cnt)))
            (princ (strcat "\n      суммарно " (gc-kg-fmt dbad)
                           " м2, худший " (gc-kg-fmt dmax) " м2"))
-           (if ibad
-             (princ (strcat "\n      первый: i=" (itoa (car ibad))
-                            " j=" (itoa (cadr ibad))
-                            ", площадь " (rtos (caddr ibad) 2 4)
-                            ", части " (rtos (cadddr ibad) 2 4))))
-           (princ "\n      Разберите его командой KGQ."))))
+           (if (> *gc-kg-min-drop* 0.0)
+             (princ (strcat "\n      из них порогом убрано " (gc-kg-fmt *gc-kg-min-drop*)
+                            " м2 - остальное необъяснимо")))
+           (foreach q ibad
+             (princ (strcat "\n      i=" (itoa (car q)) " j=" (itoa (cadr q))
+                            ", площадь " (rtos (caddr q) 2 4)
+                            ", части " (rtos (cadddr q) 2 4)
+                            ", разница " (rtos (- (cadddr q) (caddr q)) 2 4))))
+           (princ "\n      Разберите любую из них командой KGQ."))))
+     (if (> *gc-kg-split-bad* 0)
+       (progn
+         (princ (strcat "\n  [!] фигур с неверным делением: " (itoa *gc-kg-split-bad*)))
+         (princ (strcat "\n      части не дали целого ещё ДО пересчёта на площадь,"
+                        "\n      худшая невязка " (gc-kg-fmt *gc-kg-split-max*) " м2."))
+         (princ "\n      Это самопересечение при делении нулевой линией:")
+         (princ "\n      контур по подписанным узлам пошёл сам через себя.")))
      (if (> *gc-kg-tri-lost* 0)
        (progn
          (princ (strcat "\n  [!] потеряно треугольников: " (itoa *gc-kg-tri-lost*)))
