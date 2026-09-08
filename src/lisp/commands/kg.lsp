@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v81")
+(setq *gc-kg-ver* "v82")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -7083,6 +7083,32 @@
     (setq q (entnext q)))
   sum)
 
+(setq *gc-kg-his-raw* nil)   ; что лежит в первых чужих подписях - для отчёта
+
+;; Показать, ЧТО ИМЕННО лежит в чужой подписи: тип, имя блока, все его
+;; атрибуты с метками и значениями.
+;;
+;; ЗАЧЕМ. Разбор чужого блока дал нули по всем 56 квадратам, и почему -
+;; из наших чисел не видно. Гадать о содержимом чужого объекта нельзя
+;; (CLAUDE.md, R5): пусть покажет сам, одной строкой в отчёте.
+(defun gc-kg-his-peek (e / d typ nm q a out cnt)
+  (setq d (entget e) typ (cdr (assoc 0 d)) out "")
+  (if (= typ "INSERT")
+    (progn
+      (setq nm (cdr (assoc 2 d)))
+      (setq out (strcat "INSERT «" (if nm nm "?") "» 66="
+                        (if (assoc 66 d) (itoa (cdr (assoc 66 d))) "нет")
+                        " атрибуты:"))
+      (setq q (entnext e) cnt 0)
+      (while (and q (setq a (entget q)) (= "ATTRIB" (cdr (assoc 0 a))))
+        (setq out (strcat out " [" (if (assoc 2 a) (cdr (assoc 2 a)) "?")
+                          "=«" (if (assoc 1 a) (cdr (assoc 1 a)) "") "»]"))
+        (setq cnt (1+ cnt))
+        (setq q (entnext q)))
+      (if (= cnt 0) (setq out (strcat out " НЕТ НИ ОДНОГО"))))
+    (setq out (strcat typ " «" (if (assoc 1 d) (cdr (assoc 1 d)) "") "»")))
+  out)
+
 ;; Выбрать чужие подписи объёма: указать ОДНУ, остальные берутся по её слою.
 ;;
 ;; ЗАЧЕМ ТАК, А НЕ РАМКОЙ. Рамкой вместе с объёмами попадают его же
@@ -7113,12 +7139,16 @@
 
 (defun gc-kg-his-acc (ss sx sy / n i e p v c key q acc skip)
   (setq n (sslength ss) i 0 acc nil skip 0)
-  (setq *gc-kg-his-num* 0 *gc-kg-his-far* 0)
+  (setq *gc-kg-his-num* 0 *gc-kg-his-far* 0 *gc-kg-his-raw* nil)
   (while (< i n)
     (setq e (ssname ss i))
     (if (gc-kg-ours-p e)
       (setq skip (1+ skip))
       (progn
+        ;; Первые шесть показываем в отчёте как есть - чтобы не гадать,
+        ;; что у него внутри.
+        (if (< (length *gc-kg-his-raw*) 6)
+          (setq *gc-kg-his-raw* (cons (gc-kg-his-peek e) *gc-kg-his-raw*)))
         ;; Блок - точка вставки и атрибуты; текст - своя точка и своя строка.
         (if (= "INSERT" (cdr (assoc 0 (entget e))))
           (setq p (cdr (assoc 10 (entget e))) v (gc-kg-blk-num e))
@@ -7420,6 +7450,13 @@
          (write-line (strcat "метод: " (gc-kg-method-name)
                              ", порог объёма " (gc-kg-get "min-vol") " м3"
                              ", отклонение узла " (gc-kg-fmt *gc-kg-dev-min*) " м") f)
+         (if *gc-kg-his-raw*
+           (progn
+             (write-line "" f)
+             (write-line "ЧТО ЛЕЖИТ В ЧУЖИХ ПОДПИСЯХ (первые несколько):" f)
+             (foreach q (reverse *gc-kg-his-raw*)
+               (write-line (strcat "  " q) f))
+             (write-line "" f)))
          (if acc
            (write-line (strcat "сверка с чужими: выбрано " (itoa *gc-kg-his-n*)
                                ", наших отброшено " (itoa *gc-kg-his-skip*)
