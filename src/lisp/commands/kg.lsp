@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v93")
+(setq *gc-kg-ver* "v94")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -7599,22 +7599,67 @@
 ;;; --------------------------------------------------------------------
 
 (setq *gc-kg-his-txt* 0)    ; текстов принято за подписи объёмов
+(setq *gc-kg-his-lays* nil) ; разбивка выборки по слоям - для отчёта
+
+;; Слой объекта.
+(defun gc-kg-lay-of (e / k)
+  (setq k (cdr (assoc 8 (entget e))))
+  (if k k "(без слоя)"))
+
+;; Есть ли у блока атрибут с МЕТКОЙ ОБЪЁМА. Именно метка, а не «читается
+;; ли число»: число читается и у подписи отметки, и на смешанной выборке
+;; она уезжала в объёмы (docs/pitfalls.md -> П90).
+(defun gc-kg-blk-vol-p (e / q dd out)
+  (setq out nil q (entnext e))
+  (while (and q (setq dd (entget q)) (= "ATTRIB" (cdr (assoc 0 dd))))
+    (if (gc-kg-tag-vol-p (strcase (if (assoc 2 dd) (cdr (assoc 2 dd)) "")))
+      (setq out T))
+    (setq q (entnext q)))
+  out)
+
+;; Сколько объектов на каждом слое: список (слой . сколько).
+(defun gc-kg-lay-tally (lst / a e k q)
+  (setq a nil)
+  (foreach e lst
+    (setq k (gc-kg-lay-of e))
+    (setq q (assoc k a))
+    (if q (setq a (subst (cons k (1+ (cdr q))) q a))
+          (setq a (cons (cons k 1) a))))
+  (reverse a))
+
+;; Слой, на котором объектов больше всего.
+(defun gc-kg-lay-max (a / q best)
+  (setq best nil)
+  (foreach q a (if (or (null best) (> (cdr q) (cdr best))) (setq best q)))
+  best)
+
+;; Строка разбивки по слоям - для отчёта.
+(defun gc-kg-lay-str (ttl a / s q)
+  (setq s (strcat "  " ttl))
+  (foreach q a (setq s (strcat s "  " (car q) "(" (itoa (cdr q)) ")")))
+  s)
 
 ;; Разложить выборку на (контуры узлы объёмы). Наши объекты отброшены,
 ;; их число остаётся в *gc-kg-his-skip*.
 ;;
-;; ЧЕМ ОТЛИЧАЕМ ПОДПИСЬ ОБЪЁМА ОТ ПОДПИСИ В УЗЛЕ. Оба - блоки. Но у
-;; подписи объёма есть атрибут с тегом объёма, и число читается именно
-;; из него (gc-kg-blk-num). Блок без такого атрибута стоит в узле.
-;; Имя чужого блока не зашиваем: оно у каждой версии своё, а признак
-;; «есть атрибут объёма» держится.
+;; РАЗБИРАЕМ ПО СЛОЮ, А НЕ ПО ОБЪЕКТУ ПООДИНОЧКЕ. Чужая картограмма
+;; кладёт квадраты, подписи в узлах и подписи объёмов каждое на свой
+;; слой, и это и есть его собственное деление - надёжнее любого признака,
+;; выведенного нами. Слой объёмов узнаём по МЕТКЕ атрибута (тег с «VOL»
+;; либо «ОБ»), слой сетки - по тому, где больше всего замкнутых контуров
+;; подходящего размера. Остальные блоки и точки - подписи в узлах.
 ;;
-;; ТЕКСТ идёт в объёмы ТОЛЬКО когда блоков-объёмов не нашлось вовсе.
-;; Иначе на площадке, обведённой рамкой целиком, любая подпись пикета
-;; или отметки уехала бы в объёмы: число в ней тоже читается. Сколько
-;; текстов принято, пишем вслух - молча угадывать тут нельзя (П17).
-(defun gc-kg-his-split (ss / n i e dd typ cc nn vv tt)
-  (setq cc nil nn nil vv nil tt nil *gc-kg-his-skip* 0 *gc-kg-his-txt* 0)
+;; Прежний выбор так и работал: указывали одну подпись объёма и брали
+;; её слой целиком. Здесь то же самое, только слой находится сам.
+;;
+;; ТЕКСТ идёт в объёмы ТОЛЬКО когда блоков с меткой объёма не нашлось
+;; вовсе. Иначе на площадке, обведённой рамкой целиком, любая подпись
+;; пикета уехала бы в объёмы: число в ней тоже читается. Сколько текстов
+;; принято, пишем вслух - молча угадывать тут нельзя (П17).
+(defun gc-kg-his-split (ss sx sy / n i e dd typ pts a ct cc nn vv tt
+                        vlay clay cand)
+  (setq cc nil nn nil vv nil tt nil cand nil vlay nil
+        *gc-kg-his-skip* 0 *gc-kg-his-txt* 0 *gc-kg-his-lays* nil)
   (setq n (if ss (sslength ss) 0) i 0)
   (while (< i n)
     (setq e (ssname ss i))
@@ -7623,16 +7668,52 @@
       (progn
         (setq dd (entget e) typ (cdr (assoc 0 dd)))
         (cond
-          ((wcmatch typ "LWPOLYLINE,POLYLINE") (setq cc (cons e cc)))
+          ((wcmatch typ "LWPOLYLINE,POLYLINE")
+           ;; В кандидаты только то, что размером с квадрат сетки:
+           ;; обводка площадки, горизонтали и оси иначе перевесили бы
+           ;; его квадраты числом и увели выбор слоя.
+           (setq pts (gc-kg-ent-pts e))
+           (if (> (length pts) 2)
+             (progn
+               (setq a (gc-kg-area pts))
+               (if (and (> a (* 0.01 sx sy)) (<= a (* 1.2 sx sy)))
+                 (setq cand (cons e cand))))))
           ((= typ "POINT") (setq nn (cons e nn)))
           ((= typ "INSERT")
-           (if (gc-kg-blk-num e) (setq vv (cons e vv)) (setq nn (cons e nn))))
+           (if (gc-kg-blk-vol-p e)
+             (setq vlay (cons (gc-kg-lay-of e) vlay) vv (cons e vv))
+             (setq nn (cons e nn))))
           ((wcmatch typ "TEXT,MTEXT")
            (if (gc-kg-txt-num (cdr (assoc 1 dd))) (setq tt (cons e tt)))))))
     (setq i (1+ i)))
+  (setq cand (reverse cand) nn (reverse nn) vv (reverse vv) tt (reverse tt))
+  ;; Контуры - только со слоя-большинства.
+  (setq ct (gc-kg-lay-tally cand))
+  (setq clay (gc-kg-lay-max ct))
+  (if clay
+    (foreach e cand (if (= (gc-kg-lay-of e) (car clay)) (setq cc (cons e cc)))))
+  (setq cc (reverse cc))
+  ;; Блок без метки объёма, но лежащий на слое объёмов, - тоже объём.
+  (if vlay
+    (progn
+      (setq a nil)
+      (foreach e nn
+        (if (member (gc-kg-lay-of e) vlay)
+          (setq vv (append vv (list e)))
+          (setq a (cons e a))))
+      (setq nn (reverse a))))
   (if (and (null vv) tt)
     (setq vv tt *gc-kg-his-txt* (length tt)))
-  (list (reverse cc) (reverse nn) (reverse vv)))
+  (setq *gc-kg-his-lays*
+        (list (gc-kg-lay-str "контуры :" (gc-kg-lay-tally cc))
+              (gc-kg-lay-str "узлы    :" (gc-kg-lay-tally nn))
+              (gc-kg-lay-str "объёмы  :" (gc-kg-lay-tally vv))))
+  (if (and clay (> (length ct) 1))
+    (setq *gc-kg-his-lays*
+          (append *gc-kg-his-lays*
+                  (list (gc-kg-lay-str "контуры, отброшенные слои:"
+                                       (vl-remove clay ct))))))
+  (list cc nn vv))
 
 ;;; --- РАСЧЁТНЫЕ ЯДРА СВЕРОК ------------------------------------------
 ;;; Считают и возвращают числа, ничего не печатая. Печать у KGC и KGX
@@ -7726,7 +7807,7 @@
          (if (null ss)
            (princ "\n[!] Ничего не выбрано.")
            (progn
-             (setq lst (car (gc-kg-his-split ss)))
+             (setq lst (car (gc-kg-his-split ss sx sy)))
              (setq r (gc-kg-cmp-grid lst sx sy))
              (setq worst (nth 4 r))
              (princ (strcat "\n  выбрано контуров  : " (itoa (sslength ss))))
@@ -7766,7 +7847,7 @@
          (if (null ss)
            (princ "\n[!] Ничего не выбрано.")
            (progn
-             (setq lst (cadr (gc-kg-his-split ss)))
+             (setq lst (cadr (gc-kg-his-split ss sx sy)))
              (setq r (gc-kg-cmp-nodes lst))
              (princ (strcat "\n  выбрано объектов  : " (itoa (sslength ss))))
              (princ (strcat "\n  наших отброшено   : " (itoa *gc-kg-his-skip*)))
@@ -7904,7 +7985,7 @@
          (if (null ss)
            (princ "\n[i] Не выбрано - пишу только наш разбор.")
            (progn
-             (setq spl (gc-kg-his-split ss))
+             (setq spl (gc-kg-his-split ss sx sy))
              (princ (strcat "\n[i] Выбрано " (itoa (sslength ss))
                             ", наших отброшено " (itoa *gc-kg-his-skip*)))
              (princ (strcat "\n    контуров " (itoa (length (car spl)))
@@ -7952,9 +8033,14 @@
                                ", легло " (itoa (length acc))) f)
            (write-line "сверка объёмов: НЕ ПРОВОДИЛАСЬ - столбец «его» пуст" f))
          (if (> *gc-kg-his-txt* 0)
-           (write-line (strcat "  [!] блоков объёма не нашлось, за подписи приняты "
+           (write-line (strcat "  [!] блоков с МЕТКОЙ объёма не нашлось,"
+                               " за подписи приняты "
                                (itoa *gc-kg-his-txt*) " текстов") f))
-         ;; --- сверка СЕТКИ ---------------------------------------------
+         (if *gc-kg-his-lays*
+           (progn
+             (write-line "" f)
+             (write-line "КАК РАЗЛОЖЕНА ВЫБОРКА (по слоям)" f)
+             (foreach q *gc-kg-his-lays* (write-line q f))))
          (if grd
            (progn
              (write-line "" f)
