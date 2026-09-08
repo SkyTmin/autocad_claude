@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v77")
+(setq *gc-kg-ver* "v79")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -7046,6 +7046,33 @@
   (setq v (gc-kg-num s))
   (if (and v (vl-string-search "-" s) (> v 0.0)) (- v) v))
 
+;; Чужие подписи объёмов -> список (ключ-квадрата . сумма чисел).
+;;
+;; Складываем СО ЗНАКОМ: переходный квадрат несёт две подписи, выемку
+;; и насыпь, и сравнивать их надо с нашей суммой «насыпь минус выемка».
+(defun gc-kg-his-acc (ss sx sy / n i e p v c key q acc skip)
+  (setq n (sslength ss) i 0 acc nil skip 0)
+  (while (< i n)
+    (setq e (ssname ss i))
+    (if (gc-kg-ours-p e)
+      (setq skip (1+ skip))
+      (progn
+        (setq p (gc-kg-txt-pt e))
+        (setq v (gc-kg-txt-num (cdr (assoc 1 (entget e)))))
+        (setq c (if p (gc-kg-cell-near p nil) nil))
+        (if (and v c p (< (distance p (nth 3 c)) (* 0.5 (min sx sy))))
+          (progn
+            (setq key (strcat (itoa (car c)) "|" (itoa (cadr c))))
+            (setq q (assoc key acc))
+            (if q
+              (setq acc (subst (cons key (+ (cdr q) v)) q acc))
+              (setq acc (cons (cons key v) acc)))))))
+    (setq i (1+ i)))
+  (princ (strcat "\n  выбрано подписей  : " (itoa n)
+                 ", наших отброшено " (itoa skip)
+                 ", легло на квадраты " (itoa (length acc))))
+  acc)
+
 ;; СВЕРКА ОБЪЁМОВ ПО КВАДРАТАМ.
 ;;
 ;; ЗАЧЕМ. Итог ведомости сошёлся до сотых долей процента, а один столбец
@@ -7056,7 +7083,7 @@
 ;; Подписей на квадрате может быть две (переходный: выемка и насыпь),
 ;; поэтому складываем ВСЕ его числа в этом квадрате СО ЗНАКОМ и сравниваем
 ;; с нашей суммой «насыпь минус выемка».
-(defun gc-kg-cmp-vols (sx sy / ss n i e p v c key acc our q d worst tot mine cnt skip)
+(defun gc-kg-cmp-vols (sx sy / ss i acc our q d worst tot mine cnt)
   (if (null *gc-kg-vols*)
     (princ "\n[!] Объёмы не посчитаны - сначала KG -> «оБъёмы».")
     (progn
@@ -7065,23 +7092,7 @@
       (if (null ss)
         (princ "\n[!] Ничего не выбрано.")
         (progn
-          (setq n (sslength ss) i 0 acc nil skip 0)
-          (while (< i n)
-            (setq e (ssname ss i))
-            (if (gc-kg-ours-p e)
-              (setq skip (1+ skip))
-              (progn
-                (setq p (gc-kg-txt-pt e))
-                (setq v (gc-kg-txt-num (cdr (assoc 1 (entget e)))))
-                (setq c (if p (gc-kg-cell-near p nil) nil))
-                (if (and v c p (< (distance p (nth 3 c)) (* 0.5 (min sx sy))))
-                  (progn
-                    (setq key (strcat (itoa (car c)) "|" (itoa (cadr c))))
-                    (setq q (assoc key acc))
-                    (if q
-                      (setq acc (subst (cons key (+ (cdr q) v)) q acc))
-                      (setq acc (cons (cons key v) acc)))))))
-            (setq i (1+ i)))
+          (setq acc (gc-kg-his-acc ss sx sy))
           ;; Сопоставляем с нашими: (i j выемка насыпь площадь центр)
           (setq tot 0.0 mine 0.0 cnt 0 worst nil)
           (foreach v *gc-kg-vols*
@@ -7094,8 +7105,6 @@
                 (setq d (- (cdr q) our))
                 (if (> (abs d) 0.005)
                   (setq worst (cons (list (car v) (cadr v) (cdr q) our d) worst))))))
-          (princ (strcat "\n  выбрано подписей  : " (itoa n)))
-          (princ (strcat "\n  наших отброшено   : " (itoa skip)))
           (princ (strcat "\n  квадратов сошлось : " (itoa cnt) " из " (itoa (length *gc-kg-vols*))))
           (princ (strcat "\n  ЕГО объём по ним  : " (rtos tot 2 3) " м3"))
           (princ (strcat "\n  НАШ по тем же     : " (rtos mine 2 3) " м3"))
@@ -7277,6 +7286,179 @@
 
 ;; K -> Л, C -> С
 (defun c:лпс ( / ) (c:kgc))
+
+;;; --------------------------------------------------------------------
+;;; KGX - РАЗБОР ВСЕЙ ПЛОЩАДКИ В ФАЙЛ
+;;;
+;;; ЗАЧЕМ. KGQ разбирает ОДИН квадрат, и когда расходится неизвестно
+;;; какой - тыкать по одному долго. А вывалить полсотни разборов в консоль
+;;; нельзя: она не бесконечна, и начало уезжает раньше, чем дочитаешь.
+;;;
+;;; Поэтому: считаем всё сразу, кладём в ФАЙЛ рядом с чертежом, а в консоль
+;;; печатаем только итог и путь. Файл в кодировке Windows - Блокнот
+;;; открывает его как есть.
+;;; --------------------------------------------------------------------
+
+;; Куда писать разбор: рядом с чертежом, а если он не сохранён - во временную.
+(defun gc-kg-x-file ( / d)
+  (setq d (getvar "DWGPREFIX"))
+  (if (or (null d) (= d "")) (setq d (strcat (getenv "TEMP") "\\")))
+  (strcat d "KG-разбор.txt"))
+
+;; Строка фиксированной ширины - чтобы столбцы в файле стояли ровно.
+(defun gc-kg-pad (s n)
+  (while (< (strlen s) n) (setq s (strcat s " ")))
+  s)
+
+(defun gc-kg-padl (s n)
+  (while (< (strlen s) n) (setq s (strcat " " s)))
+  s)
+
+(defun c:kgx ( / path f par base ang sx sy ss acc ans c v q key our his d
+               tot mine cnt nbad lp k nn w r og bn dv pts hs nm sorted i j
+               worst dmax)
+  (princ "\n\n=== KGX - разбор всей площадки в файл ===")
+  (setq par *gc-kg-grid-par*)
+  (cond
+    ((or (null *gc-kg-cells*) (null par))
+     (princ "\n[!] Сетки нет - сначала KG -> «Сетка»."))
+    ((null *gc-kg-vols*)
+     (princ "\n[!] Объёмы не посчитаны - сначала KG -> «оБъёмы»."))
+    (T
+     (setq base (car par) ang (cadr par) sx (caddr par) sy (cadddr par))
+     (gc-kg-set-frame base ang)
+     (gc-kg-marks-collect)
+     ;; Чужие подписи - по желанию: разбор полезен и сам по себе.
+     (initget "Да Нет")
+     (setq ans (getkword "\nСверить с чужими подписями объёмов? [Да/Нет] <Да>: "))
+     (if (null ans) (setq ans "Да"))
+     (setq acc nil)
+     (if (= ans "Да")
+       (progn
+         (princ "\n[i] Выберите ЧУЖИЕ подписи объёмов - тексты в середине квадратов.")
+         (setq ss (ssget (list '(0 . "TEXT,MTEXT"))))
+         (if ss (setq acc (gc-kg-his-acc ss sx sy))
+                (princ "\n[i] Не выбрано - пишу только наш разбор."))))
+     (setq path (gc-kg-x-file))
+     (setq f (open path "w"))
+     (if (null f)
+       (princ (strcat "\n[!] Не удалось открыть файл: " path))
+       (progn
+         (write-line (strcat "РАЗБОР КАРТОГРАММЫ, kg.lsp " *gc-kg-ver*) f)
+         (write-line (strcat "сетка " (gc-kg-fmt sx) " x " (gc-kg-fmt sy)
+                             " м, квадратов " (itoa (length *gc-kg-cells*))
+                             ", подписанных узлов " (itoa (length *gc-kg-marks-pts*))) f)
+         (write-line (strcat "метод: " (gc-kg-method-name)
+                             ", порог объёма " (gc-kg-get "min-vol") " м3"
+                             ", отклонение узла " (gc-kg-fmt *gc-kg-dev-min*) " м") f)
+         (write-line "" f)
+         (write-line "СВОДКА ПО КВАДРАТАМ" f)
+         (write-line (strcat (gc-kg-pad "  i  j" 8) (gc-kg-padl "площадь" 10)
+                             (gc-kg-padl "выемка" 10) (gc-kg-padl "насыпь" 11)
+                             (gc-kg-padl "наш итог" 11) (gc-kg-padl "его" 11)
+                             (gc-kg-padl "разница" 10) "  узлов") f)
+         (setq tot 0.0 mine 0.0 cnt 0 nbad 0 worst nil dmax 0.0)
+         (foreach v *gc-kg-vols*
+           (setq key (strcat (itoa (car v)) "|" (itoa (cadr v))))
+           (setq our (- (nth 3 v) (nth 2 v)))
+           (setq q (assoc key acc))
+           (setq his (if q (cdr q) nil))
+           (setq d (if his (- his our) nil))
+           ;; сколько узлов этого квадрата подписано
+           (setq c nil)
+           (foreach r *gc-kg-cells*
+             (if (and (= (car r) (car v)) (= (cadr r) (cadr v))) (setq c r)))
+           (setq nm 0)
+           (if c
+             (foreach lp (append (list (nth 3 c) (nth 4 c)) (nth 5 c))
+               (if (and (listp lp) (listp (car lp)))
+                 (foreach w lp
+                   (if (gc-kg-marked-p (gc-kg-to-wcs w)) (setq nm (1+ nm)))))))
+           (write-line
+             (strcat (gc-kg-pad (strcat "  " (itoa (car v)) "  " (itoa (cadr v))) 8)
+                     (gc-kg-padl (rtos (nth 4 v) 2 3) 10)
+                     (gc-kg-padl (rtos (nth 2 v) 2 3) 10)
+                     (gc-kg-padl (rtos (nth 3 v) 2 3) 11)
+                     (gc-kg-padl (rtos our 2 3) 11)
+                     (gc-kg-padl (if his (rtos his 2 3) "-") 11)
+                     (gc-kg-padl (if d (rtos d 2 3) "-") 10)
+                     "   " (itoa nm))
+             f)
+           (if his
+             (progn
+               (setq cnt (1+ cnt) tot (+ tot his) mine (+ mine our))
+               (if (> (abs d) 0.005)
+                 (progn
+                   (setq nbad (1+ nbad))
+                   (setq worst (cons (list (car v) (cadr v) his our d) worst))
+                   (if (> (abs d) (abs dmax)) (setq dmax d)))))))
+         (write-line "" f)
+         (if (> cnt 0)
+           (progn
+             (write-line (strcat "ИТОГО по сопоставленным квадратам (" (itoa cnt) "):") f)
+             (write-line (strcat "  его  " (rtos tot 2 3) " м3") f)
+             (write-line (strcat "  наш  " (rtos mine 2 3) " м3") f)
+             (write-line (strcat "  разница " (rtos (- tot mine) 2 3) " м3") f)
+             (write-line (strcat "  расходятся квадраты: " (itoa nbad)
+                                 ", худший " (rtos dmax 2 3) " м3") f)
+             (write-line "" f)))
+         ;; --- подробно по расходящимся квадратам ------------------------
+         (if worst
+           (progn
+             (write-line "ПОДРОБНО ПО РАСХОДЯЩИМСЯ КВАДРАТАМ" f)
+             (foreach q worst
+               (setq c nil)
+               (foreach r *gc-kg-cells*
+                 (if (and (= (car r) (car q)) (= (cadr r) (cadr q))) (setq c r)))
+               (if c
+                 (progn
+                   (write-line "" f)
+                   (write-line (strcat "--- i=" (itoa (car q)) " j=" (itoa (cadr q))
+                                       "   его " (rtos (caddr q) 2 3)
+                                       "   наш " (rtos (cadddr q) 2 3)
+                                       "   разница " (rtos (nth 4 q) 2 3)) f)
+                   (write-line (strcat "    площадь " (rtos (nth 2 c) 2 4)
+                                       " м2, целый был бы " (rtos (* sx sy) 2 4)) f)
+                   (setq pts (if (> (nth 2 c) (- (* sx sy) (* 1.0e-6 sx sy)))
+                               (nth 3 c) (nth 4 c)))
+                   (setq nn (length pts) k 0)
+                   (while (< k nn)
+                     (setq w (gc-kg-to-wcs (nth k pts)))
+                     (setq r (gc-kg-hw-at w))
+                     (setq og (gc-kg-grid-node-p (nth k pts) sx sy *gc-kg-col-tol*))
+                     (setq bn (gc-kg-bend (nth (rem (+ k (1- nn)) nn) pts)
+                                          (nth k pts) (nth (rem (1+ k) nn) pts)))
+                     (setq dv (gc-kg-dev (nth (rem (+ k (1- nn)) nn) pts)
+                                         (nth k pts) (nth (rem (1+ k) nn) pts)))
+                     (write-line
+                       (strcat "    " (gc-kg-padl (itoa (1+ k)) 3) ") "
+                               (rtos (car w) 2 3) "  " (rtos (cadr w) 2 3)
+                               "  рабочая " (gc-kg-padl (if r (rtos r 2 3) "нет") 7)
+                               (if (gc-kg-marked-p w) "  ПОДПИСАН" "  -       ")
+                               (if og "  УЗЕЛ" "      ")
+                               "  излом " (gc-kg-padl (rtos bn 2 1) 6)
+                               "  откл " (rtos dv 2 3))
+                       f)
+                     (setq k (1+ k)))))))
+           (if (> cnt 0) (write-line "Все сопоставленные квадраты совпали." f)))
+         (close f)
+         (princ (strcat "\n  квадратов разобрано : " (itoa (length *gc-kg-vols*))))
+         (if (> cnt 0)
+           (progn
+             (princ (strcat "\n  сопоставлено с ним  : " (itoa cnt)))
+             (princ (strcat "\n  ЕГО объём           : " (rtos tot 2 3) " м3"))
+             (princ (strcat "\n  НАШ по тем же       : " (rtos mine 2 3) " м3"))
+             (princ (strcat "\n  разница             : " (rtos (- tot mine) 2 3) " м3"))
+             (princ (strcat "\n  расходятся квадраты : " (itoa nbad)
+                            ", худший " (rtos dmax 2 3) " м3"))))
+         (princ (strcat "\n  ФАЙЛ: " path))
+         (princ "\n[i] Откройте его Блокнотом и пришлите - там всё по каждому")
+         (princ "\n    квадрату: площадь, части, число подписанных узлов, а по")
+         (princ "\n    расходящимся - каждая вершина с изломом и отклонением.")))))
+  (princ))
+
+;; K -> Л, X -> Ч
+(defun c:лпч ( / ) (c:kgx))
 
 ;;; --------------------------------------------------------------------
 ;;; ЧТО НА ЧЕРТЕЖЕ - диагностика одной командой
@@ -7495,6 +7677,6 @@
 (princ "\n     Правка подписей: KGO обновить | KGA добавить | KGP прорядить")
 (princ "\n                      KGZ обнулить | KGD удалить все")
 (princ "\n     Сверка: KGQ разобрать квадрат | KGC сверить с чужим расчётом")
-(princ "\n     KGR сбросить настройки к умолчаниям")
+(princ "\n     KGX разбор всей площадки в файл | KGR сбросить настройки")
 (princ "\n     Этап 3 из 5: сетка по области поверхностей и подписи отметок.")
 (princ)
