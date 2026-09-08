@@ -9,7 +9,7 @@
 **Дата последнего обновления**: 2026-09-07  
 **Репо**: `SkyTmin/autocad_claude` (теперь **публичный** — от этого зависит `GCU`)  
 **Ветка**: `claude/project-status-check-h0n2w`  
-**Файлы кода**: `kg.lsp` (v84), `gc-update.lsp` (v12), `sv.lsp` (v25),
+**Файлы кода**: `kg.lsp` (v86), `gc-update.lsp` (v12), `sv.lsp` (v25),
 `vid.lsp` (v7), `vo.lsp` (v15), `ol.lsp` (v13), `rs.lsp` (v1)  
 **Модуль .NET**: `src/dotnet/GcSurface/` — необязательный, собирается
 у пользователя (ADR-0008)  
