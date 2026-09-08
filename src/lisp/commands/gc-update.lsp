@@ -140,6 +140,72 @@
           *gc-upd-branch* "/src/lisp/commands/" name
           "?nocache=" (rtos (getvar "CDATE") 2 8)))
 
+;; Список файлов ПАПКИ в ветке - с их отпечатками (sha). Один короткий
+;; запрос вместо скачивания всех файлов.
+;;
+;; ЗАЧЕМ. GCU качал все девять файлов при каждом запуске, а меняется
+;; обычно один. kg.lsp - треть мегабайта, и это ожидание на ровном месте.
+;; Теперь сперва спрашиваем отпечатки, и качаем только то, у чего отпечаток
+;; разошёлся с запомненным.
+;;
+;; Берём contents, а не git/trees: имя ветки содержит косую черту, и в пути
+;; она сломала бы адрес, а в параметре ref - нет.
+(defun gc-upd-list-url (sub)
+  (strcat "https://api.github.com/repos/" *gc-upd-repo* "/contents/" sub
+          "?ref=" *gc-upd-branch*
+          "&nocache=" (rtos (getvar "CDATE") 2 8)))
+
+;; Значение строкового поля JSON из строки вида   "sha": "abc...",
+;; Идём с КОНЦА: последняя пара кавычек в строке и есть значение.
+(defun gc-upd-json-str (s / i a b)
+  (setq i (strlen s) a nil b nil)
+  (while (and (> i 0) (null a))
+    (if (= "\"" (substr s i 1))
+      (if b (setq a i) (setq b i)))
+    (setq i (1- i)))
+  (if (and a b (> b (1+ a))) (substr s (1+ a) (- b a 1)) nil))
+
+;; Отпечатки нужных файлов из ответа: список (имя . sha).
+;;
+;; Ответ приходит разбитым на строки, и «name» с «sha» лежат в разных.
+;; Поэтому маленький автомат: запомнили имя - взяли следующий sha.
+(defun gc-upd-shas (path names / f s out cur v nm)
+  (setq out nil cur nil)
+  (if (setq f (open path "r"))
+    (progn
+      (while (setq s (read-line f))
+        (cond
+          ((vl-string-search "\"name\"" s)
+           (setq v (gc-upd-json-str s) cur nil)
+           (foreach nm names (if (= nm v) (setq cur nm))))
+          ((and cur (vl-string-search "\"sha\"" s))
+           (setq out (cons (cons cur (gc-upd-json-str s)) out))
+           (setq cur nil))))
+      (close f)))
+  out)
+
+;; Где помним отпечатки скачанного.
+(defun gc-upd-map-file (dir) (strcat dir "gc-versions.txt"))
+
+(defun gc-upd-map-read (dir / f s i out)
+  (setq out nil)
+  (if (setq f (open (gc-upd-map-file dir) "r"))
+    (progn
+      (while (setq s (read-line f))
+        (setq i (vl-string-search " " s))
+        (if i (setq out (cons (cons (substr s 1 i) (substr s (+ i 2))) out))))
+      (close f)))
+  out)
+
+(defun gc-upd-map-write (dir lst / f)
+  (if (setq f (open (gc-upd-map-file dir) "w"))
+    (progn
+      (foreach q lst
+        (if (and (car q) (cdr q)) (write-line (strcat (car q) " " (cdr q)) f)))
+      (close f)
+      T)
+    nil))
+
 (defun gc-upd-net-url (name)
   (strcat "https://raw.githubusercontent.com/" *gc-upd-repo* "/"
           *gc-upd-branch* "/src/dotnet/GcSurface/" name
@@ -461,7 +527,7 @@
             (princ (strcat "\n    Причина: " *gc-upd-net-why*)))))))
   (princ))
 
-(defun c:gcu ( / dir nd n ok bad r path)
+(defun c:gcu ( / dir nd n ok bad skip r path tmp shas old new sha q)
   (if (= 0 (getvar "FILEDIA")) (setvar "FILEDIA" 1))
   (setq dir (gc-upd-dir))
   (if (null dir)
@@ -470,27 +536,62 @@
       (princ "\n\n=== GCU - обновление команд ===")
       (princ (strcat "\nпапка : " dir))
       (princ (strcat "\nветка : " *gc-upd-branch*))
-      (setq ok 0 bad 0)
+      (setq ok 0 bad 0 skip 0 new nil)
+      ;; Сперва отпечатки, потом закачка: качаем только изменённое.
+      (setq tmp (strcat (getenv "TEMP") "\\gc-list.json"))
+      (setq shas nil)
+      (if (car (gc-upd-get (gc-upd-list-url "src/lisp/commands") tmp))
+        (setq shas (gc-upd-shas tmp *gc-upd-files*)))
+      (setq old (gc-upd-map-read dir))
+      (if (null shas)
+        (princ "\n[i] Отпечатки не получены - качаю всё."))
       (foreach n *gc-upd-files*
         (setq path (strcat dir n))
-        (setq r (gc-upd-get (gc-upd-url n) path))
-        (if (car r)
-          (progn (setq ok (1+ ok))
-                 (princ (strcat "\n  [ok] " n)))
-          (progn (setq bad (1+ bad))
-                 (princ (strcat "\n  [!!] " n " - " (cdr r))))))
+        (setq sha (cdr (assoc n shas)))
+        (if (and sha (findfile path) (equal sha (cdr (assoc n old))))
+          (progn (setq skip (1+ skip))
+                 (setq new (cons (cons n sha) new))
+                 (princ (strcat "\n  [=]  " n)))
+          (progn
+            (setq r (gc-upd-get (gc-upd-url n) path))
+            (if (car r)
+              (progn (setq ok (1+ ok))
+                     (if sha (setq new (cons (cons n sha) new)))
+                     (princ (strcat "\n  [ok] " n)))
+              (progn (setq bad (1+ bad))
+                     (princ (strcat "\n  [!!] " n " - " (cdr r))))))))
       ;; Заодно тянем исходник модуля .NET. Сам модуль пересобирать
       ;; приходится редко, но когда приходится - файл должен быть свежим,
       ;; иначе сборка чинит вчерашнюю ошибку.
       (setq nd (gc-upd-net-dir))
       (if (and nd (vl-file-directory-p nd))
-        (foreach n *gc-upd-net-files*
-          (setq r (gc-upd-get (gc-upd-net-url n) (strcat nd n)))
-          (if (car r)
-            (progn (setq ok (1+ ok)) (princ (strcat "\n  [ok] net/" n)))
-            (progn (setq bad (1+ bad))
-                   (princ (strcat "\n  [!!] net/" n " - " (cdr r)))))))
-      (princ (strcat "\n\nскачано: " (itoa ok) ", не вышло: " (itoa bad)))
+        (progn
+          (setq shas nil)
+          (if (car (gc-upd-get (gc-upd-list-url "src/dotnet/GcSurface") tmp))
+            (setq shas (gc-upd-shas tmp *gc-upd-net-files*)))
+          (foreach n *gc-upd-net-files*
+            (setq path (strcat nd n))
+            (setq sha (cdr (assoc n shas)))
+            (if (and sha (findfile path)
+                     (equal sha (cdr (assoc (strcat "net/" n) old))))
+              (progn (setq skip (1+ skip))
+                     (setq new (cons (cons (strcat "net/" n) sha) new))
+                     (princ (strcat "\n  [=]  net/" n)))
+              (progn
+                (setq r (gc-upd-get (gc-upd-net-url n) path))
+                (if (car r)
+                  (progn (setq ok (1+ ok))
+                         (if sha (setq new (cons (cons (strcat "net/" n) sha) new)))
+                         (princ (strcat "\n  [ok] net/" n)))
+                  (progn (setq bad (1+ bad))
+                         (princ (strcat "\n  [!!] net/" n " - " (cdr r))))))))))
+      ;; Отпечатки помним ТОЛЬКО про то, что действительно лежит на диске.
+      (gc-upd-map-write dir new)
+      (princ (strcat "\n\nскачано: " (itoa ok)
+                     ", без изменений: " (itoa skip)
+                     ", не вышло: " (itoa bad)))
+      (if (and (= ok 0) (> skip 0))
+        (princ "\n[i] Всё уже свежее. Перекачать принудительно: GCUF."))
       (if (> ok 0)
         (progn
           ;; Загружаем ВСЕ, а не только скачанные: если один файл не приехал,
@@ -524,6 +625,18 @@
   ;; и видимым \n. Выглядит как испорченный файл, хотя это просто
   ;; забытая точка в конце.
   (princ))
+
+;; Забыть отпечатки и скачать всё заново. Нужна, когда файл на диске
+;; поправили руками: отпечаток при этом остался прежним, и GCU счёл бы
+;; файл свежим.
+(defun c:gcuf ( / dir f)
+  (setq dir (gc-upd-dir))
+  (if dir
+    (progn
+      (setq f (gc-upd-map-file dir))
+      (if (findfile f) (vl-file-delete f))
+      (princ "\n[i] Отпечатки забыты - качаю всё заново.")))
+  (c:gcu))
 
 (defun c:gcv ( / dir n path r)
   (setq dir (gc-upd-dir))
@@ -574,12 +687,13 @@
 
 ;; G -> П, C -> С, U -> Г, V -> М. См. docs/pitfalls.md -> П15.
 (defun c:пег ( / ) (c:gcu))
+(defun c:пега ( / ) (c:gcuf))
 (defun c:пем ( / ) (c:gcv))
 ;; L -> Д
 (defun c:псдщфв ( / ) (c:gcload))
 ;; A -> Ф, T -> Е, O -> Щ
 (defun c:псфгещ ( / ) (c:gcauto))
 
-(princ "\n[gc] gc-update.lsp v10 загружен.")
-(princ "\n     GCU обновить | GCV версии | GCLOAD загрузить | GCAUTO автозагрузка | GCDIR папка")
+(princ "\n[gc] gc-update.lsp v11 загружен.")
+(princ "\n     GCU обновить | GCUF перекачать всё | GCV версии | GCLOAD загрузить\n     GCAUTO автозагрузка | GCDIR папка")
 (princ)
