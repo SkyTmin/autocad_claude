@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v82")
+(setq *gc-kg-ver* "v83")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -7084,6 +7084,31 @@
   sum)
 
 (setq *gc-kg-his-raw* nil)   ; что лежит в первых чужих подписях - для отчёта
+(setq *gc-kg-his-full* nil)  ; полная выгрузка ПЕРВОЙ подписи и её атрибутов
+
+;; Полная выгрузка объекта: ВСЕ коды групп как есть.
+;;
+;; ЗАЧЕМ. Атрибуты его блока называются Volume и Area, но хранят «0.0»,
+;; тогда как на чертеже видны настоящие числа. Значит значение лежит не
+;; там, где мы смотрим - в поле, в присоединённых данных, во вложенном
+;; тексте. Догадываться об этом дороже, чем один раз выгрузить объект
+;; целиком (CLAUDE.md, R5).
+(defun gc-kg-dump (e / d out v g)
+  (setq d (entget e (list "*")) out nil)
+  (foreach g d
+    (setq v (cdr g))
+    (setq out (cons (strcat "      ("
+                            (if (numberp (car g)) (itoa (car g)) "?")
+                            " . "
+                            (cond ((= (type v) 'STR)  (strcat "«" v "»"))
+                                  ((= (type v) 'REAL) (rtos v 2 4))
+                                  ((= (type v) 'INT)  (itoa v))
+                                  ((= (type v) 'LIST) "(список)")
+                                  ((= (type v) 'ENAME) "<объект>")
+                                  (T "?"))
+                            ")")
+                    out)))
+  (reverse out))
 
 ;; Показать, ЧТО ИМЕННО лежит в чужой подписи: тип, имя блока, все его
 ;; атрибуты с метками и значениями.
@@ -7139,7 +7164,8 @@
 
 (defun gc-kg-his-acc (ss sx sy / n i e p v c key q acc skip)
   (setq n (sslength ss) i 0 acc nil skip 0)
-  (setq *gc-kg-his-num* 0 *gc-kg-his-far* 0 *gc-kg-his-raw* nil)
+  (setq *gc-kg-his-num* 0 *gc-kg-his-far* 0 *gc-kg-his-raw* nil
+        *gc-kg-his-full* nil)
   (while (< i n)
     (setq e (ssname ss i))
     (if (gc-kg-ours-p e)
@@ -7149,6 +7175,22 @@
         ;; что у него внутри.
         (if (< (length *gc-kg-his-raw*) 6)
           (setq *gc-kg-his-raw* (cons (gc-kg-his-peek e) *gc-kg-his-raw*)))
+        ;; А ПЕРВУЮ выгружаем целиком, вместе с её атрибутами: где-то
+        ;; в этих кодах и лежит настоящее значение.
+        (if (null *gc-kg-his-full*)
+          (progn
+            (setq *gc-kg-his-full*
+                  (cons "--- сам объект:" (gc-kg-dump e)))
+            (if (= "INSERT" (cdr (assoc 0 (entget e))))
+              (progn
+                (setq q (entnext e))
+                (while (and q (= "ATTRIB" (cdr (assoc 0 (entget q)))))
+                  (setq *gc-kg-his-full*
+                        (append *gc-kg-his-full*
+                                (cons (strcat "--- атрибут «"
+                                              (cdr (assoc 2 (entget q))) "»:")
+                                      (gc-kg-dump q))))
+                  (setq q (entnext q)))))))
         ;; Блок - точка вставки и атрибуты; текст - своя точка и своя строка.
         (if (= "INSERT" (cdr (assoc 0 (entget e))))
           (setq p (cdr (assoc 10 (entget e))) v (gc-kg-blk-num e))
@@ -7456,6 +7498,11 @@
              (write-line "ЧТО ЛЕЖИТ В ЧУЖИХ ПОДПИСЯХ (первые несколько):" f)
              (foreach q (reverse *gc-kg-his-raw*)
                (write-line (strcat "  " q) f))
+             (write-line "" f)))
+         (if *gc-kg-his-full*
+           (progn
+             (write-line "ПЕРВАЯ ЧУЖАЯ ПОДПИСЬ ЦЕЛИКОМ (все коды групп):" f)
+             (foreach q *gc-kg-his-full* (write-line q f))
              (write-line "" f)))
          (if acc
            (write-line (strcat "сверка с чужими: выбрано " (itoa *gc-kg-his-n*)

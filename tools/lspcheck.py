@@ -64,6 +64,32 @@ def scan_parens(d):
 
 
 NAME = r'[a-zA-Zа-яА-Я0-9:_*<>?\-]+'
+VAR = r'[a-zA-Zа-яА-Я][a-zA-Zа-яА-Я0-9-]*'
+
+
+def scan_locals(d):
+    """Переменные, не объявленные после слэша в (defun ... ( / ...)).
+
+    ЗАЧЕМ. В AutoLISP переменная цикла foreach и любая setq БЕЗ объявления
+    остаётся глобальной после выхода из функции. Пока имена не пересекаются,
+    это незаметно; как только две функции возьмут одно короткое имя (c, p, k)
+    и одна вызовет другую - вложенный вызов затрёт значение внешнего, и
+    сломается тот, кто ничего не менял (docs/pitfalls.md -> П70).
+    """
+    out = []
+    for m in re.finditer(r'\(defun (' + NAME + r') \(([^)]*)\)', d):
+        name = m.group(1)
+        loc = set(a for a in m.group(2).replace('/', ' ').split())
+        start = m.end()
+        nxt = d.find('\n(defun ', start)
+        body = d[start: nxt if nxt > 0 else len(d)]
+        used = set(re.findall(r'\(foreach (' + VAR + ')', body))
+        used |= set(re.findall(r'\(setq (' + VAR + ')', body))
+        miss = sorted(v for v in used - loc if not v.startswith('*'))
+        if miss:
+            out.append((name, miss))
+    return out
+
 
 
 def scan(path):
@@ -87,9 +113,20 @@ def scan(path):
     except UnicodeEncodeError as e:
         enc = 'НЕ КОДИРУЕТСЯ: %s' % e
 
+    leaks = scan_locals(d)
+
+    # Утечки в глобальные НЕ роняют проверку: их 44 в kg.lsp на момент
+    # заведения, и чинить их надо отдельным разбором, а не вперемешку
+    # с расчётной правкой (status/ISSUES.md -> #008). Но молчать о них
+    # нельзя - иначе число будет только расти.
     ok = (depth == 0) and not bad and not miss and enc == 'ok'
-    print('%s\n  скобки: %d | ошибки: %s\n  не определены: %s\n  CP1251: %s'
-          % (path, depth, bad or 'нет', miss or 'нет', enc))
+    print('%s\n  скобки: %d | ошибки: %s\n  не определены: %s\n  CP1251: %s\n'
+          '  утекают в глобальные: %d функций%s'
+          % (path, depth, bad or 'нет', miss or 'нет', enc, len(leaks),
+             '' if not leaks else
+             '\n    ' + '\n    '.join('%-26s %s' % (n, ' '.join(v))
+                                       for n, v in leaks[:6])
+             + ('\n    ...' if len(leaks) > 6 else '')))
     return ok
 
 
