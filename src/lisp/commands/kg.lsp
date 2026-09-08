@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v94")
+(setq *gc-kg-ver* "v95")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -7600,6 +7600,7 @@
 
 (setq *gc-kg-his-txt* 0)    ; текстов принято за подписи объёмов
 (setq *gc-kg-his-lays* nil) ; разбивка выборки по слоям - для отчёта
+(setq *gc-kg-grid-back* 0)  ; контуров село не по номеру клетки, а по центру
 
 ;; Слой объекта.
 (defun gc-kg-lay-of (e / k)
@@ -7723,21 +7724,34 @@
 ;; Сверка площадей. lst - список чужих контуров.
 ;; Возвращает (пар его-S наша-S мимо расхождения наших-без-пары их-S),
 ;; где расхождения - список (i j его наша разница).
-(defun gc-kg-cmp-grid (lst sx sy / e pts a c tot mine cnt miss worst used
+(defun gc-kg-cmp-grid (lst sx sy / e pts a c p tot mine cnt miss worst used
                        half nofit nofits)
   (setq tot 0.0 mine 0.0 cnt 0 miss 0 worst nil used nil
-        half (* 0.5 (min sx sy)))
+        half (* 0.5 (min sx sy)) *gc-kg-grid-back* 0)
   (foreach e lst
     (setq pts (gc-kg-ent-pts e))
     (if (> (length pts) 2)
       (progn
         (setq a (gc-kg-area pts))
-        (setq c (gc-kg-cell-near (gc-kg-centroid pts) used))
+        (setq p (gc-kg-centroid pts))
+        ;; СНАЧАЛА ПО НОМЕРУ КЛЕТКИ. Центр тяжести куска лежит внутри
+        ;; самого куска, а кусок - внутри своего квадрата, поэтому номер
+        ;; клетки для него честен. Ближайший центр оставлен откатом:
+        ;; у невыпуклого куска центр тяжести может выйти наружу.
+        ;;
+        ;; По одному лишь ближайшему центру на чертеже 1 разъехались
+        ;; десять контуров: «мимо сетки 10» при ровно десяти наших
+        ;; квадратах без пары, и его квадрат 22,398 м2 сел на наш
+        ;; кусок 0,863 м2 (docs/pitfalls.md -> П86, тот же корень).
+        (setq c (gc-kg-cell-idx p sx sy))
+        (if (and c (member (nth 4 c) used)) (setq c nil))
+        (if (null c)
+          (progn (setq c (gc-kg-cell-near p used))
+                 (if c (setq *gc-kg-grid-back* (1+ *gc-kg-grid-back*)))))
         (cond
           ;; Контур больше квадрата сетки - это обводка площадки, не квадрат.
           ((> a (* 1.2 sx sy)) (setq miss (1+ miss)))
-          ((or (null c)
-               (> (distance (gc-kg-centroid pts) (nth 3 c)) half))
+          ((or (null c) (> (distance p (nth 3 c)) half))
            (setq miss (1+ miss)))
           (T
            (setq used (cons (nth 4 c) used))
@@ -8046,7 +8060,8 @@
              (write-line "" f)
              (write-line "СВЕРКА СЕТКИ (площади квадратов)" f)
              (write-line (strcat "  чужих квадратов легло : " (itoa (nth 0 grd))
-                                 ", мимо сетки " (itoa (nth 3 grd))) f)
+                                 ", мимо сетки " (itoa (nth 3 grd))
+                                 ", по ближайшему " (itoa *gc-kg-grid-back*)) f)
              (write-line (strcat "  его площадь   : " (rtos (nth 1 grd) 2 3) " м2") f)
              (write-line (strcat "  наша по ним   : " (rtos (nth 2 grd) 2 3) " м2") f)
              (write-line (strcat "  разница       : "
