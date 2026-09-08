@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v90")
+(setq *gc-kg-ver* "v91")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -5016,6 +5016,7 @@
 (setq *gc-kg-split-bad* 0)       ; фигур, где части не дали целого ДО масштаба
 (setq *gc-kg-split-max* 0.0)     ; худшая такая невязка, м2
 (setq *gc-kg-split-hard* 0)      ; из них не вылечилось треугольниками
+(setq *gc-kg-dup-node* 0)        ; вершин-двойников выброшено из среднего
 
 (defun gc-kg-vol-marked (pts hs / st mp mh lp lh s0 k r z)
   (setq st (gc-kg-area pts))
@@ -5027,9 +5028,20 @@
     ;; Обнулённый вручную узел идёт в среднее НУЛЁМ, а не отметкой
     ;; с поверхностей. Иначе подпись говорит «здесь не трогаем», а
     ;; ведомость считает выемку - и разойтись им нечем (ISSUES #004).
+    ;; ВЕРШИНА-ДВОЙНИК В СРЕДНЕЕ ВТОРОЙ РАЗ НЕ ИДЁТ. Двойники в контуре -
+    ;; одна и та же точка, записанная дважды; подпись на них тоже одна,
+    ;; но gc-kg-mark-at находит её для ОБЕИХ, и отметка попадает
+    ;; в делитель два раза. На квадрате i=6 j=5 второго чертежа это дало
+    ;; -0,46/7 вместо -0,37/6, то есть -0,972 при -0,900 у образца.
+    ;;
+    ;; Площадь от выброса не меняется: у совпадающей точки вклад в шнурки
+    ;; нулевой. Меняется ровно делитель - то, что и было сломано
+    ;; (docs/pitfalls.md -> П89).
     (if z
-      (setq mp (cons (car lp) mp)
-            mh (cons (if (= z 1) 0.0 (car lh)) mh)))
+      (if (gc-kg-near-tol (car lp) mp *gc-kg-dup-tol*)
+        (setq *gc-kg-dup-node* (1+ *gc-kg-dup-node*))
+        (setq mp (cons (car lp) mp)
+              mh (cons (if (= z 1) 0.0 (car lh)) mh))))
     (setq lp (cdr lp) lh (cdr lh)))
   (setq mp (reverse mp) mh (reverse mh))
   ;; Подписей меньше трёх, ЛИБО они легли на одну прямую (площадь ноль) -
@@ -5323,7 +5335,7 @@
            nbad 0 dbad 0.0 dmax 0.0 ibad nil *gc-kg-tri-lost* 0
            *gc-kg-mark-fallback* 0 *gc-kg-min-drop* 0.0
            *gc-kg-split-bad* 0 *gc-kg-split-max* 0.0 *gc-kg-flat* nil
-           *gc-kg-split-hard* 0)
+           *gc-kg-split-hard* 0 *gc-kg-dup-node* 0)
      (princ (strcat "\n[i] Квадратов: " (itoa (length cells)) ". Считаю..."))
      (setvar "CMDECHO" 0)
      (command "_.UNDO" "_BEGIN")
@@ -5461,6 +5473,11 @@
          (princ (strcat "\n  [!] ЧАСТЬ БОЛЬШЕ ЦЕЛОГО: " (itoa *gc-kg-split-hard*)))
          (princ "\n      Даже большая часть фигуры вышла больше самой фигуры -")
          (princ "\n      это уже не вырожденность. Объёмы в них неверны.")))
+     (if (> *gc-kg-dup-node* 0)
+       (progn
+         (princ (strcat "\n  вершин-двойников    : " (itoa *gc-kg-dup-node*)))
+         (princ "\n                        (одна точка в контуре записана дважды;")
+         (princ "\n                        в среднее взята один раз, площадь та же)")))
      (if (> *gc-kg-tri-lost* 0)
        (progn
          (princ (strcat "\n  [!] потеряно треугольников: " (itoa *gc-kg-tri-lost*)))
@@ -7064,7 +7081,7 @@
                                     (rtos (- (+ (nth 1 r) (nth 3 r))
                                              (gc-kg-area pts)) 2 3) " м2"))
                      (princ "  (сходится)"))
-                   (if (> *gc-kg-tri-lost* 0)
+                    (if (> *gc-kg-tri-lost* 0)
                      (princ (strcat "\n      [!] потеряно треугольников: "
                                     (itoa *gc-kg-tri-lost*)))))
                  (gc-kg-set "vmethod" old)
