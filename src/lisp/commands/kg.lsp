@@ -962,7 +962,7 @@
 ;;; ====================================================================
 
 ;; Имя диалога внутри DCL.
-(setq *gc-kg-ver* "v97")
+(setq *gc-kg-ver* "v98")
 
 (setq *gc-kg-dlg* "gc_kg")
 
@@ -7822,6 +7822,84 @@
       (setq extra (cons (list q (gc-kg-dist-min q his)) extra))))
   (list his ours (reverse miss) (reverse extra) tol))
 
+;;; --------------------------------------------------------------------
+;;; ГИПОТЕЗА: УПРОЩЕНИЕ ГРАНИЦЫ (ДУГЛАС-ПЕКЕР)
+;;;
+;;; ЗАЧЕМ. Сверка наборов узлов на втором чертеже дала перевёрнутую
+;;; картину: образец подписывает вершины с отклонением 0,013-0,215,
+;;; а мы - с 0,226-0,238. Все десять спорных вершин НАШЛИСЬ в наших же
+;;; контурах, то есть граница у нас общая и дело именно в правиле отбора.
+;;; Никакой порог по «отклонению от соседей» так не разворачивается.
+;;;
+;;; Разворачивается упрощение полилинии: там хорда тянется через ВСЮ
+;;; цепочку между сохранёнными точками, а не между соседями, и одна
+;;; вершина в разном окружении получает разное отклонение.
+;;;
+;;; СЧИТАЕМ, НО НЕ ПРИМЕНЯЕМ. Набор по Дугласу-Пекеру строится только
+;;; для отчёта и сверяется с набором образца рядом с нашим. Менять
+;;; расчёт по непроверенной гипотезе нельзя (CLAUDE.md, R1), а измерить
+;;; её на живых данных - можно и нужно.
+;;; --------------------------------------------------------------------
+
+;; Подсписок от i до j включительно.
+(defun gc-kg-sub (lst i j / k out)
+  (setq k i out nil)
+  (while (<= k j) (setq out (cons (nth k lst) out) k (1+ k)))
+  (reverse out))
+
+;; Дуглас-Пекер: какие точки цепочки пережили упрощение с допуском eps.
+;; Оба конца сохраняются всегда.
+(defun gc-kg-dp (lst eps / n i best bi dd a b)
+  (setq n (length lst))
+  (if (< n 3)
+    lst
+    (progn
+      (setq a (car lst) b (nth (1- n) lst))
+      (setq best 0.0 bi nil i 1)
+      (while (< i (1- n))
+        (setq dd (gc-kg-dev a (nth i lst) b))
+        (if (> dd best) (setq best dd bi i))
+        (setq i (1+ i)))
+      (if (and bi (>= best eps))
+        (append (gc-kg-dp (gc-kg-sub lst 0 bi) eps)
+                (cdr (gc-kg-dp (gc-kg-sub lst bi (1- n)) eps)))
+        (list a b)))))
+
+;; Набор расчётных узлов по Дугласу-Пекеру, в МСК.
+;;
+;; Якорями берём узлы сетки: они расчётные всегда и у нас, и у образца.
+;; Между соседними якорями по кольцу контур упрощается. Если узлов сетки
+;; на петле меньше двух, якорями берём противоположные вершины - иначе
+;; цепочка выродится в точку и хорда потеряет смысл.
+(defun gc-kg-dp-pts (cells sx sy eps / out c lp n k m anc chain a b idx q)
+  (setq out nil)
+  (foreach c cells
+    (foreach lp (append (list (nth 4 c)) (nth 5 c))
+      (if (and (listp lp) (listp (car lp)) (> (length lp) 2))
+        (progn
+          (setq n (length lp) anc nil k 0)
+          (while (< k n)
+            (if (gc-kg-grid-node-p (nth k lp) sx sy *gc-kg-col-tol*)
+              (setq anc (cons k anc)))
+            (setq k (1+ k)))
+          (setq anc (reverse anc))
+          (if (< (length anc) 2) (setq anc (list 0 (/ n 2))))
+          (setq m (length anc) k 0)
+          (while (< k m)
+            (setq a (nth k anc) b (nth (rem (1+ k) m) anc))
+            ;; Цепочка от якоря a до якоря b по кольцу.
+            (setq chain nil idx a)
+            (setq chain (list (nth a lp)))
+            (while (/= idx b)
+              (setq idx (rem (1+ idx) n))
+              (setq chain (append chain (list (nth idx lp)))))
+            (foreach q (gc-kg-dp chain eps)
+              (setq q (gc-kg-to-wcs q))
+              (if (not (gc-kg-near-tol q out *gc-kg-dup-tol*))
+                (setq out (cons q out))))
+            (setq k (1+ k)))))))
+  out)
+
 ;; Строка про несовпавший узел: координаты, признаки вершины и расстояние
 ;; до ближайшего узла другого набора. Последнее и отделяет «подписана
 ;; ДРУГАЯ вершина» от «подписана ТА ЖЕ, только она у него чуть в стороне».
@@ -7997,7 +8075,7 @@
 
 (defun c:kgx ( / *error* path f par base ang sx sy ss acc ans c v q key our
                his d tot mine cnt nbad lp k nn w r og bn dv pts hs nm sorted
-               i j worst dmax r0 r1 r2 nd how grd nds spl)
+               i j worst dmax r0 r1 r2 nd how grd nds spl dpp dpa dpb)
   ;; KGX теперь сам ведёт окно и строит сетку, значит Esc посреди ввода
   ;; должен гаситься так же, как в KG: отмена - это не ошибка.
   (defun *error* (msg)
@@ -8144,7 +8222,36 @@
              (foreach q (nth 3 nds)
                (write-line (strcat "    " (gc-kg-node-str q)) f))
              (if (and (null (nth 2 nds)) (null (nth 3 nds)))
-               (write-line "  наборы узлов совпали полностью" f))))
+               (write-line "  наборы узлов совпали полностью" f))
+             ;; ГИПОТЕЗА, ПОСЧИТАННАЯ РЯДОМ. Расчёт этим не меняется:
+             ;; строим второй набор узлов по Дугласу-Пекеру и сверяем
+             ;; с набором образца так же, как наш. Если он ближе -
+             ;; правило найдено; если нет - гипотеза отпадает, и это
+             ;; тоже ответ (status/ISSUES.md -> #010).
+             (setq dpp (gc-kg-dp-pts *gc-kg-cells* sx sy *gc-kg-dev-min*))
+             (setq dpa 0 dpb 0)
+             (foreach q (nth 0 nds)
+               (if (not (gc-kg-near-tol q dpp (nth 4 nds)))
+                 (setq dpa (1+ dpa))))
+             (foreach q dpp
+               (if (not (gc-kg-near-tol q (nth 0 nds) (nth 4 nds)))
+                 (setq dpb (1+ dpb))))
+             (write-line "" f)
+             (write-line "ТА ЖЕ СВЕРКА, НО ЕСЛИ БЫ ОТБИРАЛИ ПО ДУГЛАСУ-ПЕКЕРУ" f)
+             (write-line (strcat "  (расчёт этим НЕ изменён, допуск тот же "
+                                 (gc-kg-fmt *gc-kg-dev-min*) " м)") f)
+             (write-line (strcat "  его узлов " (itoa (length (nth 0 nds)))
+                                 ", по Дугласу-Пекеру " (itoa (length dpp))) f)
+             (write-line (strcat "  есть у НЕГО, нет у ДП : " (itoa dpa)
+                                 "   (у нас сейчас "
+                                 (itoa (length (nth 2 nds))) ")") f)
+             (write-line (strcat "  есть у ДП, нет у него : " (itoa dpb)
+                                 "   (у нас сейчас "
+                                 (itoa (length (nth 3 nds))) ")") f)
+             (write-line (if (< (+ dpa dpb)
+                                (+ (length (nth 2 nds)) (length (nth 3 nds))))
+                           "  -> Дуглас-Пекер БЛИЖЕ к образцу, чем наше правило"
+                           "  -> Дуглас-Пекер НЕ ближе, гипотеза не подтвердилась") f)))
          (write-line "" f)
          (write-line "СВОДКА ПО КВАДРАТАМ" f)
          (write-line (strcat (gc-kg-pad "  i  j" 8) (gc-kg-padl "площадь" 10)
