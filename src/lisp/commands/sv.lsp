@@ -1,7 +1,9 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 v27)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 v28)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2/3/4 (4: naklonnye svai, ellipsy).
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v28: proektnye ELLIPSE - vybor i centr v SV 4 / SV 3 / SVP.
 ;;;
 ;;; v27: SV 4 - scenariy SV 3: otmetka sreza, proekt, ellips sreza.
 ;;;      Sinie otkloneniya +Y 1.700, belye proektnye +Y 2.600.
@@ -120,7 +122,7 @@
       '((0 . "POINT,AECC*POINT,AEC*POINT")))
 
 (setq *gc-pile-project-ssget-filter*
-      '((0 . "CIRCLE,POINT,AECC*POINT,AEC*POINT")))
+      '((0 . "CIRCLE,ELLIPSE,POINT,AECC*POINT,AEC*POINT")))
 
 (setq *gc-l-low*                "GC-Сваи-Низ")
 (setq *gc-l-high*               "GC-Сваи-Верх")
@@ -195,7 +197,7 @@
   (setq ed  (entget ent)
         typ (cdr (assoc 0 ed)))
   (cond
-    ((= typ "CIRCLE")
+    ((member typ '("CIRCLE" "ELLIPSE"))
      (setq c (cdr (assoc 10 ed)))
      (if c (list (car c) (cadr c) (if (caddr c) (caddr c) 0.0)) nil))
     ((wcmatch typ "POINT,AECC*POINT,AEC*POINT")
@@ -236,7 +238,7 @@
   (reverse centers))
 
 (defun gc-pile-read-project-centers ( / ss centers)
-  (princ "\nВыделите проектные круги или проектные точки (Enter — без проектных отклонений): ")
+  (princ "\nВыделите проектные круги, эллипсы или точки (Enter — без проектных отклонений): ")
   (setq ss (ssget *gc-pile-project-ssget-filter*))
   (if ss
     (progn
@@ -1380,5 +1382,5 @@
 ;; SVP -> ЫМЗ
 (defun c:ымз ( / ) (c:svp))
 (defun c:ЫМЗ ( / ) (c:svp))
-(princ "\n[gc] sv.lsp v27 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
+(princ "\n[gc] sv.lsp v28 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
 (princ)
