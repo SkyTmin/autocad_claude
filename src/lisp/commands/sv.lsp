@@ -1,7 +1,10 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 v28)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 v29)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2/3/4 (4: naklonnye svai, ellipsy).
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v29: SV 4 - treugolnik na 1 m i uglovoy razmer (gradusy/minuty).
+;;;      Komponenta X/Y vybiraetsya po blizosti modulya k 222 mm/m.
 ;;;
 ;;; v28: proektnye ELLIPSE - vybor i centr v SV 4 / SV 3 / SVP.
 ;;;
@@ -1205,7 +1208,140 @@
         nil))
     nil))
 
-(defun gc-pile-process-sv4 (lo hi target-z / data el eh dx dy dz slope base)
+
+;;; СХЕМА УГЛА НА 1 М (SV 4). Геометрия и выбор компоненты - в МСК.
+(setq *gc-l-sv4-angle* "GC-Сваи-SV4-Угол")
+(setq *gc-pile-angle-style* "GC-SV4-Angle")
+
+;; Близость сравнивается с 222, как запросил Шамиль. Сам угол считаем
+;; по неокругленному значению, а не по целому числу на синей подписи.
+(defun gc-pile-e-angle-values (dx-mm dy-mm dz / x y axis chosen)
+  (if (<= (abs dz) 1.0e-6)
+    nil
+    (progn
+      (setq x (/ dx-mm dz) y (/ dy-mm dz))
+      (if (<= (abs (- (abs x) 222.0)) (abs (- (abs y) 222.0)))
+        (setq axis "X" chosen x)
+        (setq axis "Y" chosen y))
+      (list axis chosen (atan (/ (abs chosen) 1000.0))))))
+
+;; Через общее число минут: округление 59.5 минут переносит градус.
+;; Это формат отчета/нулевого случая. DIMENSION показывает свое измерение.
+(defun gc-pile-e-angle-format (rad / total deg mins)
+  (setq total (fix (+ 0.5 (* (abs rad) (/ 10800.0 pi))))
+        deg (fix (/ total 60.0)) mins (- total (* deg 60)))
+  (strcat (itoa deg) "°" (if (< mins 10) "0" "") (itoa mins) "'"))
+
+;; Возвращает (ось мм/м угол A B C точка-дуги точка-текста).
+;; Размер вертикали не масштабируется высотой текста: это всегда 1 метр.
+(defun gc-pile-e-angle-layout (data target-z / el eh cut vals right h ox oy z run ang)
+  (setq el (car data) eh (cadr data)
+        cut (gc-pile-e-cut-data data target-z)
+        vals (gc-pile-e-angle-values
+               (* 1000.0 (- (car eh) (car el)))
+               (* 1000.0 (- (cadr eh) (cadr el)))
+               (- (nth 5 eh) (nth 5 el))))
+  (if (and cut vals)
+    (progn
+      (setq h *gc-pile-text-h*
+            right (max (+ (car el) (nth 3 el))
+                       (+ (car eh) (nth 3 eh)) (+ (car cut) (nth 3 cut)))
+            ox (+ right (max 0.5 (* 2.0 h)))
+            oy (+ (cadr el) *gc-pile-sv3-sv-dev-dy*) z (nth 5 el)
+            run (/ (abs (cadr vals)) 1000.0) ang (caddr vals))
+      (append vals
+        (list (list ox oy z) (list ox (+ oy 1.0) z)
+              (list (+ ox run) (+ oy 1.0) z)
+              (list (+ ox (* 0.8 (sin (/ ang 2.0))))
+                    (+ oy (* 0.8 (cos (/ ang 2.0)))) z)
+              (list (+ ox run (max 0.8 (* 4.0 h))) (+ oy 0.65) z))))
+    nil))
+
+;; Собственный неаннотативный стиль: текущие DIMSTYLE/DIMSCALE не меняем.
+;; Проверяем таблицу после entmake, чтобы размер не ссылался на пустое имя.
+(defun gc-pile-e-angle-ensure-style (tstyle / name)
+  (setq name *gc-pile-angle-style*)
+  (if (null (tblsearch "DIMSTYLE" name))
+    (gc-pile-emake
+      (list '(0 . "DIMSTYLE") '(100 . "AcDbSymbolTableRecord")
+            '(100 . "AcDbDimStyleTableRecord") (cons 2 name) '(70 . 0)
+            '(40 . 1.0) '(41 . 0.1) '(140 . 0.2)
+            '(275 . 1) '(179 . 2) '(79 . 0)
+            '(73 . 1) '(74 . 1) '(77 . 0) '(279 . 1)
+            '(289 . 0) '(174 . 0) '(172 . 0)
+            '(75 . 1) '(76 . 1) '(142 . 0.0)
+            (cons 340 (tblobjname "STYLE" tstyle))) "размерный стиль угла"))
+  (if (tblsearch "DIMSTYLE" name) name nil))
+
+;; Размерные настройки задаются на самом объекте: следующий запуск с
+;; другой высотой текста не меняет ранее построенные схемы.
+(defun gc-pile-e-angle-dxf (info text-handle / h overrides)
+  (setq h *gc-pile-text-h*)
+  (setq overrides
+    (list "ACAD" '(1000 . "DSTYLE") '(1002 . "{")
+          '(1070 . 40) '(1040 . 1.0)
+          '(1070 . 140) (cons 1040 h)
+          '(1070 . 41) (cons 1040 (* 0.5 h))
+          '(1070 . 147) (cons 1040 (* 0.25 h))
+          '(1070 . 340) (cons 1005 text-handle)
+          '(1070 . 275) '(1070 . 1)    ; DMS
+          '(1070 . 179) '(1070 . 2)    ; до целой минуты
+          '(1070 . 79) '(1070 . 0)     ; не скрывать нулевые минуты
+          '(1070 . 73) '(1070 . 1) '(1070 . 74) '(1070 . 1)
+          '(1070 . 77) '(1070 . 0) '(1070 . 279) '(1070 . 1)
+          '(1070 . 289) '(1070 . 0) '(1070 . 174) '(1070 . 0)
+          '(1070 . 172) '(1070 . 0) '(1070 . 175) '(1070 . 0)
+          '(1070 . 75) '(1070 . 1) '(1070 . 76) '(1070 . 1)
+          '(1070 . 281) '(1070 . 0) '(1070 . 282) '(1070 . 0)
+          '(1070 . 142) '(1040 . 0.0)
+          '(1070 . 176) '(1070 . 256) '(1070 . 177) '(1070 . 256)
+          '(1070 . 178) '(1070 . 256)
+          '(1002 . "}")))
+  (list '(0 . "DIMENSION") '(100 . "AcDbEntity")
+        (cons 8 *gc-l-sv4-angle*) '(100 . "AcDbDimension")
+        (cons 10 (nth 6 info)) (cons 11 (nth 7 info))
+        '(70 . 165) '(71 . 5) '(1 . "<>")
+        (cons 3 *gc-pile-angle-style*) '(210 0.0 0.0 1.0)
+        '(100 . "AcDb3PointAngularDimension")
+        (cons 13 (nth 4 info)) (cons 14 (nth 5 info)) (cons 15 (nth 3 info))
+        (list -3 overrides)))
+
+(defun gc-pile-e-angle-draw (data target-z / info origin top tip tstyle handle ok)
+  (setq info (gc-pile-e-angle-layout data target-z))
+  (if info
+    (progn
+      (setq origin (nth 3 info) top (nth 4 info) tip (nth 5 info)
+            tstyle (gc-pile-text-style))
+      (gc-pile-ensure-layer *gc-l-sv4-angle* 7)
+      (princ (strcat "\nУгол на 1 м: выбрана " (car info) " = "
+                     (rtos (cadr info) 2 3) " мм/м; угол "
+                     (gc-pile-e-angle-format (caddr info))))
+      (if (< (abs (cadr info)) 1.0e-9)
+        ;; У нулевого угла лучи совпадают: не создаем ложный малый угол.
+        (setq ok
+          (and (gc-pile-emake
+                 (list '(0 . "LINE") (cons 8 *gc-l-sv4-angle*)
+                       (cons 10 origin) (cons 11 top)) "вертикаль 1 м")
+               (gc-pile-draw-text-rot (nth 7 info) "0°00'"
+                                      tstyle *gc-l-sv4-angle* 0.0)))
+        (progn
+          (setq handle (cdr (assoc 5 (entget (tblobjname "STYLE" tstyle)))))
+          (if (and handle (gc-pile-e-angle-ensure-style tstyle))
+            (setq ok
+              (and (gc-pile-emake
+                     (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity")
+                           (cons 8 *gc-l-sv4-angle*) '(100 . "AcDbPolyline")
+                           '(90 . 3) '(70 . 1) (cons 38 (caddr origin))
+                           (cons 10 (list (car origin) (cadr origin)))
+                           (cons 10 (list (car top) (cadr top)))
+                           (cons 10 (list (car tip) (cadr tip)))) "треугольник наклона")
+                   (gc-pile-emake (gc-pile-e-angle-dxf info handle) "угловой размер")))
+            (setq ok nil))))
+      (if (null ok) (princ "\n[!] SV 4: угловая схема не построена полностью."))
+      ok)
+    nil))
+
+(defun gc-pile-process-sv4 (lo hi target-z / data el eh dx dy dz slope base target-pt)
   (setq data (gc-pile-e-best lo hi))
   (if data
     (progn
@@ -1230,7 +1366,9 @@
                          "\nСмещение центров: " (rtos slope 2 1)
                          " мм/м; номинал 222,2 мм/м. Синие подписи: мм/м по X и Y."
                          "\nСиние отклонения смещены по +Y на 1700 мм, как в SV 3."))
-          (gc-pile-e-draw-cut data target-z))
+          (setq target-pt (gc-pile-e-draw-cut data target-z))
+          (if target-pt (gc-pile-e-angle-draw data target-z))
+          target-pt)
         nil))
     nil))
 
@@ -1382,5 +1520,5 @@
 ;; SVP -> ЫМЗ
 (defun c:ымз ( / ) (c:svp))
 (defun c:ЫМЗ ( / ) (c:svp))
-(princ "\n[gc] sv.lsp v28 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
+(princ "\n[gc] sv.lsp v29 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
 (princ)

@@ -8,13 +8,18 @@ import {fileURLToPath} from 'node:url';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source=new TextDecoder('windows-1251').decode(fs.readFileSync(path.join(root,'src/lisp/commands/sv.lsp')));
 class Sym { constructor(name) { this.name=name.toLowerCase(); } }
+class Pair { constructor(car,cdr) {this.car=car;this.cdr=cdr;} }
 function parse(text) {
   const tokens=text.match(/;[^\r\n]*|"(?:\\.|[^"\\])*"|[()']|[^\s()';]+/g).filter(t=>!t.startsWith(';'));
   let i=0;
   function read() {
     const t=tokens[i++];
     if(t===undefined) throw Error('Unclosed list');
-    if(t==='(') {const a=[]; while(tokens[i]!==')') a.push(read()); i++; return a;}
+    if(t==='(') {
+      const a=[]; while(tokens[i]!==')') a.push(read()); i++;
+      if(a.length===3&&a[1] instanceof Sym&&a[1].name==='.')return new Pair(a[0],a[2]);
+      return a;
+    }
     if(t===')') throw Error('Unexpected closing parenthesis at token '+i);
     if(t==="'") return [new Sym('quote'),read()];
     if(t.startsWith('"')) return t.slice(1,-1).replace(/\\([nrt"\\])/g,(_,c)=>({n:'\n',r:'\r',t:'\t','"':'"','\\':'\\'}[c]));
@@ -31,12 +36,13 @@ const builtins={
   '+':(...a)=>a.reduce((x,y)=>x+y,0), '-':(x,...a)=>a.length?a.reduce((x,y)=>x-y,x):-x,
   '*':(...a)=>a.reduce((x,y)=>x*y,1), '/':(x,...a)=>a.reduce((x,y)=>x/y,x),
   '1+':x=>x+1, '1-':x=>x-1, sqrt:Math.sqrt, expt:Math.pow, abs:Math.abs,
-  sin:Math.sin, cos:Math.cos, min:Math.min,max:Math.max,float:x=>x,
+  sin:Math.sin, cos:Math.cos, atan:Math.atan,fix:Math.trunc,min:Math.min,max:Math.max,float:x=>x,
   '<':(a,b)=>a<b,'>':(a,b)=>a>b,'<=':(a,b)=>a<=b,'>=':(a,b)=>a>=b,'=':(a,b)=>a===b,
-  car:x=>nil(x?.[0]),cadr:x=>nil(x?.[1]),caddr:x=>nil(x?.[2]),
+  car:x=>x instanceof Pair?x.car:nil(x?.[0]),cadr:x=>nil(x?.[1]),caddr:x=>nil(x?.[2]),
   nth:(i,x)=>nil(x?.[i]), length:x=>x?.length??0, list:(...a)=>a,
-  cons:(a,b)=>[a,...(b??[])],reverse:a=>[...(a??[])].reverse(),
-  cdr:x=>x?.slice(1)??null,cddr:x=>x?.slice(2)??null,last:x=>nil(x?.at(-1)),
+  cons:(a,b)=>Array.isArray(b)||b===null?[a,...(b??[])]:new Pair(a,b),reverse:a=>[...(a??[])].reverse(),
+  cdr:x=>x instanceof Pair?x.cdr:x?.slice(1)??null,cddr:x=>x?.slice(2)??null,last:x=>nil(x?.at(-1)),
+  append:(...xs)=>xs.flat(),assoc:(key,xs)=>xs?.find(x=>builtins.car(x)===key)??null,
   null:x=>!truth(x),not:x=>!truth(x),
   member:(x,xs)=>{const i=xs.findIndex(v=>v===x);return i<0?null:xs.slice(i);},
   equal:(a,b,tol=0)=>Array.isArray(a)&&Array.isArray(b)?a.length===b.length&&a.every((v,i)=>builtins.equal(v,b[i],tol)):typeof a==='number'?Math.abs(a-b)<=tol:a===b,
@@ -147,11 +153,14 @@ assert.equal(invoke('gc-pile-e-cut-data',[ellipseData[0],ellipseData[0]],4),null
 // сопоставление проектов исполняются из исходного файла.
 let ellipses=[],deviations=[];
 builtins['gc-pile-ensure-layer']=()=>true;
+let angleCalls=[];
+builtins['gc-pile-e-angle-draw']=(...args)=>{angleCalls.push(args);return true;};
 builtins['gc-pile-draw-ellipse']=(e,layer)=>{ellipses.push({e,layer});return true;};
 builtins['gc-pile-draw-xy-deviation']=(...args)=>{deviations.push(args);return true;};
 const cutZ=9;
 const target=invoke('gc-pile-process-sv4',low,high,cutZ);
 assert(target);assert.equal(ellipses.length,3);
+assert.equal(angleCalls.length,1);near(angleCalls[0][1],cutZ);
 near(target[0],10+2*Math.cos(.7));near(target[1],20+2*Math.sin(.7));near(target[2],cutZ);
 const blue=deviations[0];
 near(blue[0][0],10);near(blue[0][1],21.7);near(blue[0][2],0);
@@ -197,3 +206,74 @@ invoke('gc-pile-run-sv4');assert.deepEqual(events,['points','cut-z','project','S
 events=[];enteredZ=null;invoke('gc-pile-run-sv4');assert.deepEqual(events,['points','cut-z']);
 events=[];entryPairs=null;invoke('gc-pile-run-sv4');assert.deepEqual(events,['points']);
 console.log('PASS: cut interpolation/extrapolation; blue/white colors, units, XY offsets and Z; project matching; SV3/SVP routing; SV4 prompts/cancellation. CAD API not run.');
+
+// v29: выбранная компонента нормируется по высоте, а не берётся по
+// полной длине между центрами. Знак не влияет на положительный угол.
+for(const [dx,dy,dz,axis,value] of [[222,10,1,'X',222],[10,-444,2,'Y',-222],
+  [-220,224,1,'X',-220],[190,210,1,'Y',210],[230,1000,1,'X',230],
+  [1000/4.5,0,1,'X',1000/4.5]]){
+  const a=invoke('gc-pile-e-angle-values',dx,dy,dz);assert.equal(a[0],axis);
+  near(a[1],value);near(a[2],Math.atan(Math.abs(value)/1000),1e-14);
+}
+assert.equal(invoke('gc-pile-e-angle-values',222,10,0),null);
+assert.equal(invoke('gc-pile-e-angle-format',Math.atan(.222)),"12°31'");
+assert.equal(invoke('gc-pile-e-angle-format',Math.atan(1/4.5)),"12°32'");
+assert.equal(invoke('gc-pile-e-angle-format',(12+59.7/60)*Math.PI/180),"13°00'");
+assert.equal(invoke('gc-pile-e-angle-format',0),"0°00'");
+const angleData=[[100,200,r,r*q,0,2,0],[100.444,200.02,r,r*q,0,4,0]];
+const info=invoke('gc-pile-e-angle-layout',angleData,6);
+assert.equal(info[0],'X');near(info[1],222);
+const [a,b,c,arc,textPoint]=info.slice(3);
+near(Math.hypot(b[0]-a[0],b[1]-a[1],b[2]-a[2]),1,1e-12);
+near(c[0]-b[0],.222);near(c[1]-b[1],0);
+near((b[0]-a[0])*(c[0]-b[0])+(b[1]-a[1])*(c[1]-b[1]),0);
+near(Math.atan2(c[0]-a[0],c[1]-a[1]),info[2]);
+for(const pt of info.slice(3))near(pt[2],2);
+assert(a[0]>100.888+r*q);near(a[1],201.7);assert(textPoint[0]>c[0]);
+const dxfValue=(xs,key)=>builtins.cdr(builtins.assoc(key,xs));
+const dim=invoke('gc-pile-e-angle-dxf',info,'STYLE123');
+assert.equal(dxfValue(dim,0),'DIMENSION');assert.equal(dxfValue(dim,70),165);
+assert.equal(dxfValue(dim,1),'<>');assert.equal(dxfValue(dim,8),'GC-Сваи-SV4-Угол');
+assert.deepEqual(dxfValue(dim,10),arc);assert.deepEqual(dxfValue(dim,11),textPoint);
+assert.deepEqual(dxfValue(dim,13),b);assert.deepEqual(dxfValue(dim,14),c);
+assert.deepEqual(dxfValue(dim,15),a);
+const overrides=dxfValue(dim,-3)[0];
+const override=code=>{const i=overrides.findIndex(x=>x instanceof Pair&&x.car===1070&&x.cdr===code);return overrides[i+1].cdr;};
+assert.equal(override(275),1);assert.equal(override(179),2);assert.equal(override(40),1);
+assert.equal(override(140),globals.get('*gc-pile-text-h*'));assert.equal(override(340),'STYLE123');
+assert.equal(override(279),1);assert.equal(override(74),1);
+// Граница CAD: проверяем создаваемые типы и отказ DIMENSION, без запуска CAD.
+delete builtins['gc-pile-e-angle-draw'];
+builtins['gc-pile-text-style']=()=> 'Standard';
+builtins.tblobjname=()=> 'STYLE123';
+builtins.entget=()=>[new Pair(5,'STYLE123')];
+builtins.tblsearch=()=>true;
+let drawn=[],messages=[],failDimension=false,zeroTexts=[];
+builtins['gc-pile-emake']=(dxf)=>{drawn.push(dxf);return failDimension&&dxfValue(dxf,0)==='DIMENSION'?null:true;};
+builtins.princ=(s)=>{messages.push(s);return null;};
+builtins['gc-pile-draw-text-rot']=(...args)=>{zeroTexts.push(args);return true;};
+assert(truth(invoke('gc-pile-e-angle-draw',angleData,6)));
+assert.deepEqual(drawn.map(d=>dxfValue(d,0)),['LWPOLYLINE','DIMENSION']);
+assert.equal(dxfValue(drawn[0],90),3);assert.equal(dxfValue(drawn[0],70),1);near(dxfValue(drawn[0],38),2);
+drawn=[];failDimension=true;
+assert.equal(truth(invoke('gc-pile-e-angle-draw',angleData,6)),false);
+assert(messages.some(s=>s?.includes('не построена полностью')));
+drawn=[];failDimension=false;
+const zeroData=[angleData[0],[100,200,r,r*q,0,4,0]];
+assert(truth(invoke('gc-pile-e-angle-draw',zeroData,6)));
+assert.deepEqual(drawn.map(d=>dxfValue(d,0)),['LINE']);assert.equal(zeroTexts[0][1],"0°00'");
+// Кнопка Текст не растягивает геометрический метр.
+globals.set('*gc-pile-text-h*',.4);
+const resized=invoke('gc-pile-e-angle-layout',angleData,6);
+near(resized[4][1]-resized[3][1],1);near(resized[5][0]-resized[4][0],.222);
+globals.set('*gc-pile-text-h*',.2);
+// Стиль должен реально появиться в таблице; отказ не маскируется именем.
+let storedStyle=null,acceptStyle=true;
+builtins.tblsearch=()=>storedStyle;
+builtins['gc-pile-emake']=dxf=>{if(acceptStyle)storedStyle=dxf;return acceptStyle?dxf:null;};
+assert.equal(invoke('gc-pile-e-angle-ensure-style','Standard'),'GC-SV4-Angle');
+assert.equal(dxfValue(storedStyle,0),'DIMSTYLE');assert.equal(dxfValue(storedStyle,275),1);
+assert.equal(dxfValue(storedStyle,179),2);assert.equal(dxfValue(storedStyle,340),'STYLE123');
+storedStyle=null;acceptStyle=false;
+assert.equal(invoke('gc-pile-e-angle-ensure-style','Standard'),null);
+console.log('PASS: component/angle/minutes; exact 1m triangle; placement; DIMENSION geometry and overrides; zero and creation-failure paths. Native CAD rendering not run.');
