@@ -188,6 +188,55 @@ assert.equal(deviations.filter(a=>a[7]===7).length,1);
 ellipses=[];deviations=[];
 invoke('gc-pile-run-svp-core',[pair],cutZ,null,'SV4');
 assert.equal(ellipses.length,3);assert.equal(deviations.length,1);
+// Регрессия: один выбранный проект остаётся явно сопоставленным одной свае,
+// даже если срез на -10 уходит в плане дальше прежнего лимита 2 м.
+ellipses=[];deviations=[];
+invoke('gc-pile-run-svp-core',[pair],-10,[[10,20,0]],'SV4');
+assert.equal(ellipses.length,3);
+assert.equal(deviations.filter(a=>a[7]===7).length,1,'SV4: white deviation missing at cut Z=-10');
+const deepWhite=deviations.find(a=>a[7]===7);
+near(deepWhite[0][2],-10);
+near(deepWhite[3],-1000*10/4.5*Math.cos(.7));
+near(deepWhite[4],-1000*10/4.5*Math.sin(.7));
+// Далёкие кандидаты в пакете: выбор из исходного остатка, не угадывание.
+const deepTarget=[10-10/4.5*Math.cos(.7),20-10/4.5*Math.sin(.7),-10];
+const projectA=[10,20,0],projectB=[11,22,0],foreignProject=[99,99,0];
+let pickQueue=[],pickCount=0,pickErrno=0;
+builtins.setvar=(key,value)=>{assert.equal(key,'ERRNO');pickErrno=value;};
+builtins.getvar=key=>{assert.equal(key,'ERRNO');return pickErrno;};
+builtins.entsel=()=>{
+  assert(pickQueue.length,'Unexpected manual project prompt');pickCount++;
+  const next=pickQueue.shift();pickErrno=next.errno??0;return next.value;
+};
+builtins['gc-pile-get-project-center']=ent=>Array.isArray(ent)?ent:null;
+pickQueue=[{value:[foreignProject,[]]},{value:[projectB,[]]}];
+let distant=invoke('gc-pile-e-project-match',deepTarget,[projectA,projectB],false);
+assert.equal(pickCount,2);assert.equal(distant[1],1);assert.deepEqual(distant[0],[projectA]);
+near(deviations.at(-1)[0][0],projectB[0]);near(deviations.at(-1)[0][1],projectB[1]+2.6);
+near(deviations.at(-1)[3],1000*(deepTarget[0]-projectB[0]));
+// Использованный B отвергается; промах повторяется; оставшийся A в пакете
+// также выбирается явно, даже если теперь он единственный.
+pickQueue=[{value:[projectB,[]]},{value:null,errno:7},{value:[projectA,[]]}];pickCount=0;
+distant=invoke('gc-pile-e-project-match',deepTarget,[projectA],false);
+assert.equal(pickCount,3);assert.equal(truth(distant[0]),false);assert.equal(distant[1],1);
+const beforeSkip=deviations.length;
+pickQueue=[{value:null}];
+distant=invoke('gc-pile-e-project-match',deepTarget,[projectA,projectB],false);
+assert.deepEqual(distant[0],[projectA,projectB]);assert.equal(distant[2],1);
+assert.equal(deviations.length,beforeSkip);
+pickQueue=[];pickCount=0;
+invoke('gc-pile-e-project-match',[10.01,20,0],[projectA,projectB],false);
+assert.equal(pickCount,0);
+// Пропуск первой сваи не расходует проект; вторая может его использовать.
+pickQueue=[{value:null},{value:[projectA,[]]}];pickCount=0;
+ellipses=[];deviations=[];
+invoke('gc-pile-run-svp-core',[pair,pair],-10,[projectA],'SV4');
+assert.equal(pickCount,2);assert.equal(deviations.filter(a=>a[7]===7).length,1);
+const afterBatch=deviations.length;
+invoke('gc-pile-run-project-match',deepTarget,[projectA],'SV3');
+invoke('gc-pile-run-project-match',deepTarget,[projectA],'SVP');
+assert.equal(deviations.length,afterBatch);
+console.log('PASS: cut Z=-10 reproducer fixed; unique distant project; batch selection/rejection/miss/Enter; no project consumption on skip; SV3/SVP limit unchanged.');
 // Ветвление общего раннера сохраняет вызовы SV3 / SVP.
 const route=[];
 builtins['gc-pile-process-sv3']=()=>{route.push('SV3');return target;};

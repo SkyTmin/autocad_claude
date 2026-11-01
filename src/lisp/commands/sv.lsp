@@ -1,7 +1,10 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 v29)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 v30)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2/3/4 (4: naklonnye svai, ellipsy).
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v30: dalekiy srez SV 4 ne teryaet proekt: yavnaya para ili vybor.
+;;;      Odna svaya + odin proekt - bez limita 2 m; paket - utochnenie.
 ;;;
 ;;; v29: SV 4 - treugolnik na 1 m i uglovoy razmer (gradusy/minuty).
 ;;;      Komponenta X/Y vybiraetsya po blizosti modulya k 222 mm/m.
@@ -919,10 +922,65 @@
         (princ "\n[!] SVP: проектный центр не найден — проектное отклонение пропущено."))
       (list project-centers 0 1))))
 
-(defun gc-pile-run-svp-core (pairs target-z project-centers draw-mode / project-mode
+
+;; При далеком продлении ближайший проект может оказаться соседней сваей.
+;; Пользователь указывает соответствие из уже выбранных свободных центров.
+(defun gc-pile-e-pick-project (target projects / selected center chosen done p)
+  (setq chosen nil done nil)
+  (princ (strcat "\n[SV 4] Укажите проект для среза X=" (rtos (car target) 2 3)
+                 " Y=" (rtos (cadr target) 2 3) " Z=" (rtos (caddr target) 2 3) "."))
+  (while (not done)
+    (setvar "ERRNO" 0)
+    (setq selected (entsel "\nПроектный круг, эллипс или точка (Enter - пропустить): "))
+    (cond
+      ((null selected)
+       (if (= (getvar "ERRNO") 7)
+         (princ "\nОбъект не выбран: повторите щелчок или нажмите Enter.")
+         (setq done T)))
+      (T
+       (setq center (gc-pile-get-project-center (car selected)))
+       (foreach p projects
+         (if (and center (null chosen) (equal center p 1.0e-8))
+           (setq chosen p)))
+       (if chosen
+         (setq done T)
+         (princ "\nЭтот объект не входит в свободную проектную выборку. Укажите другой.")))))
+  chosen)
+
+(defun gc-pile-e-project-match (target projects single-pair / match chosen remaining match-dist)
+  (setq match (gc-pile-take-nearest-project target projects *gc-pile-project-match-max*))
+  (cond
+    ;; Близкий проект и пустая выборка идут по прежнему общему пути.
+    ((or (car match) (null projects))
+     (gc-pile-run-project-match target projects "SV4"))
+    (T
+     (princ (strcat "\n[SV 4] Ближайший проект в " (rtos (caddr match) 2 3)
+                    " м от среза, дальше автоматического поиска "
+                    (rtos *gc-pile-project-match-max* 2 3) " м."))
+     (if (and single-pair (= (length projects) 1))
+       (progn
+         (setq chosen (car projects))
+         (princ "\nВыбраны одна свая и один проект: строю отклонение без ограничения расстояния."))
+       (setq chosen (gc-pile-e-pick-project target projects)))
+     (if chosen
+       (progn
+         ;; Убираем ровно выбранный центр, не расходуя остальные при отказе.
+         (setq match (gc-pile-take-nearest-project chosen projects 1.0e-8)
+               remaining (cadr match)
+               match-dist (gc-pile-dist-xy chosen target))
+         (gc-pile-draw-project-deviation-sv3 chosen target)
+         (princ (strcat "\n[SV 4] Проект сопоставлен; расстояние до среза "
+                        (rtos match-dist 2 3) " м."))
+         (list remaining 1 0))
+       (progn
+         (princ "\n[SV 4] Проект не указан: белое отклонение этой сваи пропущено.")
+         (list projects 0 1))))))
+
+(defun gc-pile-run-svp-core (pairs target-z project-centers draw-mode / project-mode single-project
                              total idx ok skipped dev-ok dev-skipped p target-pt res)
   (setq project-mode (not (null project-centers)))
   (setq total (length pairs) idx 1 ok 0 skipped 0 dev-ok 0 dev-skipped 0)
+  (setq single-project (and (= total 1) (= (length project-centers) 1)))
   (foreach p pairs
     (princ (strcat "\n=== " draw-mode ": Свая " (itoa idx) " / " (itoa total) " ==="))
     (setq target-pt
@@ -939,7 +997,10 @@
              (setq dev-skipped (1+ dev-skipped))
              (princ "\n[!] Нет свободного проектного центра — проектное отклонение пропущено."))
             (T
-             (setq res (gc-pile-run-project-match target-pt project-centers draw-mode))
+             (setq res
+               (if (= draw-mode "SV4")
+                 (gc-pile-e-project-match target-pt project-centers single-project)
+                 (gc-pile-run-project-match target-pt project-centers draw-mode)))
              (setq project-centers (car res))
              (setq dev-ok (+ dev-ok (cadr res)))
              (setq dev-skipped (+ dev-skipped (caddr res)))))))
@@ -1520,5 +1581,5 @@
 ;; SVP -> ЫМЗ
 (defun c:ымз ( / ) (c:svp))
 (defun c:ЫМЗ ( / ) (c:svp))
-(princ "\n[gc] sv.lsp v29 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
+(princ "\n[gc] sv.lsp v30 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
 (princ)
