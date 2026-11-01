@@ -1,7 +1,10 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 v26)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 v27)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2/3/4 (4: naklonnye svai, ellipsy).
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v27: SV 4 - scenariy SV 3: otmetka sreza, proekt, ellips sreza.
+;;;      Sinie otkloneniya +Y 1.700, belye proektnye +Y 2.600.
 ;;;
 ;;; v26: SV 4 - ellipsy naklonnyh svay 1:4.5, podbor po vsem tochkam.
 ;;;      Proverku v Civil 3D vypolnyaet polzovatel.
@@ -634,7 +637,7 @@
                              *gc-l-sv3-project-arrows*
                              *gc-l-sv3-project-text*
                              7)
-  (princ (strcat "\nSV 3: проектное отклонение со сдвигом +Y 2600 мм: dX = "
+  (princ (strcat "\nПроектное отклонение со сдвигом +Y 2600 мм: dX = "
                  (gc-pile-mm-signed dx-mm)
                  "   dY = " (gc-pile-mm-signed dy-mm)))
   T)
@@ -898,7 +901,7 @@
     (progn
       (princ (strcat "\n[i] Проектный центр: расстояние до среза "
                      (rtos match-dist 2 3) " м"))
-      (if (= draw-mode "SV3")
+      (if (member draw-mode '("SV3" "SV4"))
         (gc-pile-draw-project-deviation-sv3 project-pt target-pt)
         (gc-pile-draw-project-deviation project-pt target-pt))
       (list project-centers 1 0))
@@ -918,9 +921,10 @@
   (foreach p pairs
     (princ (strcat "\n=== " draw-mode ": Свая " (itoa idx) " / " (itoa total) " ==="))
     (setq target-pt
-      (if (= draw-mode "SV3")
-        (gc-pile-process-sv3 (car p) (cdr p) target-z)
-        (gc-pile-process-extension (car p) (cdr p) target-z)))
+      (cond
+        ((= draw-mode "SV3") (gc-pile-process-sv3 (car p) (cdr p) target-z))
+        ((= draw-mode "SV4") (gc-pile-process-sv4 (car p) (cdr p) target-z))
+        (T (gc-pile-process-extension (car p) (cdr p) target-z))))
     (if target-pt
       (progn
         (setq ok (1+ ok))
@@ -1168,7 +1172,38 @@
           (> (abs (- (nth 2 e) *gc-pile-r-norm*)) *gc-pile-r-warn*))
     (princ "\n[!] Сечение плохо согласуется с диаметром/точками. Проверьте выбор и съемку.")))
 
-(defun gc-pile-process-sv4 (lo hi / data el eh dx dy dz slope base)
+;; Продление центра - как в SV 3. Размер среза номинальный, направление
+;; большой оси общее с найденными сечениями (SPEC-010).
+(defun gc-pile-e-cut-data (data target-z / el eh dz k radius ratio)
+  (setq el (car data) eh (cadr data) dz (- (nth 5 eh) (nth 5 el)))
+  (if (<= (abs dz) 1.0e-6)
+    (progn (princ "\n[ОШИБКА] SV 4: dZ слишком мал для расчета среза.") nil)
+    (progn
+      (setq k (/ (- target-z (nth 5 el)) dz)
+            radius *gc-pile-r-norm*
+            ratio (sqrt (+ 1.0 (* *gc-pile-sv4-slope* *gc-pile-sv4-slope*))))
+      (list (+ (car el) (* k (- (car eh) (car el))))
+            (+ (cadr el) (* k (- (cadr eh) (cadr el))))
+            radius (* radius ratio) (nth 4 el) target-z 0.0))))
+
+(defun gc-pile-e-draw-cut (data target-z / cut target-pt)
+  (setq cut (gc-pile-e-cut-data data target-z))
+  (if cut
+    (progn
+      (gc-pile-ensure-layer *gc-l-cut* 4)
+      (if (gc-pile-draw-ellipse cut *gc-l-cut*)
+        (progn
+          (setq target-pt (list (car cut) (cadr cut) target-z))
+          (princ (strcat "\n--- SV 4: эллипс на отметке среза построен ---"
+                         "\nZ среза: " (rtos target-z 2 3) " м | Центр: ("
+                         (rtos (car cut) 2 3) ", " (rtos (cadr cut) 2 3) ")"
+                         "\nПолуоси среза: " (rtos (nth 2 cut) 2 6) " / "
+                         (rtos (nth 3 cut) 2 6) " м"))
+          target-pt)
+        nil))
+    nil))
+
+(defun gc-pile-process-sv4 (lo hi target-z / data el eh dx dy dz slope base)
   (setq data (gc-pile-e-best lo hi))
   (if data
     (progn
@@ -1177,23 +1212,23 @@
             dy (* 1000.0 (- (cadr eh) (cadr el)))
             dz (- (nth 5 eh) (nth 5 el))
             slope (/ (sqrt (+ (* dx dx) (* dy dy))) dz)
-            base (list (car el) (cadr el) (nth 5 el)))
+            base (list (car el) (+ (cadr el) *gc-pile-sv3-sv-dev-dy*) (nth 5 el)))
       (gc-pile-ensure-layer *gc-l-low* 1)
       (gc-pile-ensure-layer *gc-l-high* 3)
       (if (and (gc-pile-draw-ellipse el *gc-l-low*)
                (gc-pile-draw-ellipse eh *gc-l-high*))
         (progn
           (gc-pile-draw-xy-deviation base dx dy (/ dx dz) (/ dy dz)
-                                    *gc-l-arrows* *gc-l-text* 7)
+                                    *gc-l-sv3-arrows* *gc-l-sv3-text* 5)
           (gc-pile-e-report el "Низ")
           (gc-pile-e-report eh "Верх")
           (princ (strcat "\ndX = " (gc-pile-mm-signed dx)
                          "; dY = " (gc-pile-mm-signed dy)
                          "; dZ = " (rtos dz 2 3) " м"
                          "\nСмещение центров: " (rtos slope 2 1)
-                         " мм/м; номинал 222,2 мм/м. Подписи: мм/м по X и Y."))
-          (princ "\nЭто фактический наклон; проектный азимут не задан.")
-          T)
+                         " мм/м; номинал 222,2 мм/м. Синие подписи: мм/м по X и Y."
+                         "\nСиние отклонения смещены по +Y на 1700 мм, как в SV 3."))
+          (gc-pile-e-draw-cut data target-z))
         nil))
     nil))
 
@@ -1201,7 +1236,7 @@
 ;; Для SV 4 группировка не перебирает тройки окружностей: при большом
 ;; количестве точек это лишняя кубическая работа до подбора эллипсов.
 (defun gc-pile-e-auto ( / ss pts clusters cluster groups group clean secs pairs)
-  (princ "\nВыделите точки свай (рамкой): ")
+  (princ "\nВыделите точки свай (рамкой). Не-точки игнорируются: ")
   (setq ss (ssget *gc-pile-ssget-filter*) pairs nil)
   (if ss
     (progn
@@ -1215,28 +1250,26 @@
         ;; Группы пришли по возрастанию Z, cons развернул порядок.
         (if (>= (length secs) 2)
           (setq pairs (cons (cons (last secs) (car secs)) pairs))
-          (princ "\n[!] SV 4: в XY-группе меньше двух сечений по 3 точки. Используйте Вручную.")))
+          (princ "\n[!] SV 4: в XY-группе меньше двух сечений по 3 точки. Проверьте выбор сечений.")))
       (if (null pairs) (princ "\n[!] SV 4: пар сечений не найдено.")))
     (princ "\nSV 4: точки не выбраны."))
   (reverse pairs))
 
-(defun gc-pile-run-sv4 ( / how pairs g p ok total)
-  (princ "\nSV 4: эллипсы наклонной сваи. Наклон: 1 м в плане на 4,5 м высоты.")
-  (princ "\nНоминальные полуоси: 0,710000 и 0,727319 м. Направление - по точкам.")
-  (princ "\nПри большом смещении сечений/слиянии соседних свай выбирайте Вручную.")
-  (initget "Авто А Вручную В")
-  (setq how (getkword "\nВыбор точек [Авто/Вручную] <Авто>: "))
-  (if (member how '("Вручную" "В"))
-    (progn
-      (setq g (gc-pile-mode2))
-      (if g (setq pairs (list (cons (car g) (cadr g))))))
-    (setq pairs (gc-pile-e-auto)))
-  (setq ok 0 total (length pairs))
-  (foreach p pairs
-    (if (gc-pile-process-sv4 (car p) (cdr p)) (setq ok (1+ ok))))
-  (princ (strcat "\n[SV 4] Обработано: " (itoa ok) "; пропущено: "
-                 (itoa (- total ok)) "; всего: " (itoa total)))
-  (princ))
+(defun gc-pile-run-sv4 ( / pairs target-z project-centers)
+  (princ "\nSV 4: эллипсы наклонной сваи + срез + проектные отклонения.")
+  (princ "\nНаклон: 1 м в плане на 4,5 м высоты. Полуоси среза: 0,710000 / 0,727320 м.")
+  (setq pairs (gc-pile-e-auto))
+  (cond
+    ((null pairs)
+     (princ "\nКоманда отменена."))
+    (T
+     (setq target-z (getreal "\nВведите целевую отметку Z для среза, м: "))
+     (cond
+       ((null target-z)
+        (princ "\nКоманда отменена: отметка не введена."))
+       (T
+        (setq project-centers (gc-pile-read-project-centers))
+        (gc-pile-run-svp-core pairs target-z project-centers "SV4"))))))
 
 
 (defun c:sv ( / *error* mode-str pairs g idx total ok skipped p)
@@ -1256,7 +1289,7 @@
   (princ "\n  1 = все точки сразу (автоопределение свай)")
   (princ "\n  2 = по группам вручную (нижнее/верхнее сечение)")
   (princ "\n  3 = все сразу: SV 1 + SVP")
-  (princ "\n  4 = наклонные сваи: эллипсы и смещение центров")
+  (princ "\n  4 = наклонные сваи: эллипсы + срез + проектные отклонения")
   ;; Ключевое слово продублировано одной буквой: для кириллицы AutoCAD
   ;; не распознаёт заглавную букву как сокращение и требует слово целиком.
   ;; Цикл — чтобы после смены высоты снова спросить режим.
@@ -1347,5 +1380,5 @@
 ;; SVP -> ЫМЗ
 (defun c:ымз ( / ) (c:svp))
 (defun c:ЫМЗ ( / ) (c:svp))
-(princ "\n[gc] sv.lsp v26 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
+(princ "\n[gc] sv.lsp v27 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
 (princ)

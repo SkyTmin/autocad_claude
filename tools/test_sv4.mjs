@@ -38,6 +38,7 @@ const builtins={
   cons:(a,b)=>[a,...(b??[])],reverse:a=>[...(a??[])].reverse(),
   cdr:x=>x?.slice(1)??null,cddr:x=>x?.slice(2)??null,last:x=>nil(x?.at(-1)),
   null:x=>!truth(x),not:x=>!truth(x),
+  member:(x,xs)=>{const i=xs.findIndex(v=>v===x);return i<0?null:xs.slice(i);},
   equal:(a,b,tol=0)=>Array.isArray(a)&&Array.isArray(b)?a.length===b.length&&a.every((v,i)=>builtins.equal(v,b[i],tol)):typeof a==='number'?Math.abs(a-b)<=tol:a===b,
   princ:()=>null,itoa:x=>String(x),rtos:(x,mode,precision)=>x.toFixed(precision),strcat:(...a)=>a.join(''),
 };
@@ -133,3 +134,66 @@ builtins.ssget=()=>[...low,...high];
 const pairs=invoke('gc-pile-e-auto');assert.equal(pairs.length,1);
 const autoFit=invoke('gc-pile-e-best',pairs[0][0],pairs[0].slice(1));assert(autoFit);near(autoFit[0][2],r);
 console.log(`PASS: parsed ${forms.length} forms; SV4 locals; ${checked} analytic/noisy fits; degenerate selections; duplicates; auto grouping. AutoCAD not run.`);
+
+// Срез внутри и за пределами опорных Z, включая нулевую отметку.
+const ellipseData=[[100,200,.713,.730,.7,2,0],[101,202,.708,.725,.7,6,0]];
+for(const z of [0,2,4,6,10]){
+  const cut=invoke('gc-pile-e-cut-data',ellipseData,z);
+  near(cut[0],100+(z-2)/4);near(cut[1],200+(z-2)/2);
+  near(cut[2],r);near(cut[3],r*q);near(cut[4],.7);near(cut[5],z);
+}
+assert.equal(invoke('gc-pile-e-cut-data',[ellipseData[0],ellipseData[0]],4),null);
+// CAD-граница заменена записью вызовов. Математика, общий раннер и
+// сопоставление проектов исполняются из исходного файла.
+let ellipses=[],deviations=[];
+builtins['gc-pile-ensure-layer']=()=>true;
+builtins['gc-pile-draw-ellipse']=(e,layer)=>{ellipses.push({e,layer});return true;};
+builtins['gc-pile-draw-xy-deviation']=(...args)=>{deviations.push(args);return true;};
+const cutZ=9;
+const target=invoke('gc-pile-process-sv4',low,high,cutZ);
+assert(target);assert.equal(ellipses.length,3);
+near(target[0],10+2*Math.cos(.7));near(target[1],20+2*Math.sin(.7));near(target[2],cutZ);
+const blue=deviations[0];
+near(blue[0][0],10);near(blue[0][1],21.7);near(blue[0][2],0);
+assert.equal(blue[5],globals.get('*gc-l-sv3-arrows*'));
+assert.equal(blue[6],globals.get('*gc-l-sv3-text*'));assert.equal(blue[7],5);
+near(blue[3],1000*Math.cos(.7)/4.5);near(blue[4],1000*Math.sin(.7)/4.5);
+assert.equal(ellipses[2].layer,globals.get('*gc-l-cut*'));
+const project=[target[0]-.020,target[1]+.030,1234];
+const matched=invoke('gc-pile-run-project-match',target,[project],'SV4');
+assert.equal(matched[1],1);assert.equal(truth(matched[0]),false);
+const white=deviations.at(-1);
+near(white[0][0],project[0]);near(white[0][1],project[1]+2.6);near(white[0][2],cutZ);
+near(white[3],20);near(white[4],-30);assert.equal(white[7],7);
+assert.equal(white[5],globals.get('*gc-l-sv3-project-arrows*'));
+const count=deviations.length;
+invoke('gc-pile-run-project-match',target,[[target[0]+2.001,target[1],0]],'SV4');
+assert.equal(deviations.length,count);
+// Один проект нельзя присвоить двум сваям; срезы строятся и без проекта.
+ellipses=[];deviations=[];
+const pair=[low,...high];
+invoke('gc-pile-run-svp-core',[pair,pair],cutZ,[project],'SV4');
+assert.equal(ellipses.length,6);
+assert.equal(deviations.filter(a=>a[7]===5).length,2);
+assert.equal(deviations.filter(a=>a[7]===7).length,1);
+ellipses=[];deviations=[];
+invoke('gc-pile-run-svp-core',[pair],cutZ,null,'SV4');
+assert.equal(ellipses.length,3);assert.equal(deviations.length,1);
+// Ветвление общего раннера сохраняет вызовы SV3 / SVP.
+const route=[];
+builtins['gc-pile-process-sv3']=()=>{route.push('SV3');return target;};
+builtins['gc-pile-process-extension']=()=>{route.push('SVP');return target;};
+invoke('gc-pile-run-svp-core',[pair],cutZ,null,'SV3');
+invoke('gc-pile-run-svp-core',[pair],cutZ,null,'SVP');
+assert.deepEqual(route,['SV3','SVP']);
+// Порядок запросов и отмена: никаких дополнительных меню режима 4.
+let events=[],entryPairs=[pair],enteredZ=0;
+builtins['gc-pile-e-auto']=()=>{events.push('points');return entryPairs;};
+builtins.getreal=()=>{events.push('cut-z');return enteredZ;};
+builtins.getkword=()=>{throw Error('Unexpected extra menu');};
+builtins['gc-pile-read-project-centers']=()=>{events.push('project');return [project];};
+builtins['gc-pile-run-svp-core']=(ps,z,pr,mode)=>{events.push(mode);near(z,0);};
+invoke('gc-pile-run-sv4');assert.deepEqual(events,['points','cut-z','project','SV4']);
+events=[];enteredZ=null;invoke('gc-pile-run-sv4');assert.deepEqual(events,['points','cut-z']);
+events=[];entryPairs=null;invoke('gc-pile-run-sv4');assert.deepEqual(events,['points']);
+console.log('PASS: cut interpolation/extrapolation; blue/white colors, units, XY offsets and Z; project matching; SV3/SVP routing; SV4 prompts/cancellation. CAD API not run.');
