@@ -1,7 +1,10 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 v25)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 v26)
 ;;; Komandy:
-;;;   SV  -- rezhimy 1/2 i novyy rezhim 3.
+;;;   SV  -- rezhimy 1/2/3/4 (4: naklonnye svai, ellipsy).
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v26: SV 4 - ellipsy naklonnyh svay 1:4.5, podbor po vsem tochkam.
+;;;      Proverku v Civil 3D vypolnyaet polzovatel.
 ;;;
 ;;; v25: VOZVRASHCHENO RASPOLOZHENIE CIFR, deystvovavshee do v20.
 ;;;      v20 unificirovala podpisi SV s ol.lsp: cifra X vsegda sverhu,
@@ -1025,6 +1028,217 @@
                  " м, длина стрелки " (gc-pile-fmt (gc-pile-arrow-len)) " м"))
   *gc-pile-text-h*)
 
+;;; SV 4: горизонтальные сечения наклонного цилиндра (SPEC-010).
+;;; Наклон 1:4.5 подтвержден: 1 м в плане на 4.5 м по высоте.
+(setq *gc-pile-sv4-slope* (/ 1.0 4.5))
+(setq *gc-pile-sv4-rms-warn* 0.010)
+
+;; Повторно выбранная точка не должна менять вес измерения.
+(defun gc-pile-e-unique (pts / out p found other)
+  (setq out nil)
+  (foreach p pts
+    (setq found nil)
+    (foreach other out
+      (if (equal p other 1.0e-8) (setq found T)))
+    (if (not found) (setq out (cons p out))))
+  (reverse out))
+
+;; Все вычисления около среднего, а не на геодезических миллионных XY.
+;; После сжатия вдоль большой оси эллипс становится окружностью.
+;; Результат: (cx cy малая-полуось большая-полуось угол Z radial-RMS).
+(defun gc-pile-e-fit (pts ang / co si ratio mx my mz uv p dx dy u v
+                         mu mv xx yy xy xr yr rr det cx cy rad sum n)
+  (setq n (float (length pts))
+        co (cos ang) si (sin ang)
+        ratio (sqrt (+ 1.0 (* *gc-pile-sv4-slope* *gc-pile-sv4-slope*)))
+        mx (gc-pile-avg (mapcar 'car pts))
+        my (gc-pile-avg (mapcar 'cadr pts))
+        mz (gc-pile-avg (mapcar 'caddr pts))
+        uv nil)
+  (foreach p pts
+    (setq dx (- (car p) mx) dy (- (cadr p) my))
+    ;; Точки сняты на чуть разных Z: приводим их к средней плоскости.
+    (setq u (/ (- (+ (* co dx) (* si dy))
+                    (* *gc-pile-sv4-slope* (- (caddr p) mz))) ratio)
+          v (+ (* (- si) dx) (* co dy)))
+    (setq uv (cons (list u v) uv)))
+  (setq mu (gc-pile-avg (mapcar 'car uv))
+        mv (gc-pile-avg (mapcar 'cadr uv))
+        xx 0.0 yy 0.0 xy 0.0 xr 0.0 yr 0.0 rr 0.0)
+  (foreach p uv
+    (setq u (- (car p) mu) v (- (cadr p) mv)
+          rad (+ (* u u) (* v v))
+          xx (+ xx (* u u)) yy (+ yy (* v v)) xy (+ xy (* u v))
+          xr (+ xr (* u rad)) yr (+ yr (* v rad)) rr (+ rr rad)))
+  (setq det (- (* xx yy) (* xy xy)))
+  (if (or (< (+ xx yy) 1.0e-10)
+          (<= det (* 1.0e-7 (+ xx yy) (+ xx yy))))
+    nil
+    (progn
+      (setq cx (/ (- (* xr yy) (* yr xy)) (* 2.0 det))
+            cy (/ (- (* yr xx) (* xr xy)) (* 2.0 det)))
+      (setq rad (sqrt (+ (/ rr n) (* cx cx) (* cy cy)))
+            cx (+ cx mu) cy (+ cy mv) sum 0.0)
+      (foreach p uv
+        (setq u (- (car p) cx) v (- (cadr p) cy)
+              rr (sqrt (+ (* u u) (* v v))))
+        ;; Радиальная невязка в исходной плоскости, в метрах.
+        (if (> rr 1.0e-12)
+          (setq sum (+ sum (* (- rr rad) (- rr rad)
+                              (/ (+ (* ratio ratio u u) (* v v)) (* rr rr)))))
+          (setq sum (+ sum (* rad rad)))))
+      (list (+ mx (* co ratio cx) (* (- si) cy))
+            (+ my (* si ratio cx) (* co cy))
+            rad (* ratio rad) ang mz (sqrt (/ sum n))))))
+
+;; Поперечный сдвиг центров штрафуется: большая ось направлена вдоль сваи.
+;; Обратное направление тоже штрафуется, поскольку поправка за Z имеет знак.
+(defun gc-pile-e-candidate (lo hi ang / el eh dx dy dz cross along score)
+  (setq el (gc-pile-e-fit lo ang) eh (gc-pile-e-fit hi ang))
+  (if (and el eh)
+    (progn
+      (setq dx (- (car eh) (car el)) dy (- (cadr eh) (cadr el))
+            dz (- (nth 5 eh) (nth 5 el))
+            cross (/ (- (* (cos ang) dy) (* (sin ang) dx)) dz)
+            along (min 0.0 (/ (+ (* (cos ang) dx) (* (sin ang) dy)) dz)))
+      (setq score (+ (expt (nth 6 el) 2) (expt (nth 6 eh) 2)
+                     (expt (- (nth 2 el) *gc-pile-r-norm*) 2)
+                     (expt (- (nth 2 eh) *gc-pile-r-norm*) 2)
+                     (* *gc-pile-r-norm* *gc-pile-r-norm*
+                        (+ (* cross cross) (* along along)))))
+      (list score ang el eh))
+    nil))
+
+(defun gc-pile-e-sections-ok (lo hi / zlo zhi)
+  (cond
+    ((or (< (length lo) 3) (< (length hi) 3))
+     (princ "\n[!] SV 4: нужно минимум 3 различные точки в каждом сечении.") nil)
+    (T
+     (setq zlo (mapcar 'caddr lo) zhi (mapcar 'caddr hi))
+     (cond
+       ((or (> (- (apply 'max zlo) (apply 'min zlo)) *gc-pile-z-cluster*)
+            (> (- (apply 'max zhi) (apply 'min zhi)) *gc-pile-z-cluster*))
+        (princ "\n[!] SV 4: разброс Z в сечении больше 50 мм. Разделите сечения.") nil)
+       ((< (- (gc-pile-avg zhi) (gc-pile-avg zlo)) *gc-pile-pair-dz-min*)
+        (princ "\n[!] SV 4: верх должен быть выше низа минимум на 0,300 м.") nil)
+       (T T)))))
+
+(defun gc-pile-e-best (low-pts high-pts / lo hi best cand ang step idx base)
+  (setq lo (gc-pile-e-unique low-pts) hi (gc-pile-e-unique high-pts))
+  (if (gc-pile-e-sections-ok lo hi)
+    (progn
+      (setq best nil step (/ pi 36.0) idx 0)
+      ;; Полный оборот нужен из-за знака высотной поправки.
+      (repeat 72
+        (setq ang (* idx step) cand (gc-pile-e-candidate lo hi ang))
+        (if (and cand (or (null best) (< (car cand) (car best))))
+          (setq best cand))
+        (setq idx (1+ idx)))
+      (if best
+        (progn
+          (repeat 4
+            (setq base (cadr best) step (/ step 5.0) idx -5)
+            (repeat 11
+              (setq ang (+ base (* idx step)) cand (gc-pile-e-candidate lo hi ang))
+              (if (and cand (< (car cand) (car best))) (setq best cand))
+              (setq idx (1+ idx))))
+          (list (nth 2 best) (nth 3 best)))
+        (progn
+          (princ "\n[!] SV 4: точки совпадают, лежат на прямой или дуга слишком узкая.")
+          nil)))
+    nil))
+
+(defun gc-pile-draw-ellipse (e layer / a ang)
+  (setq a (nth 3 e) ang (nth 4 e))
+  (gc-pile-emake
+    (list '(0 . "ELLIPSE") '(100 . "AcDbEntity") (cons 8 layer)
+          '(100 . "AcDbEllipse")
+          (cons 10 (list (car e) (cadr e) (nth 5 e)))
+          (cons 11 (list (* a (cos ang)) (* a (sin ang)) 0.0))
+          '(210 0.0 0.0 1.0) (cons 40 (/ (nth 2 e) a))
+          '(41 . 0.0) (cons 42 (* 2.0 pi))) "эллипс"))
+
+(defun gc-pile-e-report (e name)
+  (princ (strcat "\n" name ": центр (" (rtos (car e) 2 3) ", "
+    (rtos (cadr e) 2 3) ", " (rtos (nth 5 e) 2 3) ")"
+    "; малая полуось = " (rtos (nth 2 e) 2 6)
+    " м; большая = " (rtos (nth 3 e) 2 6)
+    " м; невязка = " (rtos (* 1000.0 (nth 6 e)) 2 1) " мм"))
+  (if (or (> (nth 6 e) *gc-pile-sv4-rms-warn*)
+          (> (abs (- (nth 2 e) *gc-pile-r-norm*)) *gc-pile-r-warn*))
+    (princ "\n[!] Сечение плохо согласуется с диаметром/точками. Проверьте выбор и съемку.")))
+
+(defun gc-pile-process-sv4 (lo hi / data el eh dx dy dz slope base)
+  (setq data (gc-pile-e-best lo hi))
+  (if data
+    (progn
+      (setq el (car data) eh (cadr data)
+            dx (* 1000.0 (- (car eh) (car el)))
+            dy (* 1000.0 (- (cadr eh) (cadr el)))
+            dz (- (nth 5 eh) (nth 5 el))
+            slope (/ (sqrt (+ (* dx dx) (* dy dy))) dz)
+            base (list (car el) (cadr el) (nth 5 el)))
+      (gc-pile-ensure-layer *gc-l-low* 1)
+      (gc-pile-ensure-layer *gc-l-high* 3)
+      (if (and (gc-pile-draw-ellipse el *gc-l-low*)
+               (gc-pile-draw-ellipse eh *gc-l-high*))
+        (progn
+          (gc-pile-draw-xy-deviation base dx dy (/ dx dz) (/ dy dz)
+                                    *gc-l-arrows* *gc-l-text* 7)
+          (gc-pile-e-report el "Низ")
+          (gc-pile-e-report eh "Верх")
+          (princ (strcat "\ndX = " (gc-pile-mm-signed dx)
+                         "; dY = " (gc-pile-mm-signed dy)
+                         "; dZ = " (rtos dz 2 3) " м"
+                         "\nСмещение центров: " (rtos slope 2 1)
+                         " мм/м; номинал 222,2 мм/м. Подписи: мм/м по X и Y."))
+          (princ "\nЭто фактический наклон; проектный азимут не задан.")
+          T)
+        nil))
+    nil))
+
+
+;; Для SV 4 группировка не перебирает тройки окружностей: при большом
+;; количестве точек это лишняя кубическая работа до подбора эллипсов.
+(defun gc-pile-e-auto ( / ss pts clusters cluster groups group clean secs pairs)
+  (princ "\nВыделите точки свай (рамкой): ")
+  (setq ss (ssget *gc-pile-ssget-filter*) pairs nil)
+  (if ss
+    (progn
+      (setq pts (gc-pile-ss-to-points ss)
+            clusters (gc-pile-cluster-by-xy pts))
+      (foreach cluster clusters
+        (setq groups (gc-pile-cluster-by-z cluster) secs nil)
+        (foreach group groups
+          (setq clean (gc-pile-e-unique (gc-pile-strip-hm group)))
+          (if (>= (length clean) 3) (setq secs (cons clean secs))))
+        ;; Группы пришли по возрастанию Z, cons развернул порядок.
+        (if (>= (length secs) 2)
+          (setq pairs (cons (cons (last secs) (car secs)) pairs))
+          (princ "\n[!] SV 4: в XY-группе меньше двух сечений по 3 точки. Используйте Вручную.")))
+      (if (null pairs) (princ "\n[!] SV 4: пар сечений не найдено.")))
+    (princ "\nSV 4: точки не выбраны."))
+  (reverse pairs))
+
+(defun gc-pile-run-sv4 ( / how pairs g p ok total)
+  (princ "\nSV 4: эллипсы наклонной сваи. Наклон: 1 м в плане на 4,5 м высоты.")
+  (princ "\nНоминальные полуоси: 0,710000 и 0,727319 м. Направление - по точкам.")
+  (princ "\nПри большом смещении сечений/слиянии соседних свай выбирайте Вручную.")
+  (initget "Авто А Вручную В")
+  (setq how (getkword "\nВыбор точек [Авто/Вручную] <Авто>: "))
+  (if (member how '("Вручную" "В"))
+    (progn
+      (setq g (gc-pile-mode2))
+      (if g (setq pairs (list (cons (car g) (cadr g))))))
+    (setq pairs (gc-pile-e-auto)))
+  (setq ok 0 total (length pairs))
+  (foreach p pairs
+    (if (gc-pile-process-sv4 (car p) (cdr p)) (setq ok (1+ ok))))
+  (princ (strcat "\n[SV 4] Обработано: " (itoa ok) "; пропущено: "
+                 (itoa (- total ok)) "; всего: " (itoa total)))
+  (princ))
+
+
 (defun c:sv ( / *error* mode-str pairs g idx total ok skipped p)
   ;; *error* объявлен локальным: на выходе AutoLISP сам вернёт прежний
   ;; обработчик, даже если нажали Esc посреди ввода.
@@ -1042,6 +1256,7 @@
   (princ "\n  1 = все точки сразу (автоопределение свай)")
   (princ "\n  2 = по группам вручную (нижнее/верхнее сечение)")
   (princ "\n  3 = все сразу: SV 1 + SVP")
+  (princ "\n  4 = наклонные сваи: эллипсы и смещение центров")
   ;; Ключевое слово продублировано одной буквой: для кириллицы AutoCAD
   ;; не распознаёт заглавную букву как сокращение и требует слово целиком.
   ;; Цикл — чтобы после смены высоты снова спросить режим.
@@ -1049,13 +1264,15 @@
   (while (null mode-str)
     (princ (strcat "\n  Высота текста: " (gc-pile-fmt *gc-pile-text-h*)
                    " м  |  длина стрелки: " (gc-pile-fmt (gc-pile-arrow-len)) " м"))
-    (initget "1 2 3 Текст Т")
-    (setq mode-str (getkword "\nРежим [1/2/3/Текст] <1>: "))
+    (initget "1 2 3 4 Текст Т")
+    (setq mode-str (getkword "\nРежим [1/2/3/4/Текст] <1>: "))
     (if (null mode-str) (setq mode-str "1"))
     (if (member mode-str '("Текст" "Т"))
       (progn (gc-pile-set-text-h) (setq mode-str nil))))
   (princ (strcat "\nРежим: " mode-str))
   (cond
+    ((= mode-str "4")
+     (gc-pile-run-sv4))
     ((= mode-str "3")
      (gc-pile-run-sv3))
     (T
@@ -1130,5 +1347,5 @@
 ;; SVP -> ЫМЗ
 (defun c:ымз ( / ) (c:svp))
 (defun c:ЫМЗ ( / ) (c:svp))
-(princ "\n[gc] sv.lsp v25 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
+(princ "\n[gc] sv.lsp v26 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
 (princ)
