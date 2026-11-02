@@ -47,12 +47,13 @@ const builtins={
   member:(x,xs)=>{const i=xs.findIndex(v=>v===x);return i<0?null:xs.slice(i);},
   equal:(a,b,tol=0)=>Array.isArray(a)&&Array.isArray(b)?a.length===b.length&&a.every((v,i)=>builtins.equal(v,b[i],tol)):typeof a==='number'?Math.abs(a-b)<=tol:a===b,
   princ:()=>null,itoa:x=>String(x),rtos:(x,mode,precision)=>x.toFixed(precision),strcat:(...a)=>a.join(''),
+  'vl-string-subst':(replacement,search,str)=>str.replace(search,replacement),
 };
 function call(f,args,env) {
   if(Array.isArray(f)&&f[0]?.name==='lambda')return body(f.slice(2),[new Map(f[1].map((p,i)=>[p.name,args[i]])),...env]);
   const name=f instanceof Sym?f.name:f;
   if(name==='vl-sort')return [...args[0]].sort((a,b)=>truth(call(args[1],[a,b],env))?-1:truth(call(args[1],[b,a],env))?1:0);
-  if(name==='vl-some')return args[1].some(p=>truth(call(args[0],[p],env)));
+  if(name==='vl-some')return (args[1]??[]).some(p=>truth(call(args[0],[p],env)));
   if(name==='mapcar')return (args[1]??[]).map((_,i)=>call(args[0],args.slice(1).map(a=>a[i]),env));
   if(name==='apply')return call(args[0],args[1],env);
   if(builtins[name])return nil(builtins[name](...args));
@@ -68,6 +69,7 @@ function ev(x,env) {
   if(x.length===0)return null;
   const [op,...a]=x, name=op.name;
   if(name==='quote')return a[0];
+  if(name==='defun'){funcs.set(a[0].name,x);return a[0];}
   if(name==='setq'){let v;for(let i=0;i<a.length;i+=2){v=ev(a[i+1],env);(env.find(e=>e.has(a[i].name))??globals).set(a[i].name,v);}return v;}
   if(name==='if')return truth(ev(a[0],env))?ev(a[1],env):a.length>2?ev(a[2],env):null;
   if(name==='progn')return body(a,env);
@@ -84,7 +86,7 @@ for(const form of forms) {
   if(form[0]?.name==='setq')ev(form,[globals]);
 }
 // Ни одной неявной глобальной переменной в новых функциях.
-for(const [name,def] of funcs)if(name.startsWith('gc-pile-e-')||['gc-pile-draw-ellipse','gc-pile-process-sv4','gc-pile-run-sv4'].includes(name)){
+for(const [name,def] of funcs)if(name.startsWith('gc-pile-e-')||['gc-pile-draw-ellipse','gc-pile-process-sv4','gc-pile-run-sv4','gc-pile-run-sv5'].includes(name)){
   const declared=new Set(def[2].map(s=>s.name));
   function walk(x){if(!Array.isArray(x))return;if(x[0]?.name==='setq')for(let i=1;i<x.length;i+=2)assert(declared.has(x[i].name),name+' leaks '+x[i].name);if(x[0]?.name==='foreach')assert(declared.has(x[1].name));for(const v of x)walk(v);}walk(def.slice(3));
 }
@@ -326,3 +328,123 @@ assert.equal(dxfValue(storedStyle,179),2);assert.equal(dxfValue(storedStyle,340)
 storedStyle=null;acceptStyle=false;
 assert.equal(invoke('gc-pile-e-angle-ensure-style','Standard'),null);
 console.log('PASS: component/angle/minutes; exact 1m triangle; placement; DIMENSION geometry and overrides; zero and creation-failure paths. Native CAD rendering not run.');
+
+// SV 5: одиночные сечения используют все точки с тем же отношением осей.
+let singleCount=0;
+for(const az of [0,.17,.7,Math.PI/2,2.43,5.8]){
+  const pts=section(1449130.2,656417.3,-10,az,24);
+  const e=invoke('gc-pile-e-single-best',pts);assert(e);
+  near(e[0],1449130.2);near(e[1],656417.3);near(e[2],r);near(e[3],r*q);near(e[5],-10);
+  near(Math.sin(e[4]-az),0,.0001);assert(e[6]<.00001);singleCount++;
+}
+for(const n of [3,4,35,180]){
+  const pts=section(1449130.2,656417.3,2,.4,n,Math.PI,n>4,n>4?.001:0);
+  const e=invoke('gc-pile-e-single-best',pts);assert(e);
+  assert(e.every(Number.isFinite));near(e[2],r,.003);assert(e[6]<.002);
+  const score=e[6]**2+(e[2]-r)**2;
+  for(let k=0;k<72;k++)assert(score<=invoke('gc-pile-e-single-candidate',pts,k*Math.PI/36)[0]+1e-14);
+  singleCount++;
+}
+for(const pts of [[],low.slice(0,2),[low[0],low[0],low[1]],
+  [[0,0,0],[1,0,0],[2,0,0]],low.map((p,i)=>[p[0],p[1],i===0?.2:0])])
+  assert.equal(invoke('gc-pile-e-single-best',pts),null);
+const singleClean=invoke('gc-pile-e-single-best',low);
+const singleDup=invoke('gc-pile-e-single-best',[...low,low[0],low[1]]);
+singleClean.forEach((v,i)=>near(v,singleDup[i],1e-12));
+// Последний замер влияет на результат: отбор тройки вместо всех точек
+// не должен скрывать несовпадение остальных измерений.
+const disturbed=low.map(p=>[...p]);disturbed.at(-1)[0]+=.04;
+const singleDisturbed=invoke('gc-pile-e-single-best',disturbed);
+assert(singleDisturbed[6]>.002);
+assert(Math.hypot(singleDisturbed[0]-singleClean[0],singleDisturbed[1]-singleClean[1])>.0001);
+console.log(`PASS: SV5 ${singleCount} single-section fits, 3/4/many points, noise/arc, radius prior, all-point influence, invalid/duplicate selections.`);
+
+// Цвет берётся у объекта; TrueColor приоритетнее ACI, ByLayer разрешается.
+const layerTable=new Map([
+  ['LACI',[new Pair(62,-5)]],['LRGB',[new Pair(62,3),new Pair(420,0x1256ab)]],
+  ['GC-Сваи-SV5-Эллипс',[new Pair(62,7)]]]);
+builtins.entget=ent=>ent.ed;
+builtins.tblsearch=(table,name)=>table==='LAYER'?layerTable.get(name)??null:null;
+const pointEntity=(pt,attrs=[])=>({pt,ed:[new Pair(0,'POINT'),new Pair(8,'LACI'),...attrs]});
+for(const [attrs,color] of [
+  [[new Pair(62,1)],[62,1]], [[new Pair(62,256)],[62,5]], [[],[62,5]],
+  [[new Pair(62,0)],[62,7]], [[new Pair(62,2),new Pair(420,0)],[420,0]],
+  [[new Pair(62,256),new Pair(420,0xaabbcc)],[420,0xaabbcc]]])
+  assert.deepEqual(invoke('gc-pile-e-point-color',pointEntity(low[0],attrs)),color);
+assert.deepEqual(invoke('gc-pile-e-point-color',{ed:[new Pair(8,'LRGB')]}),[420,0x1256ab]);
+assert.deepEqual(invoke('gc-pile-e-point-color',{ed:[new Pair(8,'LRGB'),new Pair(62,2)]}),[62,2]);
+assert.deepEqual(invoke('gc-pile-e-point-color',{ed:[new Pair(8,'Absent')]}),[62,7]);
+const recs=(pts,color)=>pts.map(p=>[p,color]);
+messages=[];
+assert.deepEqual(invoke('gc-pile-e-section-color',[[low[0],[62,1]],[low[1],[62,5]],[low[2],[62,5]]]),[62,5]);
+assert(messages.some(s=>s?.includes('Цвета точек')));
+assert.deepEqual(invoke('gc-pile-e-section-color',[[low[0],[420,123]],[low[1],[62,1]]]),[420,123]);
+
+// Три высоты, две сваи, все точки одного Z сохраняются при сортировке.
+const records5=[];
+for(const z of [0,2,4]){
+  records5.push(...recs(section(10+z/4.5,20,z,0,12),[62,z+1]));
+  records5.push(...recs(section(100+z/4.5,200,z,0,9),[420,0x125600+z]));
+}
+const groups5=invoke('gc-pile-e-section-groups',[...records5].reverse());
+assert.equal(groups5.length,6);assert.equal(groups5.flat().length,records5.length);
+assert.deepEqual(groups5.map(g=>g.length).sort((a,b)=>a-b),[9,9,9,12,12,12]);
+assert.deepEqual(groups5.map(g=>g[0][0][2]),[0,0,2,2,4,4]);
+const chainZ=[0,.04,.08].map(z=>[[0,0,z],[62,3]]);
+assert.deepEqual(invoke('gc-pile-e-section-groups',chainZ).map(g=>g.length),[2,1]);
+const batch5=[...records5,...recs([[300,300,0],[300.1,300,0]],[62,7]),
+  ...recs([[400,400,2],[400.1,400,2],[400.2,400,2]],[62,7])];
+builtins['gc-pile-emake']=dxf=>{drawn.push(dxf);return true;};
+drawn=[];messages=[];
+assert.deepEqual(invoke('gc-pile-e-draw-sections',batch5),[6,2,8]);
+assert.equal(drawn.length,6);
+for(const dxf of drawn){
+  assert.equal(dxfValue(dxf,0),'ELLIPSE');assert.equal(dxfValue(dxf,8),'GC-Сваи-SV5-Эллипс');
+  const centre=dxfValue(dxf,10),z=centre[2],major=dxfValue(dxf,11);
+  near(Math.hypot(...major),r*q);near(dxfValue(dxf,40),1/q);near(dxfValue(dxf,42),2*Math.PI);
+  assert.deepEqual(dxfValue(dxf,210),[0,0,1]);
+  if(centre[0]<50){assert.equal(dxfValue(dxf,62),z+1);assert.equal(dxfValue(dxf,420),null);}
+  else{assert.equal(dxfValue(dxf,420),0x125600+z);assert.equal(dxfValue(dxf,62),null);}
+}
+// Отказ одного entmake не прерывает пакет, слой проверяется до построения.
+let attempt5=0;drawn=[];
+builtins['gc-pile-emake']=dxf=>{attempt5++;drawn.push(dxf);return attempt5===2?null:true;};
+assert.deepEqual(invoke('gc-pile-e-draw-sections',batch5),[5,3,8]);
+layerTable.delete('GC-Сваи-SV5-Эллипс');drawn=[];
+assert.equal(invoke('gc-pile-e-draw-sections',records5),null);assert.equal(drawn.length,0);
+layerTable.set('GC-Сваи-SV5-Эллипс',[new Pair(62,7)]);
+
+// Реальные старые CSV: каждый уровень обрабатывается отдельно,
+// одиночная верхняя точка пропускается, координаты источника не меняются.
+const sample5=fs.readFileSync(path.join(root,'samples/csv/2026-05-03-pile-sample-01.csv'),'utf8')
+  .trim().split(/\r?\n/).slice(1).map(row=>row.split(',').slice(1).map(Number));
+const sampleGroups5=invoke('gc-pile-e-section-groups',recs(sample5,[62,3]));
+assert.deepEqual(sampleGroups5.map(g=>g.length),[5,5,1]);
+drawn=[];builtins['gc-pile-emake']=dxf=>{drawn.push(dxf);return true;};
+assert.deepEqual(invoke('gc-pile-e-draw-sections',recs(sample5,[62,3])),[2,1,3]);
+
+// Полный ввод: координаты, цвет, удаление двойников, фильтр и Enter.
+builtins.sslength=ss=>ss.length;builtins.ssname=(ss,i)=>ss[i];
+builtins['gc-pile-get-coords']=ent=>ent.pt;
+const entities5=records5.map(([pt,color])=>pointEntity(pt,[new Pair(...color)]));
+const loaded5=invoke('gc-pile-e-records',[...entities5,entities5[0],pointEntity(null)]);
+assert.equal(loaded5.length,records5.length);assert.deepEqual(loaded5,records5);
+let selected5=entities5;drawn=[];
+builtins.ssget=filter=>{assert.deepEqual(filter,globals.get('*gc-pile-ssget-filter*'));return selected5;};
+builtins.getreal=()=>{throw Error('SV5 must not ask for cut height');};
+builtins['gc-pile-read-project-centers']=()=>{throw Error('SV5 must not ask for project');};
+assert.deepEqual(invoke('gc-pile-run-sv5'),[6,0,6]);assert.equal(drawn.length,6);
+selected5=null;drawn=[];
+assert.equal(invoke('gc-pile-run-sv5'),null);assert.equal(drawn.length,0);
+// Меню действительно передаёт управление режиму 5; остальные ветки целы.
+selected5=entities5;let keywords5=[];
+builtins.initget=s=>{keywords5.push(s);};builtins.getkword=()=> '5';
+invoke('c:sv');assert.equal(drawn.length,6);assert(keywords5[0].split(' ').includes('5'));
+const menuRoutes=[];
+builtins['gc-pile-mode1']=()=>{menuRoutes.push('1');return null;};
+builtins['gc-pile-mode2']=()=>{menuRoutes.push('2');return null;};
+builtins['gc-pile-run-sv3']=()=>menuRoutes.push('3');
+builtins['gc-pile-run-sv4']=()=>menuRoutes.push('4');
+for(const mode of ['1','2','3','4']){builtins.getkword=()=>mode;invoke('c:sv');}
+assert.deepEqual(menuRoutes,['1','2','3','4']);
+console.log('PASS: SV5 six ellipses / three levels / two piles; ACI, TrueColor, ByLayer, mixed colors; DXF, source CSV, invalid groups, creation failures, selection and menu routes. Civil 3D not run.');

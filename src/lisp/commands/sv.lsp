@@ -1,7 +1,9 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 v30)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 / SPEC-011 v31)
 ;;; Komandy:
-;;;   SV  -- rezhimy 1/2/3/4 (4: naklonnye svai, ellipsy).
+;;;   SV  -- rezhimy 1/2/3/4/5 (5: ellipsy secheniy po tochkam).
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v31: SV 5 - ellipsy vseh secheniy po 3+ tochkam, cvet ot tochek.
 ;;;
 ;;; v30: dalekiy srez SV 4 ne teryaet proekt: yavnaya para ili vybor.
 ;;;      Odna svaya + odin proekt - bez limita 2 m; paket - utochnenie.
@@ -1473,6 +1475,177 @@
         (gc-pile-run-svp-core pairs target-z project-centers "SV4"))))))
 
 
+;;; SV 5: каждое сечение отдельно, все высоты, цвет от исходных точек.
+(setq *gc-l-sv5-ellipse* "GC-Сваи-SV5-Эллипс")
+
+(defun gc-pile-e-single-candidate (pts ang / e score)
+  (setq e (gc-pile-e-fit pts ang))
+  (if e
+    (progn
+      ;; Все точки влияют на невязку; номинал помогает при редкой съемке.
+      (setq score (+ (expt (nth 6 e) 2)
+                     (expt (- (nth 2 e) *gc-pile-r-norm*) 2)))
+      (list score ang e))
+    nil))
+
+(defun gc-pile-e-single-best (pts / zs best cand ang step idx base)
+  (setq pts (gc-pile-e-unique pts))
+  (cond
+    ((< (length pts) 3)
+     (princ "\n[!] SV 5: нужно минимум 3 различные точки одного сечения.") nil)
+    (T
+     (setq zs (mapcar 'caddr pts))
+     (if (> (- (apply 'max zs) (apply 'min zs)) *gc-pile-z-cluster*)
+       (progn
+         (princ "\n[!] SV 5: разброс Z больше 50 мм. Выберите точки одного сечения.") nil)
+       (progn
+         (setq best nil step (/ pi 36.0) idx 0)
+         ;; Как в SV 4: полный оборот учитывает знак высотной поправки.
+         (repeat 72
+           (setq ang (* idx step) cand (gc-pile-e-single-candidate pts ang))
+           (if (and cand (or (null best) (< (car cand) (car best))))
+             (setq best cand))
+           (setq idx (1+ idx)))
+         (if best
+           (progn
+             (repeat 4
+               (setq base (cadr best) step (/ step 5.0) idx -5)
+               (repeat 11
+                 (setq ang (+ base (* idx step)) cand (gc-pile-e-single-candidate pts ang))
+                 (if (and cand (< (car cand) (car best))) (setq best cand))
+                 (setq idx (1+ idx))))
+             (caddr best))
+           (progn
+             (princ "\n[!] SV 5: точки лежат на прямой или дуга слишком узкая. Эллипс не построен.")
+             nil)))))))
+
+;; Цвет объекта: TrueColor имеет приоритет, ПоСлою разрешается до цвета слоя.
+;; Для самостоятельного POINT с ByBlock нет родительского блока: цвет 7.
+(defun gc-pile-e-point-color (ent / ed aci rgb layer)
+  (setq ed (entget ent) rgb (cdr (assoc 420 ed)) aci (cdr (assoc 62 ed)))
+  (cond
+    (rgb (list 420 rgb))
+    ((and aci (> (abs aci) 0) (< (abs aci) 256)) (list 62 (abs aci)))
+    ((and aci (= aci 0)) (list 62 7))
+    (T
+     (setq layer (tblsearch "LAYER" (cdr (assoc 8 ed)))
+           rgb (cdr (assoc 420 layer)) aci (cdr (assoc 62 layer)))
+     (if rgb (list 420 rgb) (list 62 (if aci (abs aci) 7))))))
+
+(defun gc-pile-e-records (ss / idx ent pt records skipped)
+  (setq idx 0 records nil skipped 0)
+  (repeat (sslength ss)
+    (setq ent (ssname ss idx) pt (gc-pile-get-coords ent) idx (1+ idx))
+    (if pt
+      ;; Совпадающие координаты не добавляют веса ни МНК, ни цвету.
+      (if (not (vl-some '(lambda (rec) (equal (car rec) pt 1.0e-8)) records))
+        (setq records (cons (list pt (gc-pile-e-point-color ent)) records)))
+      (setq skipped (1+ skipped))))
+  (if (> skipped 0)
+    (princ (strcat "\n[!] SV 5: объектов без прочитанных координат: " (itoa skipped))))
+  (reverse records))
+
+(defun gc-pile-e-section-groups (records / indexed idx rec sorted zg current z0 z
+                                         groups level remaining cur grow keep candidate)
+  ;; Уникальный индекс разрывает равенство Z: vl-sort не теряет точки
+  ;; одной отметки. Храним сами записи, чтобы не искать каждую через nth.
+  (setq indexed nil idx 0)
+  (foreach rec records
+    (setq indexed (cons (cons idx rec) indexed) idx (1+ idx)))
+  (setq sorted
+    (mapcar 'cdr
+      (vl-sort indexed
+        '(lambda (a b)
+           (if (= (caddr (cadr a)) (caddr (cadr b)))
+             (< (car a) (car b))
+             (< (caddr (cadr a)) (caddr (cadr b))))))))
+  (setq zg nil current nil z0 nil)
+  (foreach rec sorted
+    (setq z (caddr (car rec)))
+    (cond
+      ((null z0) (setq z0 z current (list rec)))
+      ((<= (- z z0) *gc-pile-z-cluster*) (setq current (cons rec current)))
+      (T (setq zg (cons (reverse current) zg) z0 z current (list rec)))))
+  (if current (setq zg (cons (reverse current) zg)))
+  (setq groups nil)
+  (foreach level (reverse zg)
+    (setq remaining level)
+    (while remaining
+      (setq cur (list (car remaining)) remaining (cdr remaining) grow T)
+      (while grow
+        (setq grow nil keep nil)
+        (foreach candidate remaining
+          (if (vl-some
+                '(lambda (m) (<= (gc-pile-dist-xy (car candidate) (car m)) *gc-pile-xy-cluster*))
+                cur)
+            (setq cur (cons candidate cur) grow T)
+            (setq keep (cons candidate keep))))
+        (setq remaining (reverse keep)))
+      (setq groups (cons (reverse cur) groups))))
+  (reverse groups))
+
+(defun gc-pile-e-section-color (records / colors rec color count best best-count)
+  (setq colors nil best nil best-count -1)
+  (foreach rec records
+    (setq color (cadr rec))
+    (if (not (vl-some '(lambda (c) (equal c color)) colors))
+      (setq colors (cons color colors))))
+  (foreach color (reverse colors)
+    (setq count 0)
+    (foreach rec records
+      (if (equal (cadr rec) color) (setq count (1+ count))))
+    (if (> count best-count) (setq best color best-count count)))
+  (if (> (length colors) 1)
+    (princ "\n[!] Цвета точек сечения различаются: выбран наиболее частый, при равенстве - первый."))
+  best)
+
+(defun gc-pile-e-draw-colored (e color / a ang)
+  (setq a (nth 3 e) ang (nth 4 e))
+  (gc-pile-emake
+    (list '(0 . "ELLIPSE") '(100 . "AcDbEntity") (cons 8 *gc-l-sv5-ellipse*)
+          (cons (car color) (cadr color)) '(100 . "AcDbEllipse")
+          (cons 10 (list (car e) (cadr e) (nth 5 e)))
+          (cons 11 (list (* a (cos ang)) (* a (sin ang)) 0.0))
+          '(210 0.0 0.0 1.0) (cons 40 (/ (nth 2 e) a))
+          '(41 . 0.0) (cons 42 (* 2.0 pi))) "эллипс сечения"))
+
+(defun gc-pile-e-draw-sections (records / groups group pts e idx ok skipped)
+  (setq groups (gc-pile-e-section-groups records) idx 0 ok 0 skipped 0)
+  (gc-pile-ensure-layer *gc-l-sv5-ellipse* 7)
+  (if (null (tblsearch "LAYER" *gc-l-sv5-ellipse*))
+    (progn (princ "\n[ОШИБКА] SV 5: не удалось создать слой эллипсов.") nil)
+    (progn
+      (foreach group groups
+        (setq idx (1+ idx) pts (mapcar 'car group))
+        (princ (strcat "\n=== SV 5: сечение " (itoa idx) " / " (itoa (length groups))
+                       ", точек: " (itoa (length pts)) " ==="))
+        (setq e (gc-pile-e-single-best pts))
+        (if e
+          (progn
+            (if (< (length pts) 5)
+              (princ "\n[!] По 3-4 точкам эллипс неоднозначен; вариант выбран с учетом номинальных размеров."))
+            (if (gc-pile-e-draw-colored e (gc-pile-e-section-color group))
+              (progn (gc-pile-e-report e "Сечение") (setq ok (1+ ok)))
+              (setq skipped (1+ skipped))))
+          (setq skipped (1+ skipped))))
+      (princ (strcat "\n[Итог SV 5] эллипсов построено: " (itoa ok)
+                     "  сечений пропущено: " (itoa skipped)))
+      (list ok skipped (length groups)))))
+
+(defun gc-pile-run-sv5 ( / ss records)
+  (princ "\nSV 5: эллипсы по точкам, отдельное построение на каждой высоте.")
+  (princ "\nРазмеры-ориентир как в SV 4: полуоси 0,710000 / 0,727320 м.")
+  (princ "\nЦвет - из свойства Цвет точки, включая ПоСлою; переопределения стилем COGO не учитываются.")
+  (princ "\nВыберите точки сечений (минимум 3 на сечение), затем Enter: ")
+  (setq ss (ssget *gc-pile-ssget-filter*))
+  (cond
+    ((null ss) (princ "\nКоманда отменена: точки не выбраны.") nil)
+    (T
+     (setq records (gc-pile-e-records ss))
+     (if records
+       (gc-pile-e-draw-sections records)
+       (progn (princ "\n[!] SV 5: нет точек с прочитанными координатами.") nil)))))
+
 (defun c:sv ( / *error* mode-str pairs g idx total ok skipped p)
   ;; *error* объявлен локальным: на выходе AutoLISP сам вернёт прежний
   ;; обработчик, даже если нажали Esc посреди ввода.
@@ -1491,6 +1664,7 @@
   (princ "\n  2 = по группам вручную (нижнее/верхнее сечение)")
   (princ "\n  3 = все сразу: SV 1 + SVP")
   (princ "\n  4 = наклонные сваи: эллипсы + срез + проектные отклонения")
+  (princ "\n  5 = эллипсы по точкам всех сечений, цвет от точек")
   ;; Ключевое слово продублировано одной буквой: для кириллицы AutoCAD
   ;; не распознаёт заглавную букву как сокращение и требует слово целиком.
   ;; Цикл — чтобы после смены высоты снова спросить режим.
@@ -1498,13 +1672,15 @@
   (while (null mode-str)
     (princ (strcat "\n  Высота текста: " (gc-pile-fmt *gc-pile-text-h*)
                    " м  |  длина стрелки: " (gc-pile-fmt (gc-pile-arrow-len)) " м"))
-    (initget "1 2 3 4 Текст Т")
-    (setq mode-str (getkword "\nРежим [1/2/3/4/Текст] <1>: "))
+    (initget "1 2 3 4 5 Текст Т")
+    (setq mode-str (getkword "\nРежим [1/2/3/4/5/Текст] <1>: "))
     (if (null mode-str) (setq mode-str "1"))
     (if (member mode-str '("Текст" "Т"))
       (progn (gc-pile-set-text-h) (setq mode-str nil))))
   (princ (strcat "\nРежим: " mode-str))
   (cond
+    ((= mode-str "5")
+     (gc-pile-run-sv5))
     ((= mode-str "4")
      (gc-pile-run-sv4))
     ((= mode-str "3")
@@ -1581,5 +1757,5 @@
 ;; SVP -> ЫМЗ
 (defun c:ымз ( / ) (c:svp))
 (defun c:ЫМЗ ( / ) (c:svp))
-(princ "\n[gc] sv.lsp v30 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
+(princ "\n[gc] sv.lsp v31 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
 (princ)
