@@ -42,7 +42,7 @@ const builtins={
   nth:(i,x)=>nil(x?.[i]), length:x=>x?.length??0, list:(...a)=>a,
   cons:(a,b)=>Array.isArray(b)||b===null?[a,...(b??[])]:new Pair(a,b),reverse:a=>[...(a??[])].reverse(),
   cdr:x=>x instanceof Pair?x.cdr:x?.slice(1)??null,cddr:x=>x?.slice(2)??null,last:x=>nil(x?.at(-1)),
-  append:(...xs)=>xs.flat(),assoc:(key,xs)=>xs?.find(x=>builtins.car(x)===key)??null,
+  append:(...xs)=>xs.filter(x=>x!==null).flat(),assoc:(key,xs)=>xs?.find(x=>builtins.car(x)===key)??null,
   null:x=>!truth(x),not:x=>!truth(x),
   member:(x,xs)=>{const i=xs.findIndex(v=>v===x);return i<0?null:xs.slice(i);},
   equal:(a,b,tol=0)=>Array.isArray(a)&&Array.isArray(b)?a.length===b.length&&a.every((v,i)=>builtins.equal(v,b[i],tol)):typeof a==='number'?Math.abs(a-b)<=tol:a===b,
@@ -92,6 +92,8 @@ for(const [name,def] of funcs)if(name.startsWith('gc-pile-e-')||['gc-pile-draw-e
 }
 function invoke(name,...args){return call(name,args,[globals]);}
 function near(a,b,eps=1e-5){assert(Math.abs(a-b)<=eps,`${a} != ${b} (tol ${eps})`);}
+// В AutoLISP append игнорирует nil; JavaScript flat сам этого не делает.
+assert.deepEqual(invoke('append',null,[1,2],null,[3]),[1,2,3]);
 const slope=1/4.5,r=.710,q=Math.hypot(1,slope);
 near(r*q,.72731961829755,1e-14);
 function section(cx,cy,z,az,n=18,arc=2*Math.PI,zNoise=false,noise=0){
