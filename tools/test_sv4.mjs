@@ -99,15 +99,28 @@ near(r*q,.72731961829755,1e-14);
 function section(cx,cy,z,az,n=18,arc=2*Math.PI,zNoise=false,noise=0){
   return Array.from({length:n},(_,i)=>{
     const t=arc===2*Math.PI?i*arc/n:-arc/2+i*arc/(n-1), dz=zNoise?.012*Math.sin(i*2.1):0;
-    const u=r*q*Math.cos(t)+slope*dz,v=r*Math.sin(t);
+    // v33, как SV3: исходные XY опор не переносятся по наклону за разброс Z.
+    const u=r*q*Math.cos(t),v=r*Math.sin(t);
     return [cx+Math.cos(az)*u-Math.sin(az)*v+noise*Math.sin(i*3.7),cy+Math.sin(az)*u+Math.cos(az)*v+noise*Math.cos(i*2.3),z+dz];
   });
+}
+function throughSupports(e,pts){
+  assert(e.slice(0,7).every(Number.isFinite));
+  assert.equal(e[7].length,3);assert.equal(e[8],pts.length);
+  assert.equal(new Set(e[7].map(p=>JSON.stringify(p))).size,3);
+  for(const p of e[7]){
+    assert(pts.some(src=>src.every((v,i)=>v===p[i])),'Опора должна быть исходной точкой');
+    const dx=p[0]-e[0],dy=p[1]-e[1],u=dx*Math.cos(e[4])+dy*Math.sin(e[4]),v=-dx*Math.sin(e[4])+dy*Math.cos(e[4]);
+    near(u*u/(e[3]*e[3])+v*v/(e[2]*e[2]),1,2e-8);
+  }
+  near(e[5],pts.reduce((s,p)=>s+p[2],0)/pts.length,1e-9);
 }
 let checked=0;
 for(const degrees of [0,17,45,92,135,181,243,315,359]){
   const az=degrees*Math.PI/180,cx=1449130.2,cy=656417.3,dz=4.5;
   const low=section(cx,cy,2,az),high=section(cx+Math.cos(az),cy+Math.sin(az),2+dz,az);
   const data=invoke('gc-pile-e-best',low,high);assert(data);
+  throughSupports(data[0],low);throughSupports(data[1],high);
   near(data[0][0],cx);near(data[0][1],cy);near(data[0][2],r);
   near(data[1][0]-data[0][0],Math.cos(az));near(data[1][1]-data[0][1],Math.sin(az));
   near(data[0][3],r*q);checked++;
@@ -116,9 +129,8 @@ for(const [n,arc,zNoise,noise] of [[3,Math.PI,false,0],[35,Math.PI,true,0],[180,
   const az=.4,cx=1449130.2,cy=656417.3;
   const low=section(cx,cy,2,az,n,arc,zNoise,noise),high=section(cx+Math.cos(az),cy+Math.sin(az),6.5,az,n,arc,zNoise,noise);
   const data=invoke('gc-pile-e-best',low,high);assert(data);
-  // Centre lies at mean Z (the mean height jitter need not be zero).
-  const zmean=low.reduce((s,p)=>s+p[2],0)/n, shift=(zmean-2)*slope;
-  near(data[0][0],cx+shift*Math.cos(az),.002);near(data[0][1],cy+shift*Math.sin(az),.002);near(data[0][2],r,.002);
+  throughSupports(data[0],low);throughSupports(data[1],high);
+  near(data[0][0],cx,.002);near(data[0][1],cy,.002);near(data[0][2],r,.002);
   checked++;
 }
 const low=section(10,20,0,.7),high=section(10+Math.cos(.7),20+Math.sin(.7),4.5,.7);
@@ -331,20 +343,25 @@ storedStyle=null;acceptStyle=false;
 assert.equal(invoke('gc-pile-e-angle-ensure-style','Standard'),null);
 console.log('PASS: component/angle/minutes; exact 1m triangle; placement; DIMENSION geometry and overrides; zero and creation-failure paths. Native CAD rendering not run.');
 
-// SV 5: одиночные сечения используют все точки с тем же отношением осей.
+// SV 5: контур через опорную тройку, диагностика по всем исходным точкам.
 let singleCount=0;
 for(const az of [0,.17,.7,Math.PI/2,2.43,5.8]){
   const pts=section(1449130.2,656417.3,-10,az,24);
   const e=invoke('gc-pile-e-single-best',pts);assert(e);
+  throughSupports(e,pts);
   near(e[0],1449130.2);near(e[1],656417.3);near(e[2],r);near(e[3],r*q);near(e[5],-10);
   near(Math.sin(e[4]-az),0,.0001);assert(e[6]<.00001);singleCount++;
 }
 for(const n of [3,4,35,180]){
   const pts=section(1449130.2,656417.3,2,.4,n,Math.PI,n>4,n>4?.001:0);
   const e=invoke('gc-pile-e-single-best',pts);assert(e);
-  assert(e.every(Number.isFinite));near(e[2],r,.003);assert(e[6]<.002);
-  const score=e[6]**2+(e[2]-r)**2;
-  for(let k=0;k<72;k++)assert(score<=invoke('gc-pile-e-single-candidate',pts,k*Math.PI/36)[0]+1e-14);
+  throughSupports(e,pts);near(e[2],r,1e-7);
+  // Приоритет v33 — точная тройка и номинал; минимум общей невязки
+  // больше не является условием выбора. Её значение сверяется отдельно
+  // независимой формулой в review_sv45.mjs, а не порогом старого МНК.
+  if(n<=4)assert(e[6]<1e-5);
+  const score=(e[2]-r)**2;
+  if(n<=4)for(let k=0;k<36;k++)assert(score<=invoke('gc-pile-e-single-candidate',pts,k*Math.PI/36)[0]+1e-14);
   singleCount++;
 }
 for(const pts of [[],low.slice(0,2),[low[0],low[0],low[1]],
@@ -352,14 +369,15 @@ for(const pts of [[],low.slice(0,2),[low[0],low[0],low[1]],
   assert.equal(invoke('gc-pile-e-single-best',pts),null);
 const singleClean=invoke('gc-pile-e-single-best',low);
 const singleDup=invoke('gc-pile-e-single-best',[...low,low[0],low[1]]);
-singleClean.forEach((v,i)=>near(v,singleDup[i],1e-12));
-// Последний замер влияет на результат: отбор тройки вместо всех точек
-// не должен скрывать несовпадение остальных измерений.
+assert.deepEqual(singleClean,singleDup);
+// Выброс не обязан сдвигать контур: новая постановка требует точных опор.
+// Невязка всех исходных точек должна по-прежнему обнаруживать выброс.
 const disturbed=low.map(p=>[...p]);disturbed.at(-1)[0]+=.04;
 const singleDisturbed=invoke('gc-pile-e-single-best',disturbed);
+throughSupports(singleDisturbed,disturbed);
 assert(singleDisturbed[6]>.002);
-assert(Math.hypot(singleDisturbed[0]-singleClean[0],singleDisturbed[1]-singleClean[1])>.0001);
-console.log(`PASS: SV5 ${singleCount} single-section fits, 3/4/many points, noise/arc, radius prior, all-point influence, invalid/duplicate selections.`);
+near(singleDisturbed[2],r,1e-7);
+console.log(`PASS: SV5 ${singleCount} single-section fits, 3/4/many points, exact source supports, noise/arc, nominal size, all-point residual, invalid/duplicate selections.`);
 
 // Цвет берётся у объекта; TrueColor приоритетнее ACI, ByLayer разрешается.
 const layerTable=new Map([

@@ -1,7 +1,10 @@
-;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 / SPEC-011 v32)
+;;; sv.lsp -- obrabotka svay (SPEC-001 / SPEC-002 / SPEC-003 / SPEC-004 / SPEC-010 / SPEC-011 v33)
 ;;; Komandy:
 ;;;   SV  -- rezhimy 1/2/3/4/5 (5: ellipsy secheniy po tochkam).
 ;;;   SVP -- sechenie svai na zadannoy otmetke + proektnoe otklonenie.
+;;;
+;;; v33: SV 4/5 - tochno cherez opornye troyki XY, kak SV 3.
+;;;      Podbor razmerov k nominalu; prognoz sreza po pryamoy centrov.
 ;;;
 ;;; v32: geometricheskiy podbor centra i poluosey s nominalom; vse minimumy ugla.
 ;;;      SV 4 sohranyaet obychnye tochki secheniya i ravnye Z.
@@ -1118,218 +1121,90 @@
     (if (not found) (setq out (cons p out))))
   (reverse out))
 
-;; Координаты центрируем до вычисления моментов и всех уточнений.
-;; Алгебраическая окружность - только старт, номинал входит в уточнение.
-(defun gc-pile-e-prepare (pts ang / co si ratio mx my mz uv p dx dy u v
-                             mu mv xx yy xy xr yr rr det cx cy rad n)
-  (setq n (float (length pts)) co (cos ang) si (sin ang)
-        ratio (sqrt (+ 1.0 (* *gc-pile-sv4-slope* *gc-pile-sv4-slope*)))
-        mx (gc-pile-avg (mapcar 'car pts))
-        my (gc-pile-avg (mapcar 'cadr pts))
-        mz (gc-pile-avg (mapcar 'caddr pts)) uv nil)
+;; При фиксированных направлении и отношении осей достаточно трех XY.
+;; Как в SV 3: радиус получается из опор, а не подставляется в результат.
+(setq *gc-pile-e-radius-eps* 1.0e-7)
+
+(defun gc-pile-e-spread (pts / a b c best d p area rest)
+  (setq a (car pts) best -1.0)
   (foreach p pts
-    (setq dx (- (car p) mx) dy (- (cadr p) my)
-          u (/ (- (+ (* co dx) (* si dy))
-                  (* *gc-pile-sv4-slope* (- (caddr p) mz))) ratio)
-          v (+ (* (- si) dx) (* co dy))
-          uv (cons (list u v) uv)))
-  (setq mu (gc-pile-avg (mapcar 'car uv))
-        mv (gc-pile-avg (mapcar 'cadr uv))
-        xx 0.0 yy 0.0 xy 0.0 xr 0.0 yr 0.0 rr 0.0)
+    (setq d (gc-pile-dist-xy a p))
+    (if (> d best) (setq best d b p)))
+  (setq a b best -1.0)
+  (foreach p pts
+    (setq d (gc-pile-dist-xy a p))
+    (if (> d best) (setq best d b p)))
+  (setq best -1.0)
+  (foreach p pts
+    (setq area (abs (- (* (- (car b) (car a)) (- (cadr p) (cadr a)))
+                      (* (- (cadr b) (cadr a)) (- (car p) (car a))))))
+    (if (> area best) (setq best area c p)))
+  (if (<= best 1.0e-9) nil
+    (progn
+      (setq rest nil)
+      (foreach p pts
+        (if (not (or (equal p a 1.0e-8) (equal p b 1.0e-8) (equal p c 1.0e-8)))
+          (setq rest (cons p rest))))
+      (append (list a b c) (reverse rest)))))
+
+;; Невязка остальных точек - диагностика; опорную тройку ею не сдвигаем.
+(defun gc-pile-e-rms (uv circle ratio / sum p u v rr rad)
+  (setq sum 0.0 rad (caddr circle))
   (foreach p uv
-    (setq u (- (car p) mu) v (- (cadr p) mv) rad (+ (* u u) (* v v))
-          xx (+ xx (* u u)) yy (+ yy (* v v)) xy (+ xy (* u v))
-          xr (+ xr (* u rad)) yr (+ yr (* v rad)) rr (+ rr rad)))
-  (setq det (- (* xx yy) (* xy xy)))
-  (if (or (< (+ xx yy) 1.0e-10)
-          (<= det (* 1.0e-7 (+ xx yy) (+ xx yy))))
-    nil
+    (setq u (- (car p) (car circle)) v (- (cadr p) (cadr circle))
+          rr (sqrt (+ (* u u) (* v v))))
+    (setq sum (+ sum
+      (if (> rr 1.0e-12)
+        (* (- rr rad) (- rr rad)
+           (/ (+ (* ratio ratio u u) (* v v)) (* rr rr)))
+        (* rad rad)))))
+  (sqrt (/ sum (float (length uv)))))
+
+;; Потоковый перебор: O(N^3) арифметики, O(N) памяти, без списка всех троек.
+;; Координаты относительно первой точки защищают миллионные геодезические XY.
+(defun gc-pile-e-fit (pts ang / co si ratio ox oy mz uv p dx dy one two three
+                              circle best besterr err supports radius)
+  (if (< (length pts) 3) nil
     (progn
-      (setq cx (/ (- (* xr yy) (* yr xy)) (* 2.0 det))
-            cy (/ (- (* yr xx) (* xr xy)) (* 2.0 det))
-            rad (sqrt (+ (/ rr n) (* cx cx) (* cy cy))))
-      (list mx my mz uv (list (+ cx mu) (+ cy mv) rad)))))
-
-;; Невязка d = sqrt(q^2*u^2+v^2) * (1-b/sqrt(u^2+v^2)).
-;; Ее производные дают геометрический МНК; отдельное уравнение b-R
-;; удерживает размер около номинала, не подменяя найденное значение.
-;; Результат: (полный-критерий матрица градиент средний-квадрат-невязки).
-(defun gc-pile-e-equations (ctx vars / cx cy rad ratio q2 n p u v rr rho d
-                               jx jy jr factor hxx hxy hxr hyy hyr hrr
-                               gx gy gr sum prior)
-  (setq cx (car vars) cy (cadr vars) rad (caddr vars)
-        q2 (+ 1.0 (* *gc-pile-sv4-slope* *gc-pile-sv4-slope*))
-        n (float (length (nth 3 ctx)))
-        hxx 0.0 hxy 0.0 hxr 0.0 hyy 0.0 hyr 0.0 hrr 0.0
-        gx 0.0 gy 0.0 gr 0.0 sum 0.0)
-  (foreach p (nth 3 ctx)
-    (setq u (- (car p) cx) v (- (cadr p) cy)
-          rr (sqrt (+ (* u u) (* v v)))
-          rho (sqrt (+ (* q2 u u) (* v v))))
-    (if (> rr 1.0e-12)
-      (setq factor (- 1.0 (/ rad rr)) d (* rho factor)
-            jx (- (+ (* (/ (* q2 u) rho) factor) (/ (* rho rad u) (* rr rr rr))))
-            jy (- (+ (* (/ v rho) factor) (/ (* rho rad v) (* rr rr rr))))
-            jr (- (/ rho rr)))
-      (setq d (- rad) jx 0.0 jy 0.0 jr -1.0))
-    (setq sum (+ sum (* d d))
-          hxx (+ hxx (* jx jx)) hxy (+ hxy (* jx jy)) hxr (+ hxr (* jx jr))
-          hyy (+ hyy (* jy jy)) hyr (+ hyr (* jy jr)) hrr (+ hrr (* jr jr))
-          gx (+ gx (* jx d)) gy (+ gy (* jy d)) gr (+ gr (* jr d))))
-  (setq prior (- rad *gc-pile-r-norm*) sum (/ sum n))
-  (list (+ sum (* prior prior))
-        (list (list (/ hxx n) (/ hxy n) (/ hxr n))
-              (list (/ hxy n) (/ hyy n) (/ hyr n))
-              (list (/ hxr n) (/ hyr n) (+ 1.0 (/ hrr n))))
-        (list (/ gx n) (/ gy n) (+ prior (/ gr n))) sum))
-
-(defun gc-pile-e-add-equation (sys residual jac / matrix gradient)
-  (setq matrix
-    (mapcar '(lambda (row ji)
-               (mapcar '(lambda (cell jj) (+ cell (* ji jj))) row jac))
-            (cadr sys) jac)
-        gradient (mapcar '(lambda (g j) (+ g (* residual j))) (caddr sys) jac))
-  (list (+ (car sys) (* residual residual)) matrix gradient))
-
-;; В паре штраф направления входит и в шаг центров, а не только в выбор угла.
-(defun gc-pile-e-system (contexts vars ang / a b matrix gradient sys lo hi dx dy
-                                              dz weight ratio cross along)
-  (setq a (gc-pile-e-equations (car contexts) vars))
-  (if (null (cdr contexts))
-    (list (car a) (cadr a) (caddr a))
-    (progn
-      (setq b (gc-pile-e-equations (cadr contexts) (cddr (cdr vars)))
-            matrix (append
-              (mapcar '(lambda (row) (append row '(0.0 0.0 0.0))) (cadr a))
-              (mapcar '(lambda (row) (append '(0.0 0.0 0.0) row)) (cadr b)))
-            gradient (append (caddr a) (caddr b))
-            sys (list (+ (car a) (car b)) matrix gradient)
-            lo (car contexts) hi (cadr contexts)
-            dx (- (car hi) (car lo)) dy (- (cadr hi) (cadr lo))
-            dz (- (caddr hi) (caddr lo)) weight (/ *gc-pile-r-norm* dz)
+      (setq co (cos ang) si (sin ang)
             ratio (sqrt (+ 1.0 (* *gc-pile-sv4-slope* *gc-pile-sv4-slope*)))
-            cross (* weight (+ (- (* (cos ang) dy) (* (sin ang) dx))
-                               (- (nth 4 vars) (cadr vars))))
-            along (* weight (+ (* (cos ang) dx) (* (sin ang) dy)
-                               (* ratio (- (nth 3 vars) (car vars))))))
-      (setq sys (gc-pile-e-add-equation sys cross
-                  (list 0.0 (- weight) 0.0 0.0 weight 0.0)))
-      (if (< along 0.0)
-        (setq sys (gc-pile-e-add-equation sys along
-                    (list (- (* ratio weight)) 0.0 0.0 (* ratio weight) 0.0 0.0))))
-      sys)))
-
-(defun gc-pile-e-put (lst index value / out idx item)
-  (setq out nil idx 0)
-  (foreach item lst
-    (setq out (cons (if (= idx index) value item) out) idx (1+ idx)))
-  (reverse out))
-
-;; Система всего 3x3 или 6x6; выбираем ведущий элемент, не делим на малый pivot.
-(defun gc-pile-e-solve (matrix rhs / rows n col idx row pivot pidx largest value
-                                   normalized factor out ok)
-  (setq rows (mapcar '(lambda (row value) (append row (list value))) matrix rhs)
-        n (length rhs) col 0 ok T)
-  (while (and ok (< col n))
-    (setq idx col pidx col largest 0.0)
-    (while (< idx n)
-      (setq value (abs (nth col (nth idx rows))))
-      (if (> value largest) (setq largest value pidx idx))
-      (setq idx (1+ idx)))
-    (if (< largest 1.0e-18)
-      (setq ok nil)
-      (progn
-        (setq pivot (nth pidx rows)
-              rows (gc-pile-e-put rows pidx (nth col rows))
-              value (nth col pivot)
-              normalized (mapcar '(lambda (x) (/ x value)) pivot)
-              rows (gc-pile-e-put rows col normalized) out nil idx 0)
-        (foreach row rows
-          (setq factor (nth col row)
-                out (cons
-                      (if (= idx col) normalized
-                        (mapcar '(lambda (x y) (- x (* factor y))) row normalized)) out)
-                idx (1+ idx)))
-        (setq rows (reverse out) col (1+ col)))))
-  (if ok (mapcar 'last rows) nil))
-
-(defun gc-pile-e-damp (matrix damping / idx result row)
-  (setq idx 0 result nil)
-  (foreach row matrix
-    (setq result (cons (gc-pile-e-put row idx
-                        (+ (nth idx row) (* damping (max 1.0e-6 (abs (nth idx row)))))) result)
-          idx (1+ idx)))
-  (reverse result))
-
-;; Принимается только шаг, уменьшающий ТОТ ЖЕ критерий, по которому выбираем итог.
-(defun gc-pile-e-refine (contexts vars ang / sys trial candidate delta damping
-                             iteration attempt accepted done change improvement)
-  (setq sys (gc-pile-e-system contexts vars ang) damping 1.0e-6
-        iteration 0 done nil)
-  (while (and (not done) (< iteration 40))
-    (setq attempt 0 accepted nil)
-    (while (and (not accepted) (< attempt 10))
-      (setq delta (gc-pile-e-solve (gc-pile-e-damp (cadr sys) damping)
-                    (mapcar '- (caddr sys))))
-      (if delta
+            ox (car (car pts)) oy (cadr (car pts))
+            mz (gc-pile-avg (mapcar 'caddr pts)) uv nil)
+      (foreach p pts
+        (setq dx (- (car p) ox) dy (- (cadr p) oy)
+              uv (cons (list (/ (+ (* co dx) (* si dy)) ratio)
+                             (+ (* (- si) dx) (* co dy)) p) uv)))
+      (setq uv (reverse uv) one uv best nil besterr 1.0e99 supports nil)
+      (while (and (cddr one) (> besterr *gc-pile-e-radius-eps*))
+        (setq two (cdr one))
+        (while (and (cdr two) (> besterr *gc-pile-e-radius-eps*))
+          (setq three (cdr two))
+          (while (and three (> besterr *gc-pile-e-radius-eps*))
+            (setq circle (gc-pile-circle-3 (car one) (car two) (car three)))
+            (if circle
+              (progn
+                (setq err (abs (- (caddr circle) *gc-pile-r-norm*)))
+                (if (< err besterr)
+                  (setq best circle besterr err
+                        supports (list (caddr (car one)) (caddr (car two))
+                                       (caddr (car three)))))))
+            (setq three (cdr three)))
+          (setq two (cdr two)))
+        (setq one (cdr one)))
+      (if best
         (progn
-          (setq candidate (mapcar '+ vars delta))
-          (if (and (> (nth 2 candidate) 1.0e-8)
-                   (or (= (length candidate) 3) (> (nth 5 candidate) 1.0e-8)))
-            (progn
-              (setq trial (gc-pile-e-system contexts candidate ang))
-              (if (< (car trial) (car sys))
-                (setq accepted T improvement (- (car sys) (car trial))
-                      change (apply 'max (mapcar 'abs delta))
-                      vars candidate sys trial))))))
-      (if (not accepted) (setq damping (* damping 10.0)))
-      (setq attempt (1+ attempt)))
-    (if accepted
-      (setq damping (max 1.0e-12 (/ damping 10.0))
-            done (or (< change 1.0e-10) (< improvement 1.0e-22)))
-      (setq done T))
-    (setq iteration (1+ iteration)))
-  (list (car sys) vars))
+          (setq radius (caddr best))
+          (list (+ ox (* co ratio (car best)) (* (- si) (cadr best)))
+                (+ oy (* si ratio (car best)) (* co (cadr best)))
+                radius (* radius ratio) ang mz (gc-pile-e-rms uv best ratio)
+                supports (length pts)))
+        nil))))
 
-(defun gc-pile-e-optimize (contexts ang / initial nominal ctx seed scale first second)
-  (setq initial nil nominal nil)
-  (foreach ctx contexts
-    (setq seed (nth 4 ctx) scale (/ *gc-pile-r-norm* (caddr seed))
-          initial (append initial seed)
-          nominal (append nominal (list (* scale (car seed)) (* scale (cadr seed))
-                                        *gc-pile-r-norm*))))
-  (setq first (gc-pile-e-refine contexts initial ang))
-  (if (not (equal initial nominal 1.0e-12))
-    (progn
-      (setq second (gc-pile-e-refine contexts nominal ang))
-      (if (< (car second) (car first)) (setq first second))))
-  (cadr first))
-
-(defun gc-pile-e-result (ctx vars ang / ratio cx cy rad error)
-  (setq ratio (sqrt (+ 1.0 (* *gc-pile-sv4-slope* *gc-pile-sv4-slope*)))
-        cx (car vars) cy (cadr vars) rad (caddr vars)
-        error (nth 3 (gc-pile-e-equations ctx vars)))
-  (list (+ (car ctx) (* (cos ang) ratio cx) (* (- (sin ang)) cy))
-        (+ (cadr ctx) (* (sin ang) ratio cx) (* (cos ang) cy))
-        rad (* ratio rad) ang (caddr ctx) (sqrt (max 0.0 error))))
-
-(defun gc-pile-e-fit (pts ang / ctx vars)
-  (setq ctx (gc-pile-e-prepare pts ang))
-  (if ctx
-    (progn
-      (setq vars (gc-pile-e-optimize (list ctx) ang))
-      (gc-pile-e-result ctx vars ang))
-    nil))
-
-(defun gc-pile-e-candidate (lo hi ang / low high contexts vars el eh score)
-  (setq low (gc-pile-e-prepare lo ang) high (gc-pile-e-prepare hi ang))
-  (if (and low high (> (- (caddr high) (caddr low)) 1.0e-8))
-    (progn
-      (setq contexts (list low high) vars (gc-pile-e-optimize contexts ang)
-            el (gc-pile-e-result low vars ang)
-            eh (gc-pile-e-result high (cddr (cdr vars)) ang)
-            score (car (gc-pile-e-system contexts vars ang)))
-      (list score ang el eh))
+(defun gc-pile-e-candidate (lo hi ang / el eh)
+  (setq el (gc-pile-e-fit lo ang) eh (gc-pile-e-fit hi ang))
+  (if (and el eh (> (- (nth 5 eh) (nth 5 el)) 1.0e-8))
+    (list (+ (expt (- (nth 2 el) *gc-pile-r-norm*) 2)
+             (expt (- (nth 2 eh) *gc-pile-r-norm*) 2)) ang el eh)
     nil))
 
 (defun gc-pile-e-at (lo hi ang)
@@ -1338,44 +1213,92 @@
 (defun gc-pile-e-score (candidate)
   (if candidate (car candidate) 1.0e99))
 
-;; Золотое сечение внутри интервала, с сохранением лучшей уже проверенной точки.
+;; Только при численно равных размерах сравниваем прочие точки и ось сваи.
+(defun gc-pile-e-quality (candidate / el eh ang dx dy dz cross result)
+  (setq el (caddr candidate) eh (nth 3 candidate)
+        result (expt (nth 6 el) 2))
+  (if eh
+    (progn
+      (setq ang (cadr candidate) dx (- (car eh) (car el)) dy (- (cadr eh) (cadr el))
+            dz (- (nth 5 eh) (nth 5 el))
+            cross (/ (- (* (cos ang) dy) (* (sin ang) dx)) dz)
+            result (+ result (expt (nth 6 eh) 2)
+                      (* *gc-pile-r-norm* *gc-pile-r-norm* cross cross)))))
+  result)
+
+(defun gc-pile-e-better (candidate best / eps)
+  (setq eps (* *gc-pile-e-radius-eps* *gc-pile-e-radius-eps*))
+  (and candidate
+    (or (null best)
+        (< (car candidate) (- (car best) eps))
+        (and (<= (abs (- (car candidate) (car best))) eps)
+             (< (gc-pile-e-quality candidate) (gc-pile-e-quality best))))))
+
+(defun gc-pile-e-perfect (candidate)
+  (and candidate
+       (<= (abs (- (nth 2 (caddr candidate)) *gc-pile-r-norm*)) *gc-pile-e-radius-eps*)
+       (or (null (nth 3 candidate))
+           (<= (abs (- (nth 2 (nth 3 candidate)) *gc-pile-r-norm*)) *gc-pile-e-radius-eps*))))
+
 (defun gc-pile-e-angle-refine (lo hi candidate step / left right x y cx cy best k)
   (setq left (- (cadr candidate) step) right (+ (cadr candidate) step)
         k 0.6180339887498949 best candidate
         x (- right (* k (- right left))) y (+ left (* k (- right left)))
         cx (gc-pile-e-at lo hi x) cy (gc-pile-e-at lo hi y))
-  (repeat 28
-    (if (< (gc-pile-e-score cx) (gc-pile-e-score best)) (setq best cx))
-    (if (< (gc-pile-e-score cy) (gc-pile-e-score best)) (setq best cy))
+  ;; На тройке невязка почти ноль при любом угле: ею нельзя остановить
+  ;; уточнение размера до того, как проверены остальные точки.
+  (repeat 30
+    (if (and cx (< (car cx) (gc-pile-e-score best))) (setq best cx))
+    (if (and cy (< (car cy) (gc-pile-e-score best))) (setq best cy))
+    ;; Внутри интервала уточняем именно размер; невязка - только равенства.
     (if (< (gc-pile-e-score cx) (gc-pile-e-score cy))
       (setq right y y x cy cx x (- right (* k (- right left)))
             cx (gc-pile-e-at lo hi x))
       (setq left x x y cx cy y (+ left (* k (- right left)))
             cy (gc-pile-e-at lo hi y))))
-  (if (< (gc-pile-e-score cx) (gc-pile-e-score best)) (setq best cx))
-  (if (< (gc-pile-e-score cy) (gc-pile-e-score best)) (setq best cy))
+  (if (and cx (< (car cx) (gc-pile-e-score best))) (setq best cx))
+  (if (and cy (< (car cy) (gc-pile-e-score best))) (setq best cy))
   best)
 
-;; Уточняем ВСЕ локальные минимумы, а не только победителя грубой сетки.
-(defun gc-pile-e-search (lo hi / candidates best cand step idx previous next refined)
-  (setq candidates nil best nil step (/ pi 36.0) idx 0)
-  (repeat 72
+;; Без поправки XY за Z угол и угол+pi задают один и тот же эллипс.
+(defun gc-pile-e-grid (lo hi / candidates best cand step idx previous next refined result)
+  (setq candidates nil best nil step (/ pi 36.0) idx 0 result nil)
+  (repeat 36
     (setq cand (gc-pile-e-at lo hi (* idx step)) candidates (cons cand candidates))
-    (if (< (gc-pile-e-score cand) (gc-pile-e-score best)) (setq best cand))
+    (if (gc-pile-e-better cand best) (setq best cand))
     (setq idx (1+ idx)))
   (setq candidates (reverse candidates) idx 0)
   (foreach cand candidates
     (setq previous (if (= idx 0) (last candidates) (nth (1- idx) candidates))
-          next (if (= idx 71) (car candidates) (nth (1+ idx) candidates)))
+          next (if (= idx 35) (car candidates) (nth (1+ idx) candidates)))
     (if (and cand (<= (car cand) (gc-pile-e-score previous))
-                  (<= (car cand) (gc-pile-e-score next))
-                  (or (< (car cand) (gc-pile-e-score previous))
-                      (< (car cand) (gc-pile-e-score next))))
+                  (<= (car cand) (gc-pile-e-score next)))
       (progn
-        (setq refined (gc-pile-e-angle-refine lo hi cand step))
-        (if (< (car refined) (gc-pile-e-score best)) (setq best refined))))
+        (setq refined (gc-pile-e-angle-refine lo hi cand step)
+              result (cons refined result))))
     (setq idx (1+ idx)))
-  best)
+  (if best (cons best (reverse result)) nil))
+
+(defun gc-pile-e-search (lo hi / low high seedlo seedhi seeds exact candidate best)
+  (setq low (gc-pile-e-spread lo) high (if hi (gc-pile-e-spread hi) nil))
+  (if (and low (or (null hi) high))
+    (progn
+      (setq seedlo (list (car low) (cadr low) (caddr low))
+            seedhi (if high (list (car high) (cadr high) (caddr high)) nil)
+            seeds (gc-pile-e-grid seedlo seedhi) best nil exact nil)
+      (foreach candidate seeds
+        (if (gc-pile-e-perfect candidate) (setq exact (cons candidate exact))))
+      (if exact (setq seeds (reverse exact)))
+      (foreach candidate seeds
+        (setq candidate (gc-pile-e-at low high (cadr candidate)))
+        (if (gc-pile-e-better candidate best) (setq best candidate)))
+      ;; Номинал - нижняя граница ошибки размеров; после его достижения
+      ;; сохраняем найденные опоры, не двигаем контур ради остальных точек.
+      (if (not (gc-pile-e-perfect best))
+        (foreach candidate (gc-pile-e-grid low high)
+          (if (gc-pile-e-better candidate best) (setq best candidate))))
+      best)
+    nil))
 
 (defun gc-pile-e-sections-ok (lo hi / zlo zhi)
   (cond
@@ -1413,15 +1336,26 @@
           '(210 0.0 0.0 1.0) (cons 40 (/ (nth 2 e) a))
           '(41 . 0.0) (cons 42 (* 2.0 pi))) "эллипс"))
 
-(defun gc-pile-e-report (e name)
+(defun gc-pile-e-report (e name / supports p idx)
   (princ (strcat "\n" name ": центр (" (rtos (car e) 2 3) ", "
     (rtos (cadr e) 2 3) ", " (rtos (nth 5 e) 2 3) ")"
     "; малая полуось = " (rtos (nth 2 e) 2 6)
     " м; большая = " (rtos (nth 3 e) 2 6)
-    " м; невязка = " (rtos (* 1000.0 (nth 6 e)) 2 1) " мм"))
+    " м; невязка всех точек = " (rtos (* 1000.0 (nth 6 e)) 2 1) " мм"))
+  (setq supports (nth 7 e) idx 0)
+  (if supports
+    (progn
+      (princ (strcat "\nКонтур проходит через 3 опорные XY из " (itoa (nth 8 e))
+                     " точек. Z эллипса - средняя отметка сечения."))
+      (if (< (nth 8 e) 5)
+        (princ "\n[!] По 3-4 точкам эллипс неоднозначен; вариант выбран с учетом номинальных размеров."))
+      (foreach p supports
+        (setq idx (1+ idx))
+        (princ (strcat "\n  Опора " (itoa idx) ": X=" (rtos (car p) 2 3)
+                       "; Y=" (rtos (cadr p) 2 3) "; Z=" (rtos (caddr p) 2 3))))))
   (if (or (> (nth 6 e) *gc-pile-sv4-rms-warn*)
           (> (abs (- (nth 2 e) *gc-pile-r-norm*)) *gc-pile-r-warn*))
-    (princ "\n[!] Сечение плохо согласуется с диаметром/точками. Проверьте выбор и съемку.")))
+    (princ "\n[!] Сечение плохо согласуется с диаметром/остальными точками. Проверьте опоры и съемку.")))
 
 ;; Продление центра - как в SV 3. Размер среза номинальный, направление
 ;; большой оси общее с найденными сечениями (SPEC-010).
@@ -1437,7 +1371,7 @@
             (+ (cadr el) (* k (- (cadr eh) (cadr el))))
             radius (* radius ratio) (nth 4 el) target-z 0.0))))
 
-(defun gc-pile-e-draw-cut (data target-z / cut target-pt)
+(defun gc-pile-e-draw-cut (data target-z / cut target-pt k gain)
   (setq cut (gc-pile-e-cut-data data target-z))
   (if cut
     (progn
@@ -1450,6 +1384,13 @@
                          (rtos (car cut) 2 3) ", " (rtos (cadr cut) 2 3) ")"
                          "\nПолуоси среза: " (rtos (nth 2 cut) 2 6) " / "
                          (rtos (nth 3 cut) 2 6) " м"))
+          (setq k (/ (- target-z (nth 5 (car data)))
+                     (- (nth 5 (cadr data)) (nth 5 (car data))))
+                gain (+ (abs (- 1.0 k)) (abs k)))
+          (if (or (< k 0.0) (> k 1.0))
+            (princ (strcat "\n[i] Экстраполяция прямой сваи: k=" (rtos k 2 3)
+              ". Усиление общей границы ошибок центров: " (rtos gain 2 2)
+              " раза. Изгиб по двум сечениям не определяется.")))
           target-pt)
         nil))
     nil))
@@ -1663,7 +1604,7 @@
   (reverse pairs))
 
 (defun gc-pile-run-sv4 ( / pairs target-z project-centers)
-  (princ "\nSV 4: эллипсы наклонной сваи + срез + проектные отклонения.")
+  (princ "\nSV 4: эллипсы через опорные тройки XY + срез + проектные отклонения.")
   (princ "\nВыбирайте точки сечений без отдельных отметчиков высоты.")
   (princ "\nНаклон: 1 м в плане на 4,5 м высоты. Полуоси среза: 0,710000 / 0,727320 м.")
   (setq pairs (gc-pile-e-auto))
@@ -1683,15 +1624,9 @@
 ;;; SV 5: каждое сечение отдельно, все высоты, цвет от исходных точек.
 (setq *gc-l-sv5-ellipse* "GC-Сваи-SV5-Эллипс")
 
-(defun gc-pile-e-single-candidate (pts ang / e score)
+(defun gc-pile-e-single-candidate (pts ang / e)
   (setq e (gc-pile-e-fit pts ang))
-  (if e
-    (progn
-      ;; Все точки влияют на невязку; номинал помогает при редкой съемке.
-      (setq score (+ (expt (nth 6 e) 2)
-                     (expt (- (nth 2 e) *gc-pile-r-norm*) 2)))
-      (list score ang e))
-    nil))
+  (if e (list (expt (- (nth 2 e) *gc-pile-r-norm*) 2) ang e) nil))
 
 (defun gc-pile-e-single-best (pts / zs best)
   (setq pts (gc-pile-e-unique pts))
@@ -1813,8 +1748,6 @@
         (setq e (gc-pile-e-single-best pts))
         (if e
           (progn
-            (if (< (length pts) 5)
-              (princ "\n[!] По 3-4 точкам эллипс неоднозначен; вариант выбран с учетом номинальных размеров."))
             (if (gc-pile-e-draw-colored e (gc-pile-e-section-color group))
               (progn (gc-pile-e-report e "Сечение") (setq ok (1+ ok)))
               (setq skipped (1+ skipped))))
@@ -1824,7 +1757,7 @@
       (list ok skipped (length groups)))))
 
 (defun gc-pile-run-sv5 ( / ss records)
-  (princ "\nSV 5: эллипсы по точкам, отдельное построение на каждой высоте.")
+  (princ "\nSV 5: эллипсы через опорные тройки XY, как в SV 3. Все высоты.")
   (princ "\nРазмеры-ориентир как в SV 4: полуоси 0,710000 / 0,727320 м.")
   (princ "\nЦвет - из свойства Цвет точки, включая ПоСлою; переопределения стилем COGO не учитываются.")
   (princ "\nВыберите точки сечений (минимум 3 на сечение), затем Enter: ")
@@ -1948,5 +1881,5 @@
 ;; SVP -> ЫМЗ
 (defun c:ымз ( / ) (c:svp))
 (defun c:ЫМЗ ( / ) (c:svp))
-(princ "\n[gc] sv.lsp v32 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
+(princ "\n[gc] sv.lsp v33 загружен. Команды: SV, SVP | рус. раскладка: ЫМ, ЫМЗ")
 (princ)
